@@ -96,6 +96,91 @@ export const CreatePaymentIntentResponseSchema = z
   })
   .openapi("CreatePaymentIntentResponse");
 
+// ===== Create Product =====
+
+export const CreateProductRequestSchema = z
+  .object({
+    name: z.string().min(1).openapi({ description: "Product name" }),
+    description: z
+      .string()
+      .optional()
+      .openapi({ description: "Product description" }),
+    metadata: z
+      .record(z.string(), z.string())
+      .optional()
+      .openapi({ description: "Custom metadata" }),
+  })
+  .openapi("CreateProductRequest");
+
+export type CreateProductRequest = z.infer<typeof CreateProductRequestSchema>;
+
+export const CreateProductResponseSchema = z
+  .object({
+    success: z.boolean(),
+    productId: z.string().openapi({ description: "Stripe Product ID" }),
+    name: z.string().openapi({ description: "Product name" }),
+  })
+  .openapi("CreateProductResponse");
+
+// ===== Create Price =====
+
+export const CreatePriceRequestSchema = z
+  .object({
+    productId: z
+      .string()
+      .min(1)
+      .openapi({ description: "Stripe Product ID to attach the price to" }),
+    unitAmountInCents: z
+      .number()
+      .int()
+      .positive()
+      .openapi({ description: "Price amount in cents" }),
+    currency: z
+      .string()
+      .optional()
+      .default("usd")
+      .openapi({ description: "Currency code (default: usd)" }),
+    recurring: z
+      .object({
+        interval: z
+          .enum(["day", "week", "month", "year"])
+          .openapi({ description: "Billing interval" }),
+        intervalCount: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .default(1)
+          .openapi({ description: "Number of intervals between billings" }),
+      })
+      .optional()
+      .openapi({
+        description:
+          "Recurring pricing configuration. Omit for one-time prices.",
+      }),
+    metadata: z
+      .record(z.string(), z.string())
+      .optional()
+      .openapi({ description: "Custom metadata" }),
+  })
+  .openapi("CreatePriceRequest");
+
+export type CreatePriceRequest = z.infer<typeof CreatePriceRequestSchema>;
+
+export const CreatePriceResponseSchema = z
+  .object({
+    success: z.boolean(),
+    priceId: z.string().openapi({ description: "Stripe Price ID" }),
+    productId: z
+      .string()
+      .openapi({ description: "Associated Stripe Product ID" }),
+    unitAmountInCents: z
+      .number()
+      .openapi({ description: "Price amount in cents" }),
+    currency: z.string().openapi({ description: "Currency code" }),
+  })
+  .openapi("CreatePriceResponse");
+
 // ===== Payment Status =====
 
 export const PaymentStatusResponseSchema = z
@@ -225,6 +310,76 @@ registry.registerPath({
     200: {
       description: "Payment intent created",
       content: { "application/json": { schema: CreatePaymentIntentResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+// --- Create Product ---
+
+registry.registerPath({
+  method: "post",
+  path: "/products/create",
+  summary: "Create a Stripe product",
+  description:
+    "Creates a product in Stripe. Use the returned productId to create prices.",
+  tags: ["Products"],
+  security: [{ apiKey: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": { schema: CreateProductRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Product created",
+      content: {
+        "application/json": { schema: CreateProductResponseSchema },
+      },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+// --- Create Price ---
+
+registry.registerPath({
+  method: "post",
+  path: "/prices/create",
+  summary: "Create a Stripe price for a product",
+  description:
+    "Creates a price attached to a Stripe product. Use the returned priceId in checkout sessions.",
+  tags: ["Products"],
+  security: [{ apiKey: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": { schema: CreatePriceRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Price created",
+      content: {
+        "application/json": { schema: CreatePriceResponseSchema },
+      },
     },
     400: {
       description: "Invalid request",

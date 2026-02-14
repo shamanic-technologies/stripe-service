@@ -13,6 +13,7 @@ import healthRoutes from "./routes/health";
 import paymentRoutes from "./routes/payments";
 import statusRoutes from "./routes/status";
 import webhooksRoutes from "./routes/webhooks";
+import productRoutes from "./routes/products";
 
 const app = express();
 const PORT = process.env.PORT || 3011;
@@ -74,6 +75,7 @@ app.use("/", healthRoutes);
 app.use("/", paymentRoutes);
 app.use("/", statusRoutes);
 app.use("/", webhooksRoutes);
+app.use("/", productRoutes);
 
 // Only start server if not in test environment
 if (process.env.NODE_ENV !== "test") {

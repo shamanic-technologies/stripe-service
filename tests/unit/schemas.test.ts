@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   CreateCheckoutSessionRequestSchema,
   CreatePaymentIntentRequestSchema,
+  CreateProductRequestSchema,
+  CreatePriceRequestSchema,
   StatsRequestSchema,
   ErrorResponseSchema,
 } from "../../src/schemas";
@@ -103,6 +105,106 @@ describe("CreatePaymentIntentRequestSchema", () => {
   it("rejects non-integer amount", () => {
     const result = CreatePaymentIntentRequestSchema.safeParse({
       amountInCents: 10.5,
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("CreateProductRequestSchema", () => {
+  it("accepts valid product request", () => {
+    const result = CreateProductRequestSchema.safeParse({
+      name: "Premium Course",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts product request with all optional fields", () => {
+    const result = CreateProductRequestSchema.safeParse({
+      name: "Premium Course",
+      description: "A comprehensive course on TypeScript",
+      metadata: { courseId: "course_123" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects empty name", () => {
+    const result = CreateProductRequestSchema.safeParse({
+      name: "",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects missing name", () => {
+    const result = CreateProductRequestSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("CreatePriceRequestSchema", () => {
+  it("accepts valid one-time price request", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      productId: "prod_123",
+      unitAmountInCents: 2999,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts price with recurring config", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      productId: "prod_123",
+      unitAmountInCents: 999,
+      currency: "eur",
+      recurring: { interval: "month" },
+      metadata: { tier: "premium" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts recurring with intervalCount", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      productId: "prod_123",
+      unitAmountInCents: 4999,
+      recurring: { interval: "month", intervalCount: 3 },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects missing productId", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      unitAmountInCents: 2999,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects zero amount", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      productId: "prod_123",
+      unitAmountInCents: 0,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects negative amount", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      productId: "prod_123",
+      unitAmountInCents: -100,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects non-integer amount", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      productId: "prod_123",
+      unitAmountInCents: 29.99,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects invalid recurring interval", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      productId: "prod_123",
+      unitAmountInCents: 999,
+      recurring: { interval: "hourly" },
     });
     expect(result.success).toBe(false);
   });

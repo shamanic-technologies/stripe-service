@@ -19,6 +19,7 @@ const document = generator.generateDocument({
   tags: [
     { name: "Health", description: "Health check endpoints" },
     { name: "Payments", description: "Create payments via Stripe" },
+    { name: "Products", description: "Create and manage Stripe products and prices" },
     { name: "Payment Status", description: "Query payment status and stats" },
     { name: "Webhooks", description: "Stripe webhook handlers" },
   ],

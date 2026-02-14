@@ -116,6 +116,107 @@ export async function createPaymentIntent(
   }
 }
 
+// --- Types for Products/Prices ---
+
+export interface CreateProductParams {
+  name: string;
+  description?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface CreateProductResult {
+  success: boolean;
+  productId?: string;
+  name?: string;
+  error?: string;
+}
+
+export interface CreatePriceParams {
+  productId: string;
+  unitAmountInCents: number;
+  currency?: string;
+  recurring?: {
+    interval: "day" | "week" | "month" | "year";
+    intervalCount?: number;
+  };
+  metadata?: Record<string, string>;
+}
+
+export interface CreatePriceResult {
+  success: boolean;
+  priceId?: string;
+  productId?: string;
+  unitAmountInCents?: number;
+  currency?: string;
+  error?: string;
+}
+
+// --- Public API (Products/Prices) ---
+
+export async function createProduct(
+  params: CreateProductParams
+): Promise<CreateProductResult> {
+  const stripe = getClient();
+
+  try {
+    const product = await stripe.products.create({
+      name: params.name,
+      description: params.description,
+      metadata: params.metadata || {},
+    });
+
+    return {
+      success: true,
+      productId: product.id,
+      name: product.name,
+    };
+  } catch (error: any) {
+    console.error("Stripe create product error:", error);
+    return {
+      success: false,
+      error: error.message || "Unknown error",
+    };
+  }
+}
+
+export async function createPrice(
+  params: CreatePriceParams
+): Promise<CreatePriceResult> {
+  const stripe = getClient();
+
+  try {
+    const price = await stripe.prices.create({
+      product: params.productId,
+      unit_amount: params.unitAmountInCents,
+      currency: params.currency || "usd",
+      recurring: params.recurring
+        ? {
+            interval: params.recurring.interval,
+            interval_count: params.recurring.intervalCount || 1,
+          }
+        : undefined,
+      metadata: params.metadata || {},
+    });
+
+    return {
+      success: true,
+      priceId: price.id,
+      productId:
+        typeof price.product === "string"
+          ? price.product
+          : price.product.id,
+      unitAmountInCents: price.unit_amount ?? undefined,
+      currency: price.currency,
+    };
+  } catch (error: any) {
+    console.error("Stripe create price error:", error);
+    return {
+      success: false,
+      error: error.message || "Unknown error",
+    };
+  }
+}
+
 export function constructWebhookEvent(
   payload: string | Buffer,
   signature: string,
