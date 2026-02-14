@@ -112,6 +112,7 @@ export const CreatePaymentIntentResponseSchema = z
 
 export const CreateProductRequestSchema = z
   .object({
+    id: z.string().optional().openapi({ description: "Custom Stripe Product ID for idempotent creates" }),
     name: z.string().min(1).openapi({ description: "Product name" }),
     description: z
       .string()
@@ -131,8 +132,18 @@ export const CreateProductResponseSchema = z
     success: z.boolean(),
     productId: z.string().openapi({ description: "Stripe Product ID" }),
     name: z.string().openapi({ description: "Product name" }),
+    description: z.string().nullable().optional().openapi({ description: "Product description" }),
   })
   .openapi("CreateProductResponse");
+
+export const GetProductResponseSchema = z
+  .object({
+    success: z.boolean(),
+    productId: z.string().openapi({ description: "Stripe Product ID" }),
+    name: z.string().openapi({ description: "Product name" }),
+    description: z.string().nullable().openapi({ description: "Product description" }),
+  })
+  .openapi("GetProductResponse");
 
 // ===== Create Price =====
 
@@ -193,10 +204,33 @@ export const CreatePriceResponseSchema = z
   })
   .openapi("CreatePriceResponse");
 
+const PriceItemSchema = z.object({
+  priceId: z.string().openapi({ description: "Stripe Price ID" }),
+  productId: z.string().openapi({ description: "Associated Stripe Product ID" }),
+  unitAmountInCents: z.number().nullable().openapi({ description: "Price amount in cents" }),
+  currency: z.string().openapi({ description: "Currency code" }),
+  active: z.boolean().openapi({ description: "Whether the price is active" }),
+});
+
+export const GetPriceResponseSchema = z
+  .object({
+    success: z.boolean(),
+  })
+  .merge(PriceItemSchema)
+  .openapi("GetPriceResponse");
+
+export const ListPricesResponseSchema = z
+  .object({
+    success: z.boolean(),
+    prices: z.array(PriceItemSchema),
+  })
+  .openapi("ListPricesResponse");
+
 // ===== Create Coupon =====
 
 export const CreateCouponRequestSchema = z
   .object({
+    id: z.string().optional().openapi({ description: "Custom Stripe Coupon ID for idempotent creates" }),
     name: z
       .string()
       .optional()
@@ -275,6 +309,19 @@ export const CreateCouponResponseSchema = z
     duration: z.string().openapi({ description: "Coupon duration" }),
   })
   .openapi("CreateCouponResponse");
+
+export const GetCouponResponseSchema = z
+  .object({
+    success: z.boolean(),
+    couponId: z.string().openapi({ description: "Stripe Coupon ID" }),
+    name: z.string().nullable().openapi({ description: "Coupon display name" }),
+    percentOff: z.number().nullable().openapi({ description: "Percentage discount" }),
+    amountOffInCents: z.number().nullable().openapi({ description: "Fixed amount discount in cents" }),
+    currency: z.string().nullable().openapi({ description: "Currency code" }),
+    duration: z.string().openapi({ description: "Coupon duration" }),
+    valid: z.boolean().openapi({ description: "Whether the coupon is still valid" }),
+  })
+  .openapi("GetCouponResponse");
 
 // ===== Payment Status =====
 
@@ -424,7 +471,7 @@ registry.registerPath({
   path: "/products/create",
   summary: "Create a Stripe product",
   description:
-    "Creates a product in Stripe. Use the returned productId to create prices.",
+    "Creates a product in Stripe. Pass an optional id for idempotent creates — if the product already exists, it will be returned.",
   tags: ["Products"],
   security: [{ apiKey: [] }],
   request: {
@@ -494,7 +541,7 @@ registry.registerPath({
   path: "/coupons/create",
   summary: "Create a Stripe coupon",
   description:
-    "Creates a coupon in Stripe. Use the returned couponId in checkout session discounts.",
+    "Creates a coupon in Stripe. Pass an optional id for idempotent creates — if the coupon already exists, it will be returned.",
   tags: ["Products"],
   security: [{ apiKey: [] }],
   request: {
@@ -517,6 +564,94 @@ registry.registerPath({
     },
     500: {
       description: "Server error",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+// --- Get Product ---
+
+registry.registerPath({
+  method: "get",
+  path: "/products/{productId}",
+  summary: "Get a Stripe product by ID",
+  tags: ["Products"],
+  security: [{ apiKey: [] }],
+  request: {
+    params: z.object({ productId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Product found",
+      content: { "application/json": { schema: GetProductResponseSchema } },
+    },
+    404: {
+      description: "Product not found",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+// --- Get Price ---
+
+registry.registerPath({
+  method: "get",
+  path: "/prices/{priceId}",
+  summary: "Get a Stripe price by ID",
+  tags: ["Products"],
+  security: [{ apiKey: [] }],
+  request: {
+    params: z.object({ priceId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Price found",
+      content: { "application/json": { schema: GetPriceResponseSchema } },
+    },
+    404: {
+      description: "Price not found",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+// --- List Prices by Product ---
+
+registry.registerPath({
+  method: "get",
+  path: "/prices/by-product/{productId}",
+  summary: "List active prices for a product",
+  tags: ["Products"],
+  security: [{ apiKey: [] }],
+  request: {
+    params: z.object({ productId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Prices for product",
+      content: { "application/json": { schema: ListPricesResponseSchema } },
+    },
+  },
+});
+
+// --- Get Coupon ---
+
+registry.registerPath({
+  method: "get",
+  path: "/coupons/{couponId}",
+  summary: "Get a Stripe coupon by ID",
+  tags: ["Products"],
+  security: [{ apiKey: [] }],
+  request: {
+    params: z.object({ couponId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Coupon found",
+      content: { "application/json": { schema: GetCouponResponseSchema } },
+    },
+    404: {
+      description: "Coupon not found",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },
