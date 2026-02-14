@@ -11,6 +11,7 @@ vi.mock("../../src/lib/stripe-client", () => ({
     success: true,
     productId: "prod_test_mock123",
     name: "Test Product",
+    description: "A test product",
   }),
   createPrice: vi.fn().mockResolvedValue({
     success: true,
@@ -27,6 +28,48 @@ vi.mock("../../src/lib/stripe-client", () => ({
     amountOffInCents: null,
     currency: null,
     duration: "once",
+  }),
+  getProduct: vi.fn().mockResolvedValue({
+    success: true,
+    data: {
+      productId: "prod_test_mock123",
+      name: "Test Product",
+      description: "A test product",
+    },
+  }),
+  getPrice: vi.fn().mockResolvedValue({
+    success: true,
+    data: {
+      priceId: "price_test_mock123",
+      productId: "prod_test_mock123",
+      unitAmountInCents: 2999,
+      currency: "usd",
+      active: true,
+    },
+  }),
+  listPricesByProduct: vi.fn().mockResolvedValue({
+    success: true,
+    data: [
+      {
+        priceId: "price_test_mock123",
+        productId: "prod_test_mock123",
+        unitAmountInCents: 2999,
+        currency: "usd",
+        active: true,
+      },
+    ],
+  }),
+  getCoupon: vi.fn().mockResolvedValue({
+    success: true,
+    data: {
+      couponId: "coupon_test_mock123",
+      name: "50% Off",
+      percentOff: 50,
+      amountOffInCents: null,
+      currency: null,
+      duration: "once",
+      valid: true,
+    },
   }),
 }));
 
@@ -343,5 +386,207 @@ describe("POST /coupons/create", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("Stripe API error");
+  });
+});
+
+describe("GET /products/:productId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns a product successfully", async () => {
+    const res = await request(app)
+      .get("/products/prod_test_mock123")
+      .set("X-API-Key", API_KEY);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.productId).toBe("prod_test_mock123");
+    expect(res.body.name).toBe("Test Product");
+    expect(res.body.description).toBe("A test product");
+  });
+
+  it("returns 404 when product not found", async () => {
+    const { getProduct } = await import("../../src/lib/stripe-client");
+    (getProduct as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: false,
+      error: "Product not found",
+    });
+
+    const res = await request(app)
+      .get("/products/prod_nonexistent")
+      .set("X-API-Key", API_KEY);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Product not found");
+  });
+
+  it("returns 401 without API key", async () => {
+    const res = await request(app).get("/products/prod_test_mock123");
+
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("GET /prices/:priceId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns a price successfully", async () => {
+    const res = await request(app)
+      .get("/prices/price_test_mock123")
+      .set("X-API-Key", API_KEY);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.priceId).toBe("price_test_mock123");
+    expect(res.body.productId).toBe("prod_test_mock123");
+    expect(res.body.unitAmountInCents).toBe(2999);
+    expect(res.body.currency).toBe("usd");
+    expect(res.body.active).toBe(true);
+  });
+
+  it("returns 404 when price not found", async () => {
+    const { getPrice } = await import("../../src/lib/stripe-client");
+    (getPrice as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: false,
+      error: "Price not found",
+    });
+
+    const res = await request(app)
+      .get("/prices/price_nonexistent")
+      .set("X-API-Key", API_KEY);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Price not found");
+  });
+
+  it("returns 401 without API key", async () => {
+    const res = await request(app).get("/prices/price_test_mock123");
+
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("GET /prices/by-product/:productId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns prices for a product", async () => {
+    const res = await request(app)
+      .get("/prices/by-product/prod_test_mock123")
+      .set("X-API-Key", API_KEY);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.prices).toHaveLength(1);
+    expect(res.body.prices[0].priceId).toBe("price_test_mock123");
+    expect(res.body.prices[0].unitAmountInCents).toBe(2999);
+  });
+
+  it("returns 500 when Stripe fails", async () => {
+    const { listPricesByProduct } = await import("../../src/lib/stripe-client");
+    (listPricesByProduct as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: false,
+      error: "Stripe error",
+    });
+
+    const res = await request(app)
+      .get("/prices/by-product/prod_test_mock123")
+      .set("X-API-Key", API_KEY);
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe("Stripe error");
+  });
+
+  it("returns 401 without API key", async () => {
+    const res = await request(app).get("/prices/by-product/prod_test_mock123");
+
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("GET /coupons/:couponId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns a coupon successfully", async () => {
+    const res = await request(app)
+      .get("/coupons/coupon_test_mock123")
+      .set("X-API-Key", API_KEY);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.couponId).toBe("coupon_test_mock123");
+    expect(res.body.name).toBe("50% Off");
+    expect(res.body.percentOff).toBe(50);
+    expect(res.body.duration).toBe("once");
+    expect(res.body.valid).toBe(true);
+  });
+
+  it("returns 404 when coupon not found", async () => {
+    const { getCoupon } = await import("../../src/lib/stripe-client");
+    (getCoupon as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: false,
+      error: "Coupon not found",
+    });
+
+    const res = await request(app)
+      .get("/coupons/coupon_nonexistent")
+      .set("X-API-Key", API_KEY);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Coupon not found");
+  });
+
+  it("returns 401 without API key", async () => {
+    const res = await request(app).get("/coupons/coupon_test_mock123");
+
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Idempotent creates with custom id", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("creates a product with custom id", async () => {
+    const res = await request(app)
+      .post("/products/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        id: "prod_custom_123",
+        name: "Custom Product",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const { createProduct } = await import("../../src/lib/stripe-client");
+    expect(createProduct).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "prod_custom_123" })
+    );
+  });
+
+  it("creates a coupon with custom id", async () => {
+    const res = await request(app)
+      .post("/coupons/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        id: "coupon_custom_123",
+        percentOff: 25,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const { createCoupon } = await import("../../src/lib/stripe-client");
+    expect(createCoupon).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "coupon_custom_123" })
+    );
   });
 });

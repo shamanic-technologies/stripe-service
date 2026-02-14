@@ -4,7 +4,15 @@ import {
   CreatePriceRequestSchema,
   CreateCouponRequestSchema,
 } from "../schemas";
-import { createProduct, createPrice, createCoupon } from "../lib/stripe-client";
+import {
+  createProduct,
+  createPrice,
+  createCoupon,
+  getProduct,
+  getPrice,
+  listPricesByProduct,
+  getCoupon,
+} from "../lib/stripe-client";
 
 const router = Router();
 
@@ -22,6 +30,7 @@ router.post("/products/create", async (req: Request, res: Response) => {
 
   try {
     const result = await createProduct({
+      id: data.id,
       name: data.name,
       description: data.description,
       metadata: data.metadata,
@@ -35,6 +44,7 @@ router.post("/products/create", async (req: Request, res: Response) => {
       success: true,
       productId: result.productId,
       name: result.name,
+      description: result.description,
     });
   } catch (error: any) {
     console.error("Product create error:", error);
@@ -103,6 +113,7 @@ router.post("/coupons/create", async (req: Request, res: Response) => {
 
   try {
     const result = await createCoupon({
+      id: data.id,
       name: data.name,
       percentOff: data.percentOff,
       amountOffInCents: data.amountOffInCents,
@@ -134,6 +145,77 @@ router.post("/coupons/create", async (req: Request, res: Response) => {
     return res
       .status(500)
       .json({ error: error.message || "Internal server error" });
+  }
+});
+
+// GET /products/:productId
+router.get("/products/:productId", async (req: Request, res: Response) => {
+  const { productId } = req.params;
+
+  try {
+    const result = await getProduct(productId);
+
+    if (!result.success) {
+      const status = result.error === "Product not found" ? 404 : 500;
+      return res.status(status).json({ error: result.error });
+    }
+
+    return res.json({ success: true, ...result.data });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || "Internal server error" });
+  }
+});
+
+// GET /prices/:priceId
+router.get("/prices/:priceId", async (req: Request, res: Response) => {
+  const { priceId } = req.params;
+
+  try {
+    const result = await getPrice(priceId);
+
+    if (!result.success) {
+      const status = result.error === "Price not found" ? 404 : 500;
+      return res.status(status).json({ error: result.error });
+    }
+
+    return res.json({ success: true, ...result.data });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || "Internal server error" });
+  }
+});
+
+// GET /prices/by-product/:productId
+router.get("/prices/by-product/:productId", async (req: Request, res: Response) => {
+  const { productId } = req.params;
+
+  try {
+    const result = await listPricesByProduct(productId);
+
+    if (!result.success) {
+      return res.status(500).json({ error: result.error });
+    }
+
+    return res.json({ success: true, prices: result.data });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || "Internal server error" });
+  }
+});
+
+// GET /coupons/:couponId
+router.get("/coupons/:couponId", async (req: Request, res: Response) => {
+  const { couponId } = req.params;
+
+  try {
+    const result = await getCoupon(couponId);
+
+    if (!result.success) {
+      const status = result.error === "Coupon not found" ? 404 : 500;
+      return res.status(status).json({ error: result.error });
+    }
+
+    return res.json({ success: true, ...result.data });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || "Internal server error" });
   }
 });
 

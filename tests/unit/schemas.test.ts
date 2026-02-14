@@ -128,6 +128,17 @@ describe("CreateProductRequestSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts product request with custom id", () => {
+    const result = CreateProductRequestSchema.safeParse({
+      id: "prod_custom_123",
+      name: "Premium Course",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.id).toBe("prod_custom_123");
+    }
+  });
+
   it("rejects empty name", () => {
     const result = CreateProductRequestSchema.safeParse({
       name: "",
@@ -240,6 +251,17 @@ describe("CreateCouponRequestSchema", () => {
       metadata: { campaign: "holiday2026" },
     });
     expect(result.success).toBe(true);
+  });
+
+  it("accepts coupon with custom id", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      id: "coupon_custom_123",
+      percentOff: 50,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.id).toBe("coupon_custom_123");
+    }
   });
 
   it("rejects missing both percentOff and amountOffInCents", () => {

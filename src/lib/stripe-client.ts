@@ -124,6 +124,7 @@ export async function createPaymentIntent(
 // --- Types for Products/Prices ---
 
 export interface CreateProductParams {
+  id?: string;
   name: string;
   description?: string;
   metadata?: Record<string, string>;
@@ -133,7 +134,38 @@ export interface CreateProductResult {
   success: boolean;
   productId?: string;
   name?: string;
+  description?: string | null;
   error?: string;
+}
+
+export interface GetResourceResult<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+export interface PriceData {
+  priceId: string;
+  productId: string;
+  unitAmountInCents: number | null;
+  currency: string;
+  active: boolean;
+}
+
+export interface ProductData {
+  productId: string;
+  name: string;
+  description: string | null;
+}
+
+export interface CouponData {
+  couponId: string;
+  name: string | null;
+  percentOff: number | null;
+  amountOffInCents: number | null;
+  currency: string | null;
+  duration: string;
+  valid: boolean;
 }
 
 export interface CreatePriceParams {
@@ -165,6 +197,7 @@ export async function createProduct(
 
   try {
     const product = await stripe.products.create({
+      id: params.id,
       name: params.name,
       description: params.description,
       metadata: params.metadata || {},
@@ -174,13 +207,51 @@ export async function createProduct(
       success: true,
       productId: product.id,
       name: product.name,
+      description: product.description,
     };
   } catch (error: any) {
+    // Idempotent: if product already exists with this ID, retrieve and return it
+    if (params.id && error.code === "resource_already_exists") {
+      try {
+        const existing = await stripe.products.retrieve(params.id);
+        return {
+          success: true,
+          productId: existing.id,
+          name: existing.name,
+          description: existing.description,
+        };
+      } catch (retrieveError: any) {
+        return { success: false, error: retrieveError.message || "Unknown error" };
+      }
+    }
     console.error("Stripe create product error:", error);
     return {
       success: false,
       error: error.message || "Unknown error",
     };
+  }
+}
+
+export async function getProduct(
+  productId: string
+): Promise<GetResourceResult<ProductData>> {
+  const stripe = getClient();
+
+  try {
+    const product = await stripe.products.retrieve(productId);
+    return {
+      success: true,
+      data: {
+        productId: product.id,
+        name: product.name,
+        description: product.description,
+      },
+    };
+  } catch (error: any) {
+    if (error.statusCode === 404) {
+      return { success: false, error: "Product not found" };
+    }
+    return { success: false, error: error.message || "Unknown error" };
   }
 }
 
@@ -222,9 +293,63 @@ export async function createPrice(
   }
 }
 
+export async function getPrice(
+  priceId: string
+): Promise<GetResourceResult<PriceData>> {
+  const stripe = getClient();
+
+  try {
+    const price = await stripe.prices.retrieve(priceId);
+    return {
+      success: true,
+      data: {
+        priceId: price.id,
+        productId:
+          typeof price.product === "string"
+            ? price.product
+            : price.product.id,
+        unitAmountInCents: price.unit_amount,
+        currency: price.currency,
+        active: price.active,
+      },
+    };
+  } catch (error: any) {
+    if (error.statusCode === 404) {
+      return { success: false, error: "Price not found" };
+    }
+    return { success: false, error: error.message || "Unknown error" };
+  }
+}
+
+export async function listPricesByProduct(
+  productId: string
+): Promise<GetResourceResult<PriceData[]>> {
+  const stripe = getClient();
+
+  try {
+    const prices = await stripe.prices.list({ product: productId, active: true });
+    return {
+      success: true,
+      data: prices.data.map((price) => ({
+        priceId: price.id,
+        productId:
+          typeof price.product === "string"
+            ? price.product
+            : price.product.id,
+        unitAmountInCents: price.unit_amount,
+        currency: price.currency,
+        active: price.active,
+      })),
+    };
+  } catch (error: any) {
+    return { success: false, error: error.message || "Unknown error" };
+  }
+}
+
 // --- Types for Coupons ---
 
 export interface CreateCouponParams {
+  id?: string;
   name?: string;
   percentOff?: number;
   amountOffInCents?: number;
@@ -256,6 +381,7 @@ export async function createCoupon(
 
   try {
     const coupon = await stripe.coupons.create({
+      id: params.id,
       name: params.name,
       percent_off: params.percentOff,
       amount_off: params.amountOffInCents,
@@ -277,11 +403,55 @@ export async function createCoupon(
       duration: coupon.duration,
     };
   } catch (error: any) {
+    // Idempotent: if coupon already exists with this ID, retrieve and return it
+    if (params.id && error.code === "resource_already_exists") {
+      try {
+        const existing = await stripe.coupons.retrieve(params.id);
+        return {
+          success: true,
+          couponId: existing.id,
+          name: existing.name ?? undefined,
+          percentOff: existing.percent_off,
+          amountOffInCents: existing.amount_off,
+          currency: existing.currency,
+          duration: existing.duration,
+        };
+      } catch (retrieveError: any) {
+        return { success: false, error: retrieveError.message || "Unknown error" };
+      }
+    }
     console.error("Stripe create coupon error:", error);
     return {
       success: false,
       error: error.message || "Unknown error",
     };
+  }
+}
+
+export async function getCoupon(
+  couponId: string
+): Promise<GetResourceResult<CouponData>> {
+  const stripe = getClient();
+
+  try {
+    const coupon = await stripe.coupons.retrieve(couponId);
+    return {
+      success: true,
+      data: {
+        couponId: coupon.id,
+        name: coupon.name,
+        percentOff: coupon.percent_off,
+        amountOffInCents: coupon.amount_off,
+        currency: coupon.currency,
+        duration: coupon.duration,
+        valid: coupon.valid,
+      },
+    };
+  } catch (error: any) {
+    if (error.statusCode === 404) {
+      return { success: false, error: "Coupon not found" };
+    }
+    return { success: false, error: error.message || "Unknown error" };
   }
 }
 
