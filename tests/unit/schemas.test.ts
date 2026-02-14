@@ -4,6 +4,12 @@ import {
   CreatePaymentIntentRequestSchema,
   StatsRequestSchema,
   ErrorResponseSchema,
+  CreateProductRequestSchema,
+  UpdateProductRequestSchema,
+  CreatePriceRequestSchema,
+  CreateCouponRequestSchema,
+  CreateCustomerRequestSchema,
+  UpdateCustomerRequestSchema,
 } from "../../src/schemas";
 
 describe("CreateCheckoutSessionRequestSchema", () => {
@@ -140,5 +146,149 @@ describe("ErrorResponseSchema", () => {
       details: { field: "amount" },
     });
     expect(result.success).toBe(true);
+  });
+});
+
+describe("CreateProductRequestSchema", () => {
+  it("accepts valid product", () => {
+    const result = CreateProductRequestSchema.safeParse({ name: "My Product" });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects empty name", () => {
+    const result = CreateProductRequestSchema.safeParse({ name: "" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects missing name", () => {
+    const result = CreateProductRequestSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("UpdateProductRequestSchema", () => {
+  it("accepts partial update", () => {
+    const result = UpdateProductRequestSchema.safeParse({ active: false });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts empty body", () => {
+    const result = UpdateProductRequestSchema.safeParse({});
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("CreatePriceRequestSchema", () => {
+  it("accepts one-time price", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      product: "prod_123",
+      unitAmountInCents: 1999,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts recurring price", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      product: "prod_123",
+      unitAmountInCents: 999,
+      recurring: { interval: "month" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects missing product", () => {
+    const result = CreatePriceRequestSchema.safeParse({ unitAmountInCents: 100 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects negative amount", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      product: "prod_123",
+      unitAmountInCents: -1,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts zero amount (free)", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      product: "prod_123",
+      unitAmountInCents: 0,
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("CreateCouponRequestSchema", () => {
+  it("accepts percent-off coupon", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      percentOff: 25,
+      duration: "once",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts amount-off coupon", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      amountOffInCents: 500,
+      currency: "usd",
+      duration: "forever",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects without percentOff or amountOff", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      duration: "once",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects percent over 100", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      percentOff: 101,
+      duration: "once",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects missing duration", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      percentOff: 10,
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("CreateCustomerRequestSchema", () => {
+  it("accepts customer with email and name", () => {
+    const result = CreateCustomerRequestSchema.safeParse({
+      email: "test@example.com",
+      name: "Test User",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts empty body (all optional)", () => {
+    const result = CreateCustomerRequestSchema.safeParse({});
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects invalid email", () => {
+    const result = CreateCustomerRequestSchema.safeParse({
+      email: "not-an-email",
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("UpdateCustomerRequestSchema", () => {
+  it("accepts partial update", () => {
+    const result = UpdateCustomerRequestSchema.safeParse({ name: "New Name" });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects invalid email", () => {
+    const result = UpdateCustomerRequestSchema.safeParse({ email: "bad" });
+    expect(result.success).toBe(false);
   });
 });

@@ -149,6 +149,79 @@ export const StatsResponseSchema = z
   })
   .openapi("StatsResponse");
 
+// ===== Products =====
+
+export const CreateProductRequestSchema = z
+  .object({
+    name: z.string().min(1).openapi({ description: "Product name" }),
+    description: z.string().optional().openapi({ description: "Product description" }),
+    metadata: z.record(z.string(), z.string()).optional().openapi({ description: "Custom metadata" }),
+    active: z.boolean().optional().default(true).openapi({ description: "Whether the product is active" }),
+  })
+  .openapi("CreateProductRequest");
+
+export const UpdateProductRequestSchema = z
+  .object({
+    name: z.string().min(1).optional().openapi({ description: "Product name" }),
+    description: z.string().optional().openapi({ description: "Product description" }),
+    active: z.boolean().optional().openapi({ description: "Whether the product is active" }),
+    metadata: z.record(z.string(), z.string()).optional().openapi({ description: "Custom metadata" }),
+  })
+  .openapi("UpdateProductRequest");
+
+// ===== Prices =====
+
+export const CreatePriceRequestSchema = z
+  .object({
+    product: z.string().min(1).openapi({ description: "Stripe Product ID" }),
+    unitAmountInCents: z.number().int().min(0).openapi({ description: "Unit amount in cents" }),
+    currency: z.string().optional().default("usd").openapi({ description: "Currency code" }),
+    recurring: z
+      .object({
+        interval: z.enum(["day", "week", "month", "year"]).openapi({ description: "Billing interval" }),
+        intervalCount: z.number().int().positive().optional().openapi({ description: "Number of intervals" }),
+      })
+      .optional()
+      .openapi({ description: "Recurring billing config (omit for one-time prices)" }),
+    metadata: z.record(z.string(), z.string()).optional().openapi({ description: "Custom metadata" }),
+  })
+  .openapi("CreatePriceRequest");
+
+// ===== Coupons =====
+
+export const CreateCouponRequestSchema = z
+  .object({
+    percentOff: z.number().min(1).max(100).optional().openapi({ description: "Percent discount (1-100)" }),
+    amountOffInCents: z.number().int().positive().optional().openapi({ description: "Fixed discount in cents" }),
+    currency: z.string().optional().openapi({ description: "Currency for amount_off" }),
+    duration: z.enum(["once", "repeating", "forever"]).openapi({ description: "How long the coupon applies" }),
+    durationInMonths: z.number().int().positive().optional().openapi({ description: "Months for repeating duration" }),
+    name: z.string().optional().openapi({ description: "Display name" }),
+    metadata: z.record(z.string(), z.string()).optional().openapi({ description: "Custom metadata" }),
+  })
+  .refine((data) => data.percentOff || data.amountOffInCents, {
+    message: "Either percentOff or amountOffInCents is required",
+  })
+  .openapi("CreateCouponRequest");
+
+// ===== Customers =====
+
+export const CreateCustomerRequestSchema = z
+  .object({
+    email: z.string().email().optional().openapi({ description: "Customer email" }),
+    name: z.string().optional().openapi({ description: "Customer name" }),
+    metadata: z.record(z.string(), z.string()).optional().openapi({ description: "Custom metadata" }),
+  })
+  .openapi("CreateCustomerRequest");
+
+export const UpdateCustomerRequestSchema = z
+  .object({
+    email: z.string().email().optional().openapi({ description: "Customer email" }),
+    name: z.string().optional().openapi({ description: "Customer name" }),
+    metadata: z.record(z.string(), z.string()).optional().openapi({ description: "Custom metadata" }),
+  })
+  .openapi("UpdateCustomerRequest");
+
 // ================================================================
 // Register all API paths
 // ================================================================
@@ -330,6 +403,231 @@ registry.registerPath({
       description: "Aggregated stats",
       content: { "application/json": { schema: StatsResponseSchema } },
     },
+  },
+});
+
+// --- Products ---
+
+registry.registerPath({
+  method: "post",
+  path: "/products",
+  summary: "Create a product",
+  description: "Creates a product in Stripe. Stripe is the source of truth - no local DB storage.",
+  tags: ["Products"],
+  security: [{ apiKey: [] }],
+  request: {
+    body: { content: { "application/json": { schema: CreateProductRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Product created", content: { "application/json": { schema: z.any() } } },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/products",
+  summary: "List products",
+  tags: ["Products"],
+  security: [{ apiKey: [] }],
+  responses: {
+    200: {
+      description: "List of products",
+      content: { "application/json": { schema: z.object({ products: z.array(z.any()), hasMore: z.boolean() }) } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/products/{id}",
+  summary: "Get a product",
+  tags: ["Products"],
+  security: [{ apiKey: [] }],
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "Product details", content: { "application/json": { schema: z.any() } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/products/{id}",
+  summary: "Update a product",
+  tags: ["Products"],
+  security: [{ apiKey: [] }],
+  request: {
+    params: z.object({ id: z.string() }),
+    body: { content: { "application/json": { schema: UpdateProductRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Product updated", content: { "application/json": { schema: z.any() } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+// --- Prices ---
+
+registry.registerPath({
+  method: "post",
+  path: "/prices",
+  summary: "Create a price",
+  description: "Creates a price for a product in Stripe.",
+  tags: ["Prices"],
+  security: [{ apiKey: [] }],
+  request: {
+    body: { content: { "application/json": { schema: CreatePriceRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Price created", content: { "application/json": { schema: z.any() } } },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/prices",
+  summary: "List prices",
+  tags: ["Prices"],
+  security: [{ apiKey: [] }],
+  responses: {
+    200: {
+      description: "List of prices",
+      content: { "application/json": { schema: z.object({ prices: z.array(z.any()), hasMore: z.boolean() }) } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/prices/{id}",
+  summary: "Get a price",
+  tags: ["Prices"],
+  security: [{ apiKey: [] }],
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "Price details", content: { "application/json": { schema: z.any() } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+// --- Coupons ---
+
+registry.registerPath({
+  method: "post",
+  path: "/coupons",
+  summary: "Create a coupon",
+  description: "Creates a coupon in Stripe. Requires either percentOff or amountOffInCents.",
+  tags: ["Coupons"],
+  security: [{ apiKey: [] }],
+  request: {
+    body: { content: { "application/json": { schema: CreateCouponRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Coupon created", content: { "application/json": { schema: z.any() } } },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/coupons",
+  summary: "List coupons",
+  tags: ["Coupons"],
+  security: [{ apiKey: [] }],
+  responses: {
+    200: {
+      description: "List of coupons",
+      content: { "application/json": { schema: z.object({ coupons: z.array(z.any()), hasMore: z.boolean() }) } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/coupons/{id}",
+  summary: "Get a coupon",
+  tags: ["Coupons"],
+  security: [{ apiKey: [] }],
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "Coupon details", content: { "application/json": { schema: z.any() } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/coupons/{id}",
+  summary: "Delete a coupon",
+  tags: ["Coupons"],
+  security: [{ apiKey: [] }],
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "Coupon deleted", content: { "application/json": { schema: z.any() } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+// --- Customers ---
+
+registry.registerPath({
+  method: "post",
+  path: "/customers",
+  summary: "Create a customer",
+  description: "Creates a customer in Stripe.",
+  tags: ["Customers"],
+  security: [{ apiKey: [] }],
+  request: {
+    body: { content: { "application/json": { schema: CreateCustomerRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Customer created", content: { "application/json": { schema: z.any() } } },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/customers",
+  summary: "List customers",
+  tags: ["Customers"],
+  security: [{ apiKey: [] }],
+  responses: {
+    200: {
+      description: "List of customers",
+      content: { "application/json": { schema: z.object({ customers: z.array(z.any()), hasMore: z.boolean() }) } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/customers/{id}",
+  summary: "Get a customer",
+  tags: ["Customers"],
+  security: [{ apiKey: [] }],
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "Customer details", content: { "application/json": { schema: z.any() } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/customers/{id}",
+  summary: "Update a customer",
+  tags: ["Customers"],
+  security: [{ apiKey: [] }],
+  request: {
+    params: z.object({ id: z.string() }),
+    body: { content: { "application/json": { schema: UpdateCustomerRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Customer updated", content: { "application/json": { schema: z.any() } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });
 

@@ -5,6 +5,10 @@ import healthRoutes from "../../src/routes/health";
 import paymentRoutes from "../../src/routes/payments";
 import statusRoutes from "../../src/routes/status";
 import webhooksRoutes from "../../src/routes/webhooks";
+import productsRoutes from "../../src/routes/products";
+import pricesRoutes from "../../src/routes/prices";
+import couponsRoutes from "../../src/routes/coupons";
+import customersRoutes from "../../src/routes/customers";
 
 export function createTestApp() {
   const app = express();
@@ -24,6 +28,10 @@ export function createTestApp() {
   app.use("/", paymentRoutes);
   app.use("/", statusRoutes);
   app.use("/", webhooksRoutes);
+  app.use("/", productsRoutes);
+  app.use("/", pricesRoutes);
+  app.use("/", couponsRoutes);
+  app.use("/", customersRoutes);
 
   return app;
 }

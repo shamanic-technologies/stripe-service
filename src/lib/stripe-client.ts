@@ -124,3 +124,143 @@ export function constructWebhookEvent(
   const stripe = getClient();
   return stripe.webhooks.constructEvent(payload, signature, secret);
 }
+
+// ===== Products =====
+
+export async function createProduct(params: {
+  name: string;
+  description?: string;
+  metadata?: Record<string, string>;
+  active?: boolean;
+}): Promise<Stripe.Product> {
+  const stripe = getClient();
+  return stripe.products.create(params);
+}
+
+export async function listProducts(params?: {
+  active?: boolean;
+  limit?: number;
+}): Promise<Stripe.ApiList<Stripe.Product>> {
+  const stripe = getClient();
+  return stripe.products.list(params);
+}
+
+export async function getProduct(id: string): Promise<Stripe.Product> {
+  const stripe = getClient();
+  return stripe.products.retrieve(id);
+}
+
+export async function updateProduct(
+  id: string,
+  params: { name?: string; description?: string; active?: boolean; metadata?: Record<string, string> }
+): Promise<Stripe.Product> {
+  const stripe = getClient();
+  return stripe.products.update(id, params);
+}
+
+// ===== Prices =====
+
+export async function createPrice(params: {
+  product: string;
+  unitAmountInCents: number;
+  currency?: string;
+  recurring?: { interval: "day" | "week" | "month" | "year"; intervalCount?: number };
+  metadata?: Record<string, string>;
+}): Promise<Stripe.Price> {
+  const stripe = getClient();
+  return stripe.prices.create({
+    product: params.product,
+    unit_amount: params.unitAmountInCents,
+    currency: params.currency || "usd",
+    recurring: params.recurring
+      ? { interval: params.recurring.interval, interval_count: params.recurring.intervalCount }
+      : undefined,
+    metadata: params.metadata,
+  });
+}
+
+export async function listPrices(params?: {
+  product?: string;
+  active?: boolean;
+  limit?: number;
+}): Promise<Stripe.ApiList<Stripe.Price>> {
+  const stripe = getClient();
+  return stripe.prices.list(params);
+}
+
+export async function getPrice(id: string): Promise<Stripe.Price> {
+  const stripe = getClient();
+  return stripe.prices.retrieve(id);
+}
+
+// ===== Coupons =====
+
+export async function createCoupon(params: {
+  percentOff?: number;
+  amountOffInCents?: number;
+  currency?: string;
+  duration: "once" | "repeating" | "forever";
+  durationInMonths?: number;
+  name?: string;
+  metadata?: Record<string, string>;
+}): Promise<Stripe.Coupon> {
+  const stripe = getClient();
+  return stripe.coupons.create({
+    percent_off: params.percentOff,
+    amount_off: params.amountOffInCents,
+    currency: params.amountOffInCents ? (params.currency || "usd") : undefined,
+    duration: params.duration,
+    duration_in_months: params.durationInMonths,
+    name: params.name,
+    metadata: params.metadata,
+  });
+}
+
+export async function listCoupons(params?: {
+  limit?: number;
+}): Promise<Stripe.ApiList<Stripe.Coupon>> {
+  const stripe = getClient();
+  return stripe.coupons.list(params);
+}
+
+export async function getCoupon(id: string): Promise<Stripe.Coupon> {
+  const stripe = getClient();
+  return stripe.coupons.retrieve(id);
+}
+
+export async function deleteCoupon(id: string): Promise<Stripe.DeletedCoupon> {
+  const stripe = getClient();
+  return stripe.coupons.del(id);
+}
+
+// ===== Customers =====
+
+export async function createCustomer(params: {
+  email?: string;
+  name?: string;
+  metadata?: Record<string, string>;
+}): Promise<Stripe.Customer> {
+  const stripe = getClient();
+  return stripe.customers.create(params);
+}
+
+export async function listCustomers(params?: {
+  email?: string;
+  limit?: number;
+}): Promise<Stripe.ApiList<Stripe.Customer>> {
+  const stripe = getClient();
+  return stripe.customers.list(params);
+}
+
+export async function getCustomer(id: string): Promise<Stripe.Customer | Stripe.DeletedCustomer> {
+  const stripe = getClient();
+  return stripe.customers.retrieve(id);
+}
+
+export async function updateCustomer(
+  id: string,
+  params: { email?: string; name?: string; metadata?: Record<string, string> }
+): Promise<Stripe.Customer> {
+  const stripe = getClient();
+  return stripe.customers.update(id, params);
+}
