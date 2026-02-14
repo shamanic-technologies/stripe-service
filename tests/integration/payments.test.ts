@@ -1,0 +1,151 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import request from "supertest";
+import { createTestApp } from "../helpers/test-app";
+
+// Mock the stripe client
+vi.mock("../../src/lib/stripe-client", () => ({
+  createCheckoutSession: vi.fn().mockResolvedValue({
+    success: true,
+    sessionId: "cs_test_mock123",
+    url: "https://checkout.stripe.com/test",
+  }),
+  createPaymentIntent: vi.fn().mockResolvedValue({
+    success: true,
+    paymentIntentId: "pi_test_mock123",
+    clientSecret: "pi_test_mock123_secret_abc",
+    status: "requires_payment_method",
+  }),
+  constructWebhookEvent: vi.fn(),
+}));
+
+// Mock the runs client
+vi.mock("../../src/lib/runs-client", () => ({
+  createRun: vi.fn().mockResolvedValue({ id: "run_mock123" }),
+  updateRun: vi.fn().mockResolvedValue({}),
+  addCosts: vi.fn().mockResolvedValue({ costs: [] }),
+}));
+
+// Mock the database
+vi.mock("../../src/db", () => {
+  const mockInsert = vi.fn().mockReturnValue({
+    values: vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        { id: "payment_mock123", orgId: "org_123", amountInCents: 1000, currency: "usd", status: "pending" },
+      ]),
+    }),
+  });
+  return {
+    db: {
+      insert: mockInsert,
+      query: {},
+    },
+  };
+});
+
+const app = createTestApp();
+const API_KEY = "test-secret-key";
+
+describe("POST /checkout/create", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("creates a checkout session successfully", async () => {
+    const res = await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.sessionId).toBe("cs_test_mock123");
+    expect(res.body.url).toBe("https://checkout.stripe.com/test");
+    expect(res.body.paymentId).toBe("payment_mock123");
+  });
+
+  it("returns 400 for invalid request", async () => {
+    const res = await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        lineItems: [],
+        successUrl: "not-a-url",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid request");
+  });
+
+  it("returns 401 without API key", async () => {
+    const res = await request(app)
+      .post("/checkout/create")
+      .send({
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+      });
+
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 403 with wrong API key", async () => {
+    const res = await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", "wrong-key")
+      .send({
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+      });
+
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("POST /payment-intent/create", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("creates a payment intent successfully", async () => {
+    const res = await request(app)
+      .post("/payment-intent/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        amountInCents: 5000,
+        currency: "usd",
+        description: "Test payment",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.paymentIntentId).toBe("pi_test_mock123");
+    expect(res.body.clientSecret).toBe("pi_test_mock123_secret_abc");
+    expect(res.body.paymentId).toBe("payment_mock123");
+  });
+
+  it("returns 400 for zero amount", async () => {
+    const res = await request(app)
+      .post("/payment-intent/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        amountInCents: 0,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid request");
+  });
+
+  it("returns 400 for missing amount", async () => {
+    const res = await request(app)
+      .post("/payment-intent/create")
+      .set("X-API-Key", API_KEY)
+      .send({});
+
+    expect(res.status).toBe(400);
+  });
+});
