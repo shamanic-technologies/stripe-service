@@ -4,6 +4,7 @@ import {
   CreatePaymentIntentRequestSchema,
   CreateProductRequestSchema,
   CreatePriceRequestSchema,
+  CreateCouponRequestSchema,
   StatsRequestSchema,
   ErrorResponseSchema,
 } from "../../src/schemas";
@@ -207,6 +208,113 @@ describe("CreatePriceRequestSchema", () => {
       recurring: { interval: "hourly" },
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe("CreateCouponRequestSchema", () => {
+  it("accepts valid percentage coupon", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      name: "50% Off",
+      percentOff: 50,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts valid fixed amount coupon", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      name: "$10 Off",
+      amountOffInCents: 1000,
+      currency: "usd",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts coupon with all optional fields", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      name: "Holiday Sale",
+      percentOff: 25,
+      duration: "repeating",
+      durationInMonths: 3,
+      maxRedemptions: 100,
+      redeemBy: "2026-12-31T23:59:59Z",
+      metadata: { campaign: "holiday2026" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects missing both percentOff and amountOffInCents", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      name: "Invalid coupon",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects amountOffInCents without currency", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      amountOffInCents: 1000,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects percentOff over 100", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      percentOff: 101,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects percentOff of 0", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      percentOff: 0,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects negative amountOffInCents", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      amountOffInCents: -500,
+      currency: "usd",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects invalid duration", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      percentOff: 50,
+      duration: "weekly",
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("CreateCheckoutSessionRequestSchema with discounts", () => {
+  it("accepts checkout with discounts", () => {
+    const result = CreateCheckoutSessionRequestSchema.safeParse({
+      lineItems: [{ priceId: "price_123", quantity: 1 }],
+      successUrl: "https://example.com/success",
+      cancelUrl: "https://example.com/cancel",
+      discounts: [{ coupon: "coupon_abc" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts checkout with promotion code discount", () => {
+    const result = CreateCheckoutSessionRequestSchema.safeParse({
+      lineItems: [{ priceId: "price_123", quantity: 1 }],
+      successUrl: "https://example.com/success",
+      cancelUrl: "https://example.com/cancel",
+      discounts: [{ promotionCode: "promo_abc" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts checkout without discounts", () => {
+    const result = CreateCheckoutSessionRequestSchema.safeParse({
+      lineItems: [{ priceId: "price_123", quantity: 1 }],
+      successUrl: "https://example.com/success",
+      cancelUrl: "https://example.com/cancel",
+    });
+    expect(result.success).toBe(true);
   });
 });
 

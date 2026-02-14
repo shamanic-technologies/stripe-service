@@ -53,6 +53,18 @@ export const CreateCheckoutSessionRequestSchema = z
       .default("payment")
       .openapi({ description: "Checkout mode" }),
     metadata: z.record(z.string(), z.string()).optional().openapi({ description: "Custom metadata" }),
+    discounts: z
+      .array(
+        z.object({
+          coupon: z.string().optional().openapi({ description: "Stripe Coupon ID" }),
+          promotionCode: z
+            .string()
+            .optional()
+            .openapi({ description: "Stripe Promotion Code ID" }),
+        })
+      )
+      .optional()
+      .openapi({ description: "Discounts to apply to the checkout session" }),
   })
   .openapi("CreateCheckoutSessionRequest");
 
@@ -180,6 +192,89 @@ export const CreatePriceResponseSchema = z
     currency: z.string().openapi({ description: "Currency code" }),
   })
   .openapi("CreatePriceResponse");
+
+// ===== Create Coupon =====
+
+export const CreateCouponRequestSchema = z
+  .object({
+    name: z
+      .string()
+      .optional()
+      .openapi({ description: "Display name for the coupon" }),
+    percentOff: z
+      .number()
+      .min(1)
+      .max(100)
+      .optional()
+      .openapi({ description: "Percentage discount (1-100). Provide this OR amountOffInCents." }),
+    amountOffInCents: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .openapi({ description: "Fixed amount discount in cents. Provide this OR percentOff." }),
+    currency: z
+      .string()
+      .optional()
+      .openapi({ description: "Currency code. Required if amountOffInCents is provided." }),
+    duration: z
+      .enum(["once", "repeating", "forever"])
+      .optional()
+      .default("once")
+      .openapi({ description: "How long the coupon applies (default: once)" }),
+    durationInMonths: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .openapi({ description: "Number of months (required if duration is repeating)" }),
+    maxRedemptions: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .openapi({ description: "Maximum number of times the coupon can be redeemed" }),
+    redeemBy: z
+      .string()
+      .datetime()
+      .optional()
+      .openapi({ description: "ISO 8601 date after which the coupon can no longer be redeemed" }),
+    metadata: z
+      .record(z.string(), z.string())
+      .optional()
+      .openapi({ description: "Custom metadata" }),
+  })
+  .refine((data) => data.percentOff != null || data.amountOffInCents != null, {
+    message: "Either percentOff or amountOffInCents must be provided",
+  })
+  .refine(
+    (data) => !(data.amountOffInCents != null && !data.currency),
+    { message: "currency is required when amountOffInCents is provided" }
+  )
+  .openapi("CreateCouponRequest");
+
+export type CreateCouponRequest = z.infer<typeof CreateCouponRequestSchema>;
+
+export const CreateCouponResponseSchema = z
+  .object({
+    success: z.boolean(),
+    couponId: z.string().openapi({ description: "Stripe Coupon ID" }),
+    name: z.string().nullable().openapi({ description: "Coupon display name" }),
+    percentOff: z
+      .number()
+      .nullable()
+      .openapi({ description: "Percentage discount" }),
+    amountOffInCents: z
+      .number()
+      .nullable()
+      .openapi({ description: "Fixed amount discount in cents" }),
+    currency: z
+      .string()
+      .nullable()
+      .openapi({ description: "Currency code" }),
+    duration: z.string().openapi({ description: "Coupon duration" }),
+  })
+  .openapi("CreateCouponResponse");
 
 // ===== Payment Status =====
 
@@ -379,6 +474,41 @@ registry.registerPath({
       description: "Price created",
       content: {
         "application/json": { schema: CreatePriceResponseSchema },
+      },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+// --- Create Coupon ---
+
+registry.registerPath({
+  method: "post",
+  path: "/coupons/create",
+  summary: "Create a Stripe coupon",
+  description:
+    "Creates a coupon in Stripe. Use the returned couponId in checkout session discounts.",
+  tags: ["Products"],
+  security: [{ apiKey: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": { schema: CreateCouponRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Coupon created",
+      content: {
+        "application/json": { schema: CreateCouponResponseSchema },
       },
     },
     400: {

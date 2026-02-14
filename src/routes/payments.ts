@@ -61,6 +61,7 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
         ...(runId ? { runId } : {}),
         ...(data.orgId ? { orgId: data.orgId } : {}),
       },
+      discounts: data.discounts,
     });
 
     if (!result.success) {

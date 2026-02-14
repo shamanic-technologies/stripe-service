@@ -16,6 +16,9 @@ vi.mock("../../src/lib/stripe-client", () => ({
     status: "requires_payment_method",
   }),
   constructWebhookEvent: vi.fn(),
+  createProduct: vi.fn(),
+  createPrice: vi.fn(),
+  createCoupon: vi.fn(),
 }));
 
 // Mock the runs client
@@ -90,6 +93,30 @@ describe("POST /checkout/create", () => {
       });
 
     expect(res.status).toBe(401);
+  });
+
+  it("creates a checkout session with discounts", async () => {
+    const res = await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+        discounts: [{ coupon: "coupon_abc" }],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const { createCheckoutSession } = await import(
+      "../../src/lib/stripe-client"
+    );
+    expect(createCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        discounts: [{ coupon: "coupon_abc" }],
+      })
+    );
   });
 
   it("returns 403 with wrong API key", async () => {

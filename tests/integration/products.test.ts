@@ -19,6 +19,15 @@ vi.mock("../../src/lib/stripe-client", () => ({
     unitAmountInCents: 2999,
     currency: "usd",
   }),
+  createCoupon: vi.fn().mockResolvedValue({
+    success: true,
+    couponId: "coupon_test_mock123",
+    name: "50% Off",
+    percentOff: 50,
+    amountOffInCents: null,
+    currency: null,
+    duration: "once",
+  }),
 }));
 
 // Mock the runs client
@@ -236,5 +245,103 @@ describe("POST /prices/create", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("Invalid product ID");
+  });
+});
+
+describe("POST /coupons/create", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("creates a percentage coupon successfully", async () => {
+    const res = await request(app)
+      .post("/coupons/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        name: "50% Off",
+        percentOff: 50,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.couponId).toBe("coupon_test_mock123");
+    expect(res.body.name).toBe("50% Off");
+    expect(res.body.percentOff).toBe(50);
+    expect(res.body.duration).toBe("once");
+  });
+
+  it("creates a fixed amount coupon successfully", async () => {
+    const { createCoupon } = await import("../../src/lib/stripe-client");
+    (createCoupon as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      couponId: "coupon_fixed_mock",
+      name: "$10 Off",
+      percentOff: null,
+      amountOffInCents: 1000,
+      currency: "usd",
+      duration: "once",
+    });
+
+    const res = await request(app)
+      .post("/coupons/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        name: "$10 Off",
+        amountOffInCents: 1000,
+        currency: "usd",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.amountOffInCents).toBe(1000);
+    expect(res.body.currency).toBe("usd");
+  });
+
+  it("returns 400 for missing percentOff and amountOffInCents", async () => {
+    const res = await request(app)
+      .post("/coupons/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        name: "Invalid",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid request");
+  });
+
+  it("returns 400 for amountOffInCents without currency", async () => {
+    const res = await request(app)
+      .post("/coupons/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        amountOffInCents: 1000,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid request");
+  });
+
+  it("returns 401 without API key", async () => {
+    const res = await request(app)
+      .post("/coupons/create")
+      .send({ percentOff: 50 });
+
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 500 when Stripe fails", async () => {
+    const { createCoupon } = await import("../../src/lib/stripe-client");
+    (createCoupon as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: false,
+      error: "Stripe API error",
+    });
+
+    const res = await request(app)
+      .post("/coupons/create")
+      .set("X-API-Key", API_KEY)
+      .send({ percentOff: 50 });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe("Stripe API error");
   });
 });

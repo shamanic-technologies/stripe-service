@@ -23,6 +23,7 @@ export interface CreateCheckoutSessionParams {
   customerEmail?: string;
   metadata?: Record<string, string>;
   mode?: "payment" | "subscription";
+  discounts?: Array<{ coupon?: string; promotionCode?: string }>;
 }
 
 export interface CreateCheckoutSessionResult {
@@ -68,6 +69,10 @@ export async function createCheckoutSession(
       customer: params.customerId,
       customer_email: params.customerId ? undefined : params.customerEmail,
       metadata: params.metadata,
+      discounts: params.discounts?.map((d) => ({
+        coupon: d.coupon,
+        promotion_code: d.promotionCode,
+      })),
     });
 
     return {
@@ -210,6 +215,69 @@ export async function createPrice(
     };
   } catch (error: any) {
     console.error("Stripe create price error:", error);
+    return {
+      success: false,
+      error: error.message || "Unknown error",
+    };
+  }
+}
+
+// --- Types for Coupons ---
+
+export interface CreateCouponParams {
+  name?: string;
+  percentOff?: number;
+  amountOffInCents?: number;
+  currency?: string;
+  duration?: "once" | "repeating" | "forever";
+  durationInMonths?: number;
+  maxRedemptions?: number;
+  redeemBy?: number;
+  metadata?: Record<string, string>;
+}
+
+export interface CreateCouponResult {
+  success: boolean;
+  couponId?: string;
+  name?: string;
+  percentOff?: number | null;
+  amountOffInCents?: number | null;
+  currency?: string | null;
+  duration?: string;
+  error?: string;
+}
+
+// --- Public API (Coupons) ---
+
+export async function createCoupon(
+  params: CreateCouponParams
+): Promise<CreateCouponResult> {
+  const stripe = getClient();
+
+  try {
+    const coupon = await stripe.coupons.create({
+      name: params.name,
+      percent_off: params.percentOff,
+      amount_off: params.amountOffInCents,
+      currency: params.currency,
+      duration: params.duration || "once",
+      duration_in_months: params.durationInMonths,
+      max_redemptions: params.maxRedemptions,
+      redeem_by: params.redeemBy,
+      metadata: params.metadata || {},
+    });
+
+    return {
+      success: true,
+      couponId: coupon.id,
+      name: coupon.name ?? undefined,
+      percentOff: coupon.percent_off,
+      amountOffInCents: coupon.amount_off,
+      currency: coupon.currency,
+      duration: coupon.duration,
+    };
+  } catch (error: any) {
+    console.error("Stripe create coupon error:", error);
     return {
       success: false,
       error: error.message || "Unknown error",
