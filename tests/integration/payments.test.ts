@@ -28,6 +28,11 @@ vi.mock("../../src/lib/runs-client", () => ({
   addCosts: vi.fn().mockResolvedValue({ costs: [] }),
 }));
 
+// Mock the key resolver
+vi.mock("../../src/lib/resolve-stripe-key", () => ({
+  resolveStripeKey: vi.fn().mockResolvedValue("sk_test_resolved_key"),
+}));
+
 // Mock the database
 vi.mock("../../src/db", () => {
   const mockInsert = vi.fn().mockReturnValue({
@@ -115,7 +120,8 @@ describe("POST /checkout/create", () => {
     expect(createCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
         discounts: [{ coupon: "coupon_abc" }],
-      })
+      }),
+      undefined
     );
   });
 
@@ -130,6 +136,84 @@ describe("POST /checkout/create", () => {
       });
 
     expect(res.status).toBe(403);
+  });
+
+  it("resolves Stripe key via key-service when appId is provided", async () => {
+    const res = await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        appId: "app_custom_123",
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_123");
+
+    const { createCheckoutSession } = await import(
+      "../../src/lib/stripe-client"
+    );
+    expect(createCheckoutSession).toHaveBeenCalledWith(
+      expect.any(Object),
+      "sk_test_resolved_key"
+    );
+  });
+
+  it("does not resolve key when appId is absent", async () => {
+    const res = await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+      });
+
+    expect(res.status).toBe(200);
+
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    expect(resolveStripeKey).not.toHaveBeenCalled();
+
+    const { createCheckoutSession } = await import(
+      "../../src/lib/stripe-client"
+    );
+    expect(createCheckoutSession).toHaveBeenCalledWith(
+      expect.any(Object),
+      undefined
+    );
+  });
+
+  it("returns 500 when key-service fails", async () => {
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("key-service down")
+    );
+
+    const res = await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        appId: "app_failing",
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe(
+      "Failed to resolve Stripe key from key-service"
+    );
   });
 });
 
@@ -174,5 +258,53 @@ describe("POST /payment-intent/create", () => {
       .send({});
 
     expect(res.status).toBe(400);
+  });
+
+  it("resolves Stripe key via key-service when appId is provided", async () => {
+    const res = await request(app)
+      .post("/payment-intent/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        appId: "app_custom_456",
+        amountInCents: 3000,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_456");
+
+    const { createPaymentIntent } = await import(
+      "../../src/lib/stripe-client"
+    );
+    expect(createPaymentIntent).toHaveBeenCalledWith(
+      expect.any(Object),
+      "sk_test_resolved_key"
+    );
+  });
+
+  it("returns 500 when key-service fails for payment intent", async () => {
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("key-service timeout")
+    );
+
+    const res = await request(app)
+      .post("/payment-intent/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        appId: "app_failing",
+        amountInCents: 3000,
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe(
+      "Failed to resolve Stripe key from key-service"
+    );
   });
 });

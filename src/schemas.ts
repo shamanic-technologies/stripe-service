@@ -112,6 +112,7 @@ export const CreatePaymentIntentResponseSchema = z
 
 export const CreateProductRequestSchema = z
   .object({
+    appId: z.string().optional().openapi({ description: "App ID — if provided, resolves Stripe key from key-service" }),
     id: z.string().optional().openapi({ description: "Custom Stripe Product ID for idempotent creates" }),
     name: z.string().min(1).openapi({ description: "Product name" }),
     description: z
@@ -149,6 +150,7 @@ export const GetProductResponseSchema = z
 
 export const CreatePriceRequestSchema = z
   .object({
+    appId: z.string().optional().openapi({ description: "App ID — if provided, resolves Stripe key from key-service" }),
     productId: z
       .string()
       .min(1)
@@ -230,6 +232,7 @@ export const ListPricesResponseSchema = z
 
 export const CreateCouponRequestSchema = z
   .object({
+    appId: z.string().optional().openapi({ description: "App ID — if provided, resolves Stripe key from key-service" }),
     id: z.string().optional().openapi({ description: "Custom Stripe Coupon ID for idempotent creates" }),
     name: z
       .string()

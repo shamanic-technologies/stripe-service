@@ -13,6 +13,7 @@ import {
   listPricesByProduct,
   getCoupon,
 } from "../lib/stripe-client";
+import { resolveStripeKey } from "../lib/resolve-stripe-key";
 
 const router = Router();
 
@@ -29,12 +30,20 @@ router.post("/products/create", async (req: Request, res: Response) => {
   const data = parsed.data;
 
   try {
-    const result = await createProduct({
-      id: data.id,
-      name: data.name,
-      description: data.description,
-      metadata: data.metadata,
-    });
+    let stripeKey: string | undefined;
+    if (data.appId) {
+      stripeKey = await resolveStripeKey(data.appId);
+    }
+
+    const result = await createProduct(
+      {
+        id: data.id,
+        name: data.name,
+        description: data.description,
+        metadata: data.metadata,
+      },
+      stripeKey
+    );
 
     if (!result.success) {
       return res.status(500).json({ error: result.error || "Stripe error" });
@@ -67,18 +76,26 @@ router.post("/prices/create", async (req: Request, res: Response) => {
   const data = parsed.data;
 
   try {
-    const result = await createPrice({
-      productId: data.productId,
-      unitAmountInCents: data.unitAmountInCents,
-      currency: data.currency,
-      recurring: data.recurring
-        ? {
-            interval: data.recurring.interval,
-            intervalCount: data.recurring.intervalCount,
-          }
-        : undefined,
-      metadata: data.metadata,
-    });
+    let stripeKey: string | undefined;
+    if (data.appId) {
+      stripeKey = await resolveStripeKey(data.appId);
+    }
+
+    const result = await createPrice(
+      {
+        productId: data.productId,
+        unitAmountInCents: data.unitAmountInCents,
+        currency: data.currency,
+        recurring: data.recurring
+          ? {
+              interval: data.recurring.interval,
+              intervalCount: data.recurring.intervalCount,
+            }
+          : undefined,
+        metadata: data.metadata,
+      },
+      stripeKey
+    );
 
     if (!result.success) {
       return res.status(500).json({ error: result.error || "Stripe error" });
@@ -112,20 +129,28 @@ router.post("/coupons/create", async (req: Request, res: Response) => {
   const data = parsed.data;
 
   try {
-    const result = await createCoupon({
-      id: data.id,
-      name: data.name,
-      percentOff: data.percentOff,
-      amountOffInCents: data.amountOffInCents,
-      currency: data.currency,
-      duration: data.duration,
-      durationInMonths: data.durationInMonths,
-      maxRedemptions: data.maxRedemptions,
-      redeemBy: data.redeemBy
-        ? Math.floor(new Date(data.redeemBy).getTime() / 1000)
-        : undefined,
-      metadata: data.metadata,
-    });
+    let stripeKey: string | undefined;
+    if (data.appId) {
+      stripeKey = await resolveStripeKey(data.appId);
+    }
+
+    const result = await createCoupon(
+      {
+        id: data.id,
+        name: data.name,
+        percentOff: data.percentOff,
+        amountOffInCents: data.amountOffInCents,
+        currency: data.currency,
+        duration: data.duration,
+        durationInMonths: data.durationInMonths,
+        maxRedemptions: data.maxRedemptions,
+        redeemBy: data.redeemBy
+          ? Math.floor(new Date(data.redeemBy).getTime() / 1000)
+          : undefined,
+        metadata: data.metadata,
+      },
+      stripeKey
+    );
 
     if (!result.success) {
       return res.status(500).json({ error: result.error || "Stripe error" });
@@ -151,9 +176,15 @@ router.post("/coupons/create", async (req: Request, res: Response) => {
 // GET /products/:productId
 router.get("/products/:productId", async (req: Request, res: Response) => {
   const { productId } = req.params;
+  const appId = req.query.appId as string | undefined;
 
   try {
-    const result = await getProduct(productId);
+    let stripeKey: string | undefined;
+    if (appId) {
+      stripeKey = await resolveStripeKey(appId);
+    }
+
+    const result = await getProduct(productId, stripeKey);
 
     if (!result.success) {
       const status = result.error === "Product not found" ? 404 : 500;
@@ -169,9 +200,15 @@ router.get("/products/:productId", async (req: Request, res: Response) => {
 // GET /prices/:priceId
 router.get("/prices/:priceId", async (req: Request, res: Response) => {
   const { priceId } = req.params;
+  const appId = req.query.appId as string | undefined;
 
   try {
-    const result = await getPrice(priceId);
+    let stripeKey: string | undefined;
+    if (appId) {
+      stripeKey = await resolveStripeKey(appId);
+    }
+
+    const result = await getPrice(priceId, stripeKey);
 
     if (!result.success) {
       const status = result.error === "Price not found" ? 404 : 500;
@@ -187,9 +224,15 @@ router.get("/prices/:priceId", async (req: Request, res: Response) => {
 // GET /prices/by-product/:productId
 router.get("/prices/by-product/:productId", async (req: Request, res: Response) => {
   const { productId } = req.params;
+  const appId = req.query.appId as string | undefined;
 
   try {
-    const result = await listPricesByProduct(productId);
+    let stripeKey: string | undefined;
+    if (appId) {
+      stripeKey = await resolveStripeKey(appId);
+    }
+
+    const result = await listPricesByProduct(productId, stripeKey);
 
     if (!result.success) {
       return res.status(500).json({ error: result.error });
@@ -204,9 +247,15 @@ router.get("/prices/by-product/:productId", async (req: Request, res: Response) 
 // GET /coupons/:couponId
 router.get("/coupons/:couponId", async (req: Request, res: Response) => {
   const { couponId } = req.params;
+  const appId = req.query.appId as string | undefined;
 
   try {
-    const result = await getCoupon(couponId);
+    let stripeKey: string | undefined;
+    if (appId) {
+      stripeKey = await resolveStripeKey(appId);
+    }
+
+    const result = await getCoupon(couponId, stripeKey);
 
     if (!result.success) {
       const status = result.error === "Coupon not found" ? 404 : 500;

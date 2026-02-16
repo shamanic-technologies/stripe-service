@@ -80,6 +80,11 @@ vi.mock("../../src/lib/runs-client", () => ({
   addCosts: vi.fn().mockResolvedValue({ costs: [] }),
 }));
 
+// Mock the key resolver
+vi.mock("../../src/lib/resolve-stripe-key", () => ({
+  resolveStripeKey: vi.fn().mockResolvedValue("sk_test_resolved_key"),
+}));
+
 // Mock the database
 vi.mock("../../src/db", () => {
   const mockInsert = vi.fn().mockReturnValue({
@@ -549,6 +554,144 @@ describe("GET /coupons/:couponId", () => {
   });
 });
 
+describe("Dynamic Stripe key resolution via appId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("resolves Stripe key when appId is provided on product create", async () => {
+    const res = await request(app)
+      .post("/products/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        appId: "app_custom_123",
+        name: "Custom App Product",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_123");
+
+    const { createProduct } = await import("../../src/lib/stripe-client");
+    expect(createProduct).toHaveBeenCalledWith(
+      expect.any(Object),
+      "sk_test_resolved_key"
+    );
+  });
+
+  it("does not resolve key when appId is absent on product create", async () => {
+    const res = await request(app)
+      .post("/products/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        name: "Default Product",
+      });
+
+    expect(res.status).toBe(200);
+
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    expect(resolveStripeKey).not.toHaveBeenCalled();
+
+    const { createProduct } = await import("../../src/lib/stripe-client");
+    expect(createProduct).toHaveBeenCalledWith(
+      expect.any(Object),
+      undefined
+    );
+  });
+
+  it("resolves Stripe key when appId is provided on price create", async () => {
+    const res = await request(app)
+      .post("/prices/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        appId: "app_custom_456",
+        productId: "prod_123",
+        unitAmountInCents: 2999,
+      });
+
+    expect(res.status).toBe(200);
+
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_456");
+
+    const { createPrice } = await import("../../src/lib/stripe-client");
+    expect(createPrice).toHaveBeenCalledWith(
+      expect.any(Object),
+      "sk_test_resolved_key"
+    );
+  });
+
+  it("resolves Stripe key when appId is provided on coupon create", async () => {
+    const res = await request(app)
+      .post("/coupons/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        appId: "app_custom_789",
+        percentOff: 50,
+      });
+
+    expect(res.status).toBe(200);
+
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_789");
+
+    const { createCoupon } = await import("../../src/lib/stripe-client");
+    expect(createCoupon).toHaveBeenCalledWith(
+      expect.any(Object),
+      "sk_test_resolved_key"
+    );
+  });
+
+  it("resolves Stripe key for GET product with appId query param", async () => {
+    const res = await request(app)
+      .get("/products/prod_test_mock123?appId=app_get_test")
+      .set("X-API-Key", API_KEY);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_get_test");
+
+    const { getProduct } = await import("../../src/lib/stripe-client");
+    expect(getProduct).toHaveBeenCalledWith(
+      "prod_test_mock123",
+      "sk_test_resolved_key"
+    );
+  });
+
+  it("returns 500 when key-service fails on product create", async () => {
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("key-service down")
+    );
+
+    const res = await request(app)
+      .post("/products/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        appId: "app_failing",
+        name: "Should Fail",
+      });
+
+    expect(res.status).toBe(500);
+  });
+});
+
 describe("Idempotent creates with custom id", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -568,7 +711,8 @@ describe("Idempotent creates with custom id", () => {
 
     const { createProduct } = await import("../../src/lib/stripe-client");
     expect(createProduct).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "prod_custom_123" })
+      expect.objectContaining({ id: "prod_custom_123" }),
+      undefined
     );
   });
 
@@ -586,7 +730,8 @@ describe("Idempotent creates with custom id", () => {
 
     const { createCoupon } = await import("../../src/lib/stripe-client");
     expect(createCoupon).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "coupon_custom_123" })
+      expect.objectContaining({ id: "coupon_custom_123" }),
+      undefined
     );
   });
 });

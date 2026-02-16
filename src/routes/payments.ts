@@ -10,6 +10,7 @@ import {
   createPaymentIntent,
 } from "../lib/stripe-client";
 import { createRun, updateRun, addCosts } from "../lib/runs-client";
+import { resolveStripeKey } from "../lib/resolve-stripe-key";
 
 const router = Router();
 
@@ -28,6 +29,19 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
   let runId = data.runId;
 
   try {
+    // Resolve Stripe key: from key-service if appId provided, else env var
+    let stripeKey: string | undefined;
+    if (data.appId) {
+      try {
+        stripeKey = await resolveStripeKey(data.appId);
+      } catch (err) {
+        console.error("Failed to resolve Stripe key for appId:", data.appId, err);
+        return res.status(500).json({
+          error: "Failed to resolve Stripe key from key-service",
+        });
+      }
+    }
+
     // Create run in runs-service if orgId provided (BLOCKING)
     if (data.orgId && !runId) {
       try {
@@ -49,20 +63,23 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
     }
 
     // Create Stripe checkout session
-    const result = await createCheckoutSession({
-      lineItems: data.lineItems,
-      successUrl: data.successUrl,
-      cancelUrl: data.cancelUrl,
-      customerId: data.customerId,
-      customerEmail: data.customerEmail,
-      mode: data.mode,
-      metadata: {
-        ...data.metadata,
-        ...(runId ? { runId } : {}),
-        ...(data.orgId ? { orgId: data.orgId } : {}),
+    const result = await createCheckoutSession(
+      {
+        lineItems: data.lineItems,
+        successUrl: data.successUrl,
+        cancelUrl: data.cancelUrl,
+        customerId: data.customerId,
+        customerEmail: data.customerEmail,
+        mode: data.mode,
+        metadata: {
+          ...data.metadata,
+          ...(runId ? { runId } : {}),
+          ...(data.orgId ? { orgId: data.orgId } : {}),
+        },
+        discounts: data.discounts,
       },
-      discounts: data.discounts,
-    });
+      stripeKey
+    );
 
     if (!result.success) {
       if (runId) {
@@ -125,6 +142,19 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
   let runId = data.runId;
 
   try {
+    // Resolve Stripe key: from key-service if appId provided, else env var
+    let stripeKey: string | undefined;
+    if (data.appId) {
+      try {
+        stripeKey = await resolveStripeKey(data.appId);
+      } catch (err) {
+        console.error("Failed to resolve Stripe key for appId:", data.appId, err);
+        return res.status(500).json({
+          error: "Failed to resolve Stripe key from key-service",
+        });
+      }
+    }
+
     // Create run in runs-service if orgId provided (BLOCKING)
     if (data.orgId && !runId) {
       try {
@@ -146,17 +176,20 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
     }
 
     // Create Stripe payment intent
-    const result = await createPaymentIntent({
-      amountInCents: data.amountInCents,
-      currency: data.currency,
-      customerId: data.customerId,
-      description: data.description,
-      metadata: {
-        ...data.metadata,
-        ...(runId ? { runId } : {}),
-        ...(data.orgId ? { orgId: data.orgId } : {}),
+    const result = await createPaymentIntent(
+      {
+        amountInCents: data.amountInCents,
+        currency: data.currency,
+        customerId: data.customerId,
+        description: data.description,
+        metadata: {
+          ...data.metadata,
+          ...(runId ? { runId } : {}),
+          ...(data.orgId ? { orgId: data.orgId } : {}),
+        },
       },
-    });
+      stripeKey
+    );
 
     if (!result.success) {
       if (runId) {
