@@ -26,6 +26,12 @@ export async function getDecryptedStripeKey(appId: string): Promise<string> {
     },
   });
 
+  if (response.status === 404) {
+    throw new Error(
+      `No Stripe key configured for appId '${appId}'`
+    );
+  }
+
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(

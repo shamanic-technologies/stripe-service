@@ -28,7 +28,7 @@ vi.mock("../../src/lib/runs-client", () => ({
   addCosts: vi.fn().mockResolvedValue({ costs: [] }),
 }));
 
-// Mock the key resolver
+// Mock the key resolver — always returns a key by default
 vi.mock("../../src/lib/resolve-stripe-key", () => ({
   resolveStripeKey: vi.fn().mockResolvedValue("sk_test_resolved_key"),
 }));
@@ -121,7 +121,7 @@ describe("POST /checkout/create", () => {
       expect.objectContaining({
         discounts: [{ coupon: "coupon_abc" }],
       }),
-      undefined
+      "sk_test_resolved_key"
     );
   });
 
@@ -166,7 +166,7 @@ describe("POST /checkout/create", () => {
     );
   });
 
-  it("does not resolve key when appId is absent", async () => {
+  it("falls back to env var key when no appId", async () => {
     const res = await request(app)
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
@@ -181,38 +181,55 @@ describe("POST /checkout/create", () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
-    expect(resolveStripeKey).not.toHaveBeenCalled();
-
-    const { createCheckoutSession } = await import(
-      "../../src/lib/stripe-client"
-    );
-    expect(createCheckoutSession).toHaveBeenCalledWith(
-      expect.any(Object),
-      undefined
-    );
+    expect(resolveStripeKey).toHaveBeenCalledWith(undefined);
   });
 
-  it("returns 500 when key-service fails", async () => {
+  it("returns 400 with clear error when key resolution fails", async () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
     (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error("key-service down")
+      new Error("No Stripe key configured for appId 'app_missing'")
     );
 
     const res = await request(app)
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
       .send({
-        appId: "app_failing",
+        appId: "app_missing",
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
         cancelUrl: "https://example.com/cancel",
       });
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(400);
     expect(res.body.error).toBe(
-      "Failed to resolve Stripe key from key-service"
+      "No Stripe key configured for appId 'app_missing'"
+    );
+  });
+
+  it("returns 400 when no appId and no STRIPE_SECRET_KEY", async () => {
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error(
+        "No Stripe key available: provide appId or configure STRIPE_SECRET_KEY"
+      )
+    );
+
+    const res = await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", API_KEY)
+      .send({
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(
+      "No Stripe key available: provide appId or configure STRIPE_SECRET_KEY"
     );
   });
 });
@@ -286,12 +303,12 @@ describe("POST /payment-intent/create", () => {
     );
   });
 
-  it("returns 500 when key-service fails for payment intent", async () => {
+  it("returns 400 with clear error when key resolution fails", async () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
     (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error("key-service timeout")
+      new Error("No Stripe key configured for appId 'app_failing'")
     );
 
     const res = await request(app)
@@ -302,9 +319,9 @@ describe("POST /payment-intent/create", () => {
         amountInCents: 3000,
       });
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(400);
     expect(res.body.error).toBe(
-      "Failed to resolve Stripe key from key-service"
+      "No Stripe key configured for appId 'app_failing'"
     );
   });
 });

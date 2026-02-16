@@ -30,7 +30,7 @@ describe("key-client", () => {
     expect(url).toContain("appId=app_123");
   });
 
-  it("throws on non-ok response", async () => {
+  it("throws clear error on 404 (no key configured)", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 404,
@@ -38,7 +38,19 @@ describe("key-client", () => {
     });
 
     await expect(getDecryptedStripeKey("app_missing")).rejects.toThrow(
-      "key-service GET /internal/app-keys/stripe/decrypt failed: 404"
+      "No Stripe key configured for appId 'app_missing'"
+    );
+  });
+
+  it("throws generic error on other non-ok responses", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: async () => "Internal error",
+    });
+
+    await expect(getDecryptedStripeKey("app_broken")).rejects.toThrow(
+      "key-service GET /internal/app-keys/stripe/decrypt failed: 500"
     );
   });
 
