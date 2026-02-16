@@ -1,19 +1,16 @@
 import Stripe from "stripe";
 
-let defaultClient: Stripe | null = null;
+function getClient(stripeSecretKey: string): Stripe {
+  return new Stripe(stripeSecretKey);
+}
 
-function getClient(stripeSecretKey?: string): Stripe {
-  if (stripeSecretKey) {
-    return new Stripe(stripeSecretKey);
+// Webhook signature verification only needs the Stripe SDK's crypto — no API calls.
+let webhookClient: Stripe | null = null;
+function getWebhookClient(): Stripe {
+  if (!webhookClient) {
+    webhookClient = new Stripe("webhook-verification-only");
   }
-  if (!defaultClient) {
-    const secretKey = process.env.STRIPE_SECRET_KEY;
-    if (!secretKey) {
-      throw new Error("STRIPE_SECRET_KEY not configured");
-    }
-    defaultClient = new Stripe(secretKey);
-  }
-  return defaultClient;
+  return webhookClient;
 }
 
 // --- Types ---
@@ -57,7 +54,7 @@ export interface CreatePaymentIntentResult {
 
 export async function createCheckoutSession(
   params: CreateCheckoutSessionParams,
-  stripeSecretKey?: string
+  stripeSecretKey: string
 ): Promise<CreateCheckoutSessionResult> {
   const stripe = getClient(stripeSecretKey);
 
@@ -95,7 +92,7 @@ export async function createCheckoutSession(
 
 export async function createPaymentIntent(
   params: CreatePaymentIntentParams,
-  stripeSecretKey?: string
+  stripeSecretKey: string
 ): Promise<CreatePaymentIntentResult> {
   const stripe = getClient(stripeSecretKey);
 
@@ -197,7 +194,7 @@ export interface CreatePriceResult {
 
 export async function createProduct(
   params: CreateProductParams,
-  stripeSecretKey?: string
+  stripeSecretKey: string
 ): Promise<CreateProductResult> {
   const stripe = getClient(stripeSecretKey);
 
@@ -240,7 +237,7 @@ export async function createProduct(
 
 export async function getProduct(
   productId: string,
-  stripeSecretKey?: string
+  stripeSecretKey: string
 ): Promise<GetResourceResult<ProductData>> {
   const stripe = getClient(stripeSecretKey);
 
@@ -264,7 +261,7 @@ export async function getProduct(
 
 export async function createPrice(
   params: CreatePriceParams,
-  stripeSecretKey?: string
+  stripeSecretKey: string
 ): Promise<CreatePriceResult> {
   const stripe = getClient(stripeSecretKey);
 
@@ -303,7 +300,7 @@ export async function createPrice(
 
 export async function getPrice(
   priceId: string,
-  stripeSecretKey?: string
+  stripeSecretKey: string
 ): Promise<GetResourceResult<PriceData>> {
   const stripe = getClient(stripeSecretKey);
 
@@ -332,7 +329,7 @@ export async function getPrice(
 
 export async function listPricesByProduct(
   productId: string,
-  stripeSecretKey?: string
+  stripeSecretKey: string
 ): Promise<GetResourceResult<PriceData[]>> {
   const stripe = getClient(stripeSecretKey);
 
@@ -386,7 +383,7 @@ export interface CreateCouponResult {
 
 export async function createCoupon(
   params: CreateCouponParams,
-  stripeSecretKey?: string
+  stripeSecretKey: string
 ): Promise<CreateCouponResult> {
   const stripe = getClient(stripeSecretKey);
 
@@ -441,7 +438,7 @@ export async function createCoupon(
 
 export async function getCoupon(
   couponId: string,
-  stripeSecretKey?: string
+  stripeSecretKey: string
 ): Promise<GetResourceResult<CouponData>> {
   const stripe = getClient(stripeSecretKey);
 
@@ -472,6 +469,6 @@ export function constructWebhookEvent(
   signature: string,
   secret: string
 ): Stripe.Event {
-  const stripe = getClient();
+  const stripe = getWebhookClient();
   return stripe.webhooks.constructEvent(payload, signature, secret);
 }

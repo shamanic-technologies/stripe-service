@@ -187,6 +187,10 @@ router.get("/products/:productId", async (req: Request, res: Response) => {
   const { productId } = req.params;
   const appId = req.query.appId as string | undefined;
 
+  if (!appId) {
+    return res.status(400).json({ error: "appId query parameter is required" });
+  }
+
   try {
     let stripeKey: string;
     try {
@@ -212,6 +216,10 @@ router.get("/products/:productId", async (req: Request, res: Response) => {
 router.get("/prices/:priceId", async (req: Request, res: Response) => {
   const { priceId } = req.params;
   const appId = req.query.appId as string | undefined;
+
+  if (!appId) {
+    return res.status(400).json({ error: "appId query parameter is required" });
+  }
 
   try {
     let stripeKey: string;
@@ -239,6 +247,10 @@ router.get("/prices/by-product/:productId", async (req: Request, res: Response) 
   const { productId } = req.params;
   const appId = req.query.appId as string | undefined;
 
+  if (!appId) {
+    return res.status(400).json({ error: "appId query parameter is required" });
+  }
+
   try {
     let stripeKey: string;
     try {
@@ -263,6 +275,10 @@ router.get("/prices/by-product/:productId", async (req: Request, res: Response) 
 router.get("/coupons/:couponId", async (req: Request, res: Response) => {
   const { couponId } = req.params;
   const appId = req.query.appId as string | undefined;
+
+  if (!appId) {
+    return res.status(400).json({ error: "appId query parameter is required" });
+  }
 
   try {
     let stripeKey: string;

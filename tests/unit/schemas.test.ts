@@ -12,11 +12,21 @@ import {
 describe("CreateCheckoutSessionRequestSchema", () => {
   it("accepts valid checkout request", () => {
     const result = CreateCheckoutSessionRequestSchema.safeParse({
+      appId: "app_test",
       lineItems: [{ priceId: "price_123", quantity: 1 }],
       successUrl: "https://example.com/success",
       cancelUrl: "https://example.com/cancel",
     });
     expect(result.success).toBe(true);
+  });
+
+  it("rejects missing appId", () => {
+    const result = CreateCheckoutSessionRequestSchema.safeParse({
+      lineItems: [{ priceId: "price_123", quantity: 1 }],
+      successUrl: "https://example.com/success",
+      cancelUrl: "https://example.com/cancel",
+    });
+    expect(result.success).toBe(false);
   });
 
   it("accepts checkout request with all optional fields", () => {
@@ -68,9 +78,17 @@ describe("CreateCheckoutSessionRequestSchema", () => {
 describe("CreatePaymentIntentRequestSchema", () => {
   it("accepts valid payment intent request", () => {
     const result = CreatePaymentIntentRequestSchema.safeParse({
+      appId: "app_test",
       amountInCents: 1000,
     });
     expect(result.success).toBe(true);
+  });
+
+  it("rejects missing appId", () => {
+    const result = CreatePaymentIntentRequestSchema.safeParse({
+      amountInCents: 1000,
+    });
+    expect(result.success).toBe(false);
   });
 
   it("accepts payment intent with all optional fields", () => {
@@ -114,13 +132,22 @@ describe("CreatePaymentIntentRequestSchema", () => {
 describe("CreateProductRequestSchema", () => {
   it("accepts valid product request", () => {
     const result = CreateProductRequestSchema.safeParse({
+      appId: "app_test",
       name: "Premium Course",
     });
     expect(result.success).toBe(true);
   });
 
+  it("rejects missing appId", () => {
+    const result = CreateProductRequestSchema.safeParse({
+      name: "Premium Course",
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("accepts product request with all optional fields", () => {
     const result = CreateProductRequestSchema.safeParse({
+      appId: "app_test",
       name: "Premium Course",
       description: "A comprehensive course on TypeScript",
       metadata: { courseId: "course_123" },
@@ -130,6 +157,7 @@ describe("CreateProductRequestSchema", () => {
 
   it("accepts product request with custom id", () => {
     const result = CreateProductRequestSchema.safeParse({
+      appId: "app_test",
       id: "prod_custom_123",
       name: "Premium Course",
     });
@@ -155,14 +183,24 @@ describe("CreateProductRequestSchema", () => {
 describe("CreatePriceRequestSchema", () => {
   it("accepts valid one-time price request", () => {
     const result = CreatePriceRequestSchema.safeParse({
+      appId: "app_test",
       productId: "prod_123",
       unitAmountInCents: 2999,
     });
     expect(result.success).toBe(true);
   });
 
+  it("rejects missing appId", () => {
+    const result = CreatePriceRequestSchema.safeParse({
+      productId: "prod_123",
+      unitAmountInCents: 2999,
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("accepts price with recurring config", () => {
     const result = CreatePriceRequestSchema.safeParse({
+      appId: "app_test",
       productId: "prod_123",
       unitAmountInCents: 999,
       currency: "eur",
@@ -174,6 +212,7 @@ describe("CreatePriceRequestSchema", () => {
 
   it("accepts recurring with intervalCount", () => {
     const result = CreatePriceRequestSchema.safeParse({
+      appId: "app_test",
       productId: "prod_123",
       unitAmountInCents: 4999,
       recurring: { interval: "month", intervalCount: 3 },
@@ -225,14 +264,23 @@ describe("CreatePriceRequestSchema", () => {
 describe("CreateCouponRequestSchema", () => {
   it("accepts valid percentage coupon", () => {
     const result = CreateCouponRequestSchema.safeParse({
+      appId: "app_test",
       name: "50% Off",
       percentOff: 50,
     });
     expect(result.success).toBe(true);
   });
 
+  it("rejects missing appId", () => {
+    const result = CreateCouponRequestSchema.safeParse({
+      percentOff: 50,
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("accepts valid fixed amount coupon", () => {
     const result = CreateCouponRequestSchema.safeParse({
+      appId: "app_test",
       name: "$10 Off",
       amountOffInCents: 1000,
       currency: "usd",
@@ -242,6 +290,7 @@ describe("CreateCouponRequestSchema", () => {
 
   it("accepts coupon with all optional fields", () => {
     const result = CreateCouponRequestSchema.safeParse({
+      appId: "app_test",
       name: "Holiday Sale",
       percentOff: 25,
       duration: "repeating",
@@ -255,6 +304,7 @@ describe("CreateCouponRequestSchema", () => {
 
   it("accepts coupon with custom id", () => {
     const result = CreateCouponRequestSchema.safeParse({
+      appId: "app_test",
       id: "coupon_custom_123",
       percentOff: 50,
     });
@@ -312,6 +362,7 @@ describe("CreateCouponRequestSchema", () => {
 describe("CreateCheckoutSessionRequestSchema with discounts", () => {
   it("accepts checkout with discounts", () => {
     const result = CreateCheckoutSessionRequestSchema.safeParse({
+      appId: "app_test",
       lineItems: [{ priceId: "price_123", quantity: 1 }],
       successUrl: "https://example.com/success",
       cancelUrl: "https://example.com/cancel",
@@ -322,6 +373,7 @@ describe("CreateCheckoutSessionRequestSchema with discounts", () => {
 
   it("accepts checkout with promotion code discount", () => {
     const result = CreateCheckoutSessionRequestSchema.safeParse({
+      appId: "app_test",
       lineItems: [{ priceId: "price_123", quantity: 1 }],
       successUrl: "https://example.com/success",
       cancelUrl: "https://example.com/cancel",
@@ -332,6 +384,7 @@ describe("CreateCheckoutSessionRequestSchema with discounts", () => {
 
   it("accepts checkout without discounts", () => {
     const result = CreateCheckoutSessionRequestSchema.safeParse({
+      appId: "app_test",
       lineItems: [{ priceId: "price_123", quantity: 1 }],
       successUrl: "https://example.com/success",
       cancelUrl: "https://example.com/cancel",

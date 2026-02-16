@@ -32,7 +32,7 @@ export const CreateCheckoutSessionRequestSchema = z
     orgId: z.string().optional().openapi({ description: "Clerk organization ID" }),
     runId: z.string().optional().openapi({ description: "Parent run ID" }),
     brandId: z.string().optional().openapi({ description: "Brand ID" }),
-    appId: z.string().optional().openapi({ description: "App ID" }),
+    appId: z.string().min(1).openapi({ description: "App ID — resolves Stripe key from key-service" }),
     campaignId: z.string().optional().openapi({ description: "Campaign ID" }),
     lineItems: z
       .array(
@@ -86,7 +86,7 @@ export const CreatePaymentIntentRequestSchema = z
     orgId: z.string().optional().openapi({ description: "Clerk organization ID" }),
     runId: z.string().optional().openapi({ description: "Parent run ID" }),
     brandId: z.string().optional().openapi({ description: "Brand ID" }),
-    appId: z.string().optional().openapi({ description: "App ID" }),
+    appId: z.string().min(1).openapi({ description: "App ID — resolves Stripe key from key-service" }),
     campaignId: z.string().optional().openapi({ description: "Campaign ID" }),
     amountInCents: z.number().int().positive().openapi({ description: "Amount in cents" }),
     currency: z.string().optional().default("usd").openapi({ description: "Currency code" }),
@@ -112,7 +112,7 @@ export const CreatePaymentIntentResponseSchema = z
 
 export const CreateProductRequestSchema = z
   .object({
-    appId: z.string().optional().openapi({ description: "App ID — if provided, resolves Stripe key from key-service" }),
+    appId: z.string().min(1).openapi({ description: "App ID — resolves Stripe key from key-service" }),
     id: z.string().optional().openapi({ description: "Custom Stripe Product ID for idempotent creates" }),
     name: z.string().min(1).openapi({ description: "Product name" }),
     description: z
@@ -150,7 +150,7 @@ export const GetProductResponseSchema = z
 
 export const CreatePriceRequestSchema = z
   .object({
-    appId: z.string().optional().openapi({ description: "App ID — if provided, resolves Stripe key from key-service" }),
+    appId: z.string().min(1).openapi({ description: "App ID — resolves Stripe key from key-service" }),
     productId: z
       .string()
       .min(1)
@@ -232,7 +232,7 @@ export const ListPricesResponseSchema = z
 
 export const CreateCouponRequestSchema = z
   .object({
-    appId: z.string().optional().openapi({ description: "App ID — if provided, resolves Stripe key from key-service" }),
+    appId: z.string().min(1).openapi({ description: "App ID — resolves Stripe key from key-service" }),
     id: z.string().optional().openapi({ description: "Custom Stripe Coupon ID for idempotent creates" }),
     name: z
       .string()
@@ -582,11 +582,16 @@ registry.registerPath({
   security: [{ apiKey: [] }],
   request: {
     params: z.object({ productId: z.string() }),
+    query: z.object({ appId: z.string().openapi({ description: "App ID — resolves Stripe key from key-service" }) }),
   },
   responses: {
     200: {
       description: "Product found",
       content: { "application/json": { schema: GetProductResponseSchema } },
+    },
+    400: {
+      description: "Missing appId",
+      content: { "application/json": { schema: ErrorResponseSchema } },
     },
     404: {
       description: "Product not found",
@@ -605,11 +610,16 @@ registry.registerPath({
   security: [{ apiKey: [] }],
   request: {
     params: z.object({ priceId: z.string() }),
+    query: z.object({ appId: z.string().openapi({ description: "App ID — resolves Stripe key from key-service" }) }),
   },
   responses: {
     200: {
       description: "Price found",
       content: { "application/json": { schema: GetPriceResponseSchema } },
+    },
+    400: {
+      description: "Missing appId",
+      content: { "application/json": { schema: ErrorResponseSchema } },
     },
     404: {
       description: "Price not found",
@@ -628,6 +638,7 @@ registry.registerPath({
   security: [{ apiKey: [] }],
   request: {
     params: z.object({ productId: z.string() }),
+    query: z.object({ appId: z.string().openapi({ description: "App ID — resolves Stripe key from key-service" }) }),
   },
   responses: {
     200: {
@@ -647,11 +658,16 @@ registry.registerPath({
   security: [{ apiKey: [] }],
   request: {
     params: z.object({ couponId: z.string() }),
+    query: z.object({ appId: z.string().openapi({ description: "App ID — resolves Stripe key from key-service" }) }),
   },
   responses: {
     200: {
       description: "Coupon found",
       content: { "application/json": { schema: GetCouponResponseSchema } },
+    },
+    400: {
+      description: "Missing appId",
+      content: { "application/json": { schema: ErrorResponseSchema } },
     },
     404: {
       description: "Coupon not found",

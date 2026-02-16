@@ -63,6 +63,7 @@ describe("POST /checkout/create", () => {
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
         cancelUrl: "https://example.com/cancel",
@@ -80,6 +81,7 @@ describe("POST /checkout/create", () => {
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         lineItems: [],
         successUrl: "not-a-url",
       });
@@ -92,6 +94,7 @@ describe("POST /checkout/create", () => {
     const res = await request(app)
       .post("/checkout/create")
       .send({
+        appId: "app_test",
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
         cancelUrl: "https://example.com/cancel",
@@ -105,6 +108,7 @@ describe("POST /checkout/create", () => {
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
         cancelUrl: "https://example.com/cancel",
@@ -130,6 +134,7 @@ describe("POST /checkout/create", () => {
       .post("/checkout/create")
       .set("X-API-Key", "wrong-key")
       .send({
+        appId: "app_test",
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
         cancelUrl: "https://example.com/cancel",
@@ -166,7 +171,7 @@ describe("POST /checkout/create", () => {
     );
   });
 
-  it("falls back to env var key when no appId", async () => {
+  it("returns 400 when appId is missing", async () => {
     const res = await request(app)
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
@@ -176,12 +181,8 @@ describe("POST /checkout/create", () => {
         cancelUrl: "https://example.com/cancel",
       });
 
-    expect(res.status).toBe(200);
-
-    const { resolveStripeKey } = await import(
-      "../../src/lib/resolve-stripe-key"
-    );
-    expect(resolveStripeKey).toHaveBeenCalledWith(undefined);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid request");
   });
 
   it("returns 400 with clear error when key resolution fails", async () => {
@@ -208,30 +209,6 @@ describe("POST /checkout/create", () => {
     );
   });
 
-  it("returns 400 when no appId and no STRIPE_SECRET_KEY", async () => {
-    const { resolveStripeKey } = await import(
-      "../../src/lib/resolve-stripe-key"
-    );
-    (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error(
-        "No Stripe key available: provide appId or configure STRIPE_SECRET_KEY"
-      )
-    );
-
-    const res = await request(app)
-      .post("/checkout/create")
-      .set("X-API-Key", API_KEY)
-      .send({
-        lineItems: [{ priceId: "price_123", quantity: 1 }],
-        successUrl: "https://example.com/success",
-        cancelUrl: "https://example.com/cancel",
-      });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe(
-      "No Stripe key available: provide appId or configure STRIPE_SECRET_KEY"
-    );
-  });
 });
 
 describe("POST /payment-intent/create", () => {
@@ -244,6 +221,7 @@ describe("POST /payment-intent/create", () => {
       .post("/payment-intent/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         amountInCents: 5000,
         currency: "usd",
         description: "Test payment",
@@ -261,6 +239,7 @@ describe("POST /payment-intent/create", () => {
       .post("/payment-intent/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         amountInCents: 0,
       });
 
@@ -272,7 +251,7 @@ describe("POST /payment-intent/create", () => {
     const res = await request(app)
       .post("/payment-intent/create")
       .set("X-API-Key", API_KEY)
-      .send({});
+      .send({ appId: "app_test" });
 
     expect(res.status).toBe(400);
   });
