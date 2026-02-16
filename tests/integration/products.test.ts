@@ -583,7 +583,7 @@ describe("Dynamic Stripe key resolution via appId", () => {
     );
   });
 
-  it("does not resolve key when appId is absent on product create", async () => {
+  it("falls back to env var when appId is absent on product create", async () => {
     const res = await request(app)
       .post("/products/create")
       .set("X-API-Key", API_KEY)
@@ -596,12 +596,12 @@ describe("Dynamic Stripe key resolution via appId", () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
-    expect(resolveStripeKey).not.toHaveBeenCalled();
+    expect(resolveStripeKey).toHaveBeenCalledWith(undefined);
 
     const { createProduct } = await import("../../src/lib/stripe-client");
     expect(createProduct).toHaveBeenCalledWith(
       expect.any(Object),
-      undefined
+      "sk_test_resolved_key"
     );
   });
 
@@ -672,12 +672,12 @@ describe("Dynamic Stripe key resolution via appId", () => {
     );
   });
 
-  it("returns 500 when key-service fails on product create", async () => {
+  it("returns 400 with clear error when key-service fails", async () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
     (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error("key-service down")
+      new Error("No Stripe key configured for appId 'app_failing'")
     );
 
     const res = await request(app)
@@ -688,7 +688,26 @@ describe("Dynamic Stripe key resolution via appId", () => {
         name: "Should Fail",
       });
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("No Stripe key configured for appId 'app_failing'");
+  });
+
+  it("returns 400 when no appId and no STRIPE_SECRET_KEY", async () => {
+    const { resolveStripeKey } = await import(
+      "../../src/lib/resolve-stripe-key"
+    );
+    (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("No Stripe key available: provide appId or configure STRIPE_SECRET_KEY")
+    );
+
+    const res = await request(app)
+      .get("/products/prod_test_mock123")
+      .set("X-API-Key", API_KEY);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(
+      "No Stripe key available: provide appId or configure STRIPE_SECRET_KEY"
+    );
   });
 });
 
@@ -712,7 +731,7 @@ describe("Idempotent creates with custom id", () => {
     const { createProduct } = await import("../../src/lib/stripe-client");
     expect(createProduct).toHaveBeenCalledWith(
       expect.objectContaining({ id: "prod_custom_123" }),
-      undefined
+      "sk_test_resolved_key"
     );
   });
 
@@ -731,7 +750,7 @@ describe("Idempotent creates with custom id", () => {
     const { createCoupon } = await import("../../src/lib/stripe-client");
     expect(createCoupon).toHaveBeenCalledWith(
       expect.objectContaining({ id: "coupon_custom_123" }),
-      undefined
+      "sk_test_resolved_key"
     );
   });
 });

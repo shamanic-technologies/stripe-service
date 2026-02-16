@@ -29,17 +29,13 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
   let runId = data.runId;
 
   try {
-    // Resolve Stripe key: from key-service if appId provided, else env var
-    let stripeKey: string | undefined;
-    if (data.appId) {
-      try {
-        stripeKey = await resolveStripeKey(data.appId);
-      } catch (err) {
-        console.error("Failed to resolve Stripe key for appId:", data.appId, err);
-        return res.status(500).json({
-          error: "Failed to resolve Stripe key from key-service",
-        });
-      }
+    // Resolve Stripe key: from key-service if appId provided, else STRIPE_SECRET_KEY env var
+    let stripeKey: string;
+    try {
+      stripeKey = await resolveStripeKey(data.appId);
+    } catch (err: any) {
+      console.error("Failed to resolve Stripe key:", err.message);
+      return res.status(400).json({ error: err.message });
     }
 
     // Create run in runs-service if orgId provided (BLOCKING)
@@ -142,17 +138,13 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
   let runId = data.runId;
 
   try {
-    // Resolve Stripe key: from key-service if appId provided, else env var
-    let stripeKey: string | undefined;
-    if (data.appId) {
-      try {
-        stripeKey = await resolveStripeKey(data.appId);
-      } catch (err) {
-        console.error("Failed to resolve Stripe key for appId:", data.appId, err);
-        return res.status(500).json({
-          error: "Failed to resolve Stripe key from key-service",
-        });
-      }
+    // Resolve Stripe key: from key-service if appId provided, else STRIPE_SECRET_KEY env var
+    let stripeKey: string;
+    try {
+      stripeKey = await resolveStripeKey(data.appId);
+    } catch (err: any) {
+      console.error("Failed to resolve Stripe key:", err.message);
+      return res.status(400).json({ error: err.message });
     }
 
     // Create run in runs-service if orgId provided (BLOCKING)
