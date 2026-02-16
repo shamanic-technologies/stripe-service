@@ -1,16 +1,19 @@
 import Stripe from "stripe";
 
-let stripeClient: Stripe | null = null;
+let defaultClient: Stripe | null = null;
 
-function getClient(): Stripe {
-  if (!stripeClient) {
+function getClient(stripeSecretKey?: string): Stripe {
+  if (stripeSecretKey) {
+    return new Stripe(stripeSecretKey);
+  }
+  if (!defaultClient) {
     const secretKey = process.env.STRIPE_SECRET_KEY;
     if (!secretKey) {
       throw new Error("STRIPE_SECRET_KEY not configured");
     }
-    stripeClient = new Stripe(secretKey);
+    defaultClient = new Stripe(secretKey);
   }
-  return stripeClient;
+  return defaultClient;
 }
 
 // --- Types ---
@@ -53,9 +56,10 @@ export interface CreatePaymentIntentResult {
 // --- Public API ---
 
 export async function createCheckoutSession(
-  params: CreateCheckoutSessionParams
+  params: CreateCheckoutSessionParams,
+  stripeSecretKey?: string
 ): Promise<CreateCheckoutSessionResult> {
-  const stripe = getClient();
+  const stripe = getClient(stripeSecretKey);
 
   try {
     const session = await stripe.checkout.sessions.create({
@@ -90,9 +94,10 @@ export async function createCheckoutSession(
 }
 
 export async function createPaymentIntent(
-  params: CreatePaymentIntentParams
+  params: CreatePaymentIntentParams,
+  stripeSecretKey?: string
 ): Promise<CreatePaymentIntentResult> {
-  const stripe = getClient();
+  const stripe = getClient(stripeSecretKey);
 
   try {
     const paymentIntent = await stripe.paymentIntents.create({
@@ -191,9 +196,10 @@ export interface CreatePriceResult {
 // --- Public API (Products/Prices) ---
 
 export async function createProduct(
-  params: CreateProductParams
+  params: CreateProductParams,
+  stripeSecretKey?: string
 ): Promise<CreateProductResult> {
-  const stripe = getClient();
+  const stripe = getClient(stripeSecretKey);
 
   try {
     const product = await stripe.products.create({
@@ -233,9 +239,10 @@ export async function createProduct(
 }
 
 export async function getProduct(
-  productId: string
+  productId: string,
+  stripeSecretKey?: string
 ): Promise<GetResourceResult<ProductData>> {
-  const stripe = getClient();
+  const stripe = getClient(stripeSecretKey);
 
   try {
     const product = await stripe.products.retrieve(productId);
@@ -256,9 +263,10 @@ export async function getProduct(
 }
 
 export async function createPrice(
-  params: CreatePriceParams
+  params: CreatePriceParams,
+  stripeSecretKey?: string
 ): Promise<CreatePriceResult> {
-  const stripe = getClient();
+  const stripe = getClient(stripeSecretKey);
 
   try {
     const price = await stripe.prices.create({
@@ -294,9 +302,10 @@ export async function createPrice(
 }
 
 export async function getPrice(
-  priceId: string
+  priceId: string,
+  stripeSecretKey?: string
 ): Promise<GetResourceResult<PriceData>> {
-  const stripe = getClient();
+  const stripe = getClient(stripeSecretKey);
 
   try {
     const price = await stripe.prices.retrieve(priceId);
@@ -322,9 +331,10 @@ export async function getPrice(
 }
 
 export async function listPricesByProduct(
-  productId: string
+  productId: string,
+  stripeSecretKey?: string
 ): Promise<GetResourceResult<PriceData[]>> {
-  const stripe = getClient();
+  const stripe = getClient(stripeSecretKey);
 
   try {
     const prices = await stripe.prices.list({ product: productId, active: true });
@@ -375,9 +385,10 @@ export interface CreateCouponResult {
 // --- Public API (Coupons) ---
 
 export async function createCoupon(
-  params: CreateCouponParams
+  params: CreateCouponParams,
+  stripeSecretKey?: string
 ): Promise<CreateCouponResult> {
-  const stripe = getClient();
+  const stripe = getClient(stripeSecretKey);
 
   try {
     const coupon = await stripe.coupons.create({
@@ -429,9 +440,10 @@ export async function createCoupon(
 }
 
 export async function getCoupon(
-  couponId: string
+  couponId: string,
+  stripeSecretKey?: string
 ): Promise<GetResourceResult<CouponData>> {
-  const stripe = getClient();
+  const stripe = getClient(stripeSecretKey);
 
   try {
     const coupon = await stripe.coupons.retrieve(couponId);
