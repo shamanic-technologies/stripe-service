@@ -113,6 +113,7 @@ describe("POST /products/create", () => {
       .post("/products/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         name: "Premium Course",
         description: "A comprehensive TypeScript course",
       });
@@ -128,6 +129,7 @@ describe("POST /products/create", () => {
       .post("/products/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         name: "Premium Course",
         metadata: { courseId: "course_abc" },
       });
@@ -183,7 +185,7 @@ describe("POST /products/create", () => {
     const res = await request(app)
       .post("/products/create")
       .set("X-API-Key", API_KEY)
-      .send({ name: "Test Product" });
+      .send({ appId: "app_test", name: "Test Product" });
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("Stripe API error");
@@ -200,6 +202,7 @@ describe("POST /prices/create", () => {
       .post("/prices/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         productId: "prod_123",
         unitAmountInCents: 2999,
       });
@@ -217,6 +220,7 @@ describe("POST /prices/create", () => {
       .post("/prices/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         productId: "prod_123",
         unitAmountInCents: 999,
         currency: "eur",
@@ -287,6 +291,7 @@ describe("POST /prices/create", () => {
       .post("/prices/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         productId: "prod_invalid",
         unitAmountInCents: 2999,
       });
@@ -306,6 +311,7 @@ describe("POST /coupons/create", () => {
       .post("/coupons/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         name: "50% Off",
         percentOff: 50,
       });
@@ -334,6 +340,7 @@ describe("POST /coupons/create", () => {
       .post("/coupons/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         name: "$10 Off",
         amountOffInCents: 1000,
         currency: "usd",
@@ -387,7 +394,7 @@ describe("POST /coupons/create", () => {
     const res = await request(app)
       .post("/coupons/create")
       .set("X-API-Key", API_KEY)
-      .send({ percentOff: 50 });
+      .send({ appId: "app_test", percentOff: 50 });
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("Stripe API error");
@@ -401,7 +408,7 @@ describe("GET /products/:productId", () => {
 
   it("returns a product successfully", async () => {
     const res = await request(app)
-      .get("/products/prod_test_mock123")
+      .get("/products/prod_test_mock123?appId=app_test")
       .set("X-API-Key", API_KEY);
 
     expect(res.status).toBe(200);
@@ -419,7 +426,7 @@ describe("GET /products/:productId", () => {
     });
 
     const res = await request(app)
-      .get("/products/prod_nonexistent")
+      .get("/products/prod_nonexistent?appId=app_test")
       .set("X-API-Key", API_KEY);
 
     expect(res.status).toBe(404);
@@ -440,7 +447,7 @@ describe("GET /prices/:priceId", () => {
 
   it("returns a price successfully", async () => {
     const res = await request(app)
-      .get("/prices/price_test_mock123")
+      .get("/prices/price_test_mock123?appId=app_test")
       .set("X-API-Key", API_KEY);
 
     expect(res.status).toBe(200);
@@ -460,7 +467,7 @@ describe("GET /prices/:priceId", () => {
     });
 
     const res = await request(app)
-      .get("/prices/price_nonexistent")
+      .get("/prices/price_nonexistent?appId=app_test")
       .set("X-API-Key", API_KEY);
 
     expect(res.status).toBe(404);
@@ -481,7 +488,7 @@ describe("GET /prices/by-product/:productId", () => {
 
   it("returns prices for a product", async () => {
     const res = await request(app)
-      .get("/prices/by-product/prod_test_mock123")
+      .get("/prices/by-product/prod_test_mock123?appId=app_test")
       .set("X-API-Key", API_KEY);
 
     expect(res.status).toBe(200);
@@ -499,7 +506,7 @@ describe("GET /prices/by-product/:productId", () => {
     });
 
     const res = await request(app)
-      .get("/prices/by-product/prod_test_mock123")
+      .get("/prices/by-product/prod_test_mock123?appId=app_test")
       .set("X-API-Key", API_KEY);
 
     expect(res.status).toBe(500);
@@ -520,7 +527,7 @@ describe("GET /coupons/:couponId", () => {
 
   it("returns a coupon successfully", async () => {
     const res = await request(app)
-      .get("/coupons/coupon_test_mock123")
+      .get("/coupons/coupon_test_mock123?appId=app_test")
       .set("X-API-Key", API_KEY);
 
     expect(res.status).toBe(200);
@@ -540,7 +547,7 @@ describe("GET /coupons/:couponId", () => {
     });
 
     const res = await request(app)
-      .get("/coupons/coupon_nonexistent")
+      .get("/coupons/coupon_nonexistent?appId=app_test")
       .set("X-API-Key", API_KEY);
 
     expect(res.status).toBe(404);
@@ -583,7 +590,7 @@ describe("Dynamic Stripe key resolution via appId", () => {
     );
   });
 
-  it("falls back to env var when appId is absent on product create", async () => {
+  it("returns 400 when appId is missing on product create", async () => {
     const res = await request(app)
       .post("/products/create")
       .set("X-API-Key", API_KEY)
@@ -591,18 +598,8 @@ describe("Dynamic Stripe key resolution via appId", () => {
         name: "Default Product",
       });
 
-    expect(res.status).toBe(200);
-
-    const { resolveStripeKey } = await import(
-      "../../src/lib/resolve-stripe-key"
-    );
-    expect(resolveStripeKey).toHaveBeenCalledWith(undefined);
-
-    const { createProduct } = await import("../../src/lib/stripe-client");
-    expect(createProduct).toHaveBeenCalledWith(
-      expect.any(Object),
-      "sk_test_resolved_key"
-    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid request");
   });
 
   it("resolves Stripe key when appId is provided on price create", async () => {
@@ -692,22 +689,13 @@ describe("Dynamic Stripe key resolution via appId", () => {
     expect(res.body.error).toBe("No Stripe key configured for appId 'app_failing'");
   });
 
-  it("returns 400 when no appId and no STRIPE_SECRET_KEY", async () => {
-    const { resolveStripeKey } = await import(
-      "../../src/lib/resolve-stripe-key"
-    );
-    (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error("No Stripe key available: provide appId or configure STRIPE_SECRET_KEY")
-    );
-
+  it("returns 400 when appId is missing on GET product", async () => {
     const res = await request(app)
       .get("/products/prod_test_mock123")
       .set("X-API-Key", API_KEY);
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe(
-      "No Stripe key available: provide appId or configure STRIPE_SECRET_KEY"
-    );
+    expect(res.body.error).toBe("appId query parameter is required");
   });
 });
 
@@ -721,6 +709,7 @@ describe("Idempotent creates with custom id", () => {
       .post("/products/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         id: "prod_custom_123",
         name: "Custom Product",
       });
@@ -740,6 +729,7 @@ describe("Idempotent creates with custom id", () => {
       .post("/coupons/create")
       .set("X-API-Key", API_KEY)
       .send({
+        appId: "app_test",
         id: "coupon_custom_123",
         percentOff: 25,
       });
