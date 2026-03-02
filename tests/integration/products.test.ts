@@ -581,7 +581,7 @@ describe("Dynamic Stripe key resolution via appId", () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
-    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_123");
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_123", expect.objectContaining({ method: "POST", path: "/products/create" }));
 
     const { createProduct } = await import("../../src/lib/stripe-client");
     expect(createProduct).toHaveBeenCalledWith(
@@ -617,7 +617,7 @@ describe("Dynamic Stripe key resolution via appId", () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
-    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_456");
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_456", expect.objectContaining({ method: "POST", path: "/prices/create" }));
 
     const { createPrice } = await import("../../src/lib/stripe-client");
     expect(createPrice).toHaveBeenCalledWith(
@@ -640,7 +640,7 @@ describe("Dynamic Stripe key resolution via appId", () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
-    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_789");
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_789", expect.objectContaining({ method: "POST", path: "/coupons/create" }));
 
     const { createCoupon } = await import("../../src/lib/stripe-client");
     expect(createCoupon).toHaveBeenCalledWith(
@@ -660,7 +660,7 @@ describe("Dynamic Stripe key resolution via appId", () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
-    expect(resolveStripeKey).toHaveBeenCalledWith("app_get_test");
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_get_test", expect.objectContaining({ method: "GET" }));
 
     const { getProduct } = await import("../../src/lib/stripe-client");
     expect(getProduct).toHaveBeenCalledWith(

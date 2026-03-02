@@ -160,7 +160,7 @@ describe("POST /checkout/create", () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
-    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_123");
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_123", expect.objectContaining({ method: "POST", path: "/checkout/create" }));
 
     const { createCheckoutSession } = await import(
       "../../src/lib/stripe-client"
@@ -271,7 +271,7 @@ describe("POST /payment-intent/create", () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
-    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_456");
+    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_456", expect.objectContaining({ method: "POST", path: "/payment-intent/create" }));
 
     const { createPaymentIntent } = await import(
       "../../src/lib/stripe-client"
