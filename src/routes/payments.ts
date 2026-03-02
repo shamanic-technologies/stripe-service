@@ -32,7 +32,7 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
     // Resolve Stripe key: from key-service if appId provided, else STRIPE_SECRET_KEY env var
     let stripeKey: string;
     try {
-      stripeKey = await resolveStripeKey(data.appId);
+      stripeKey = await resolveStripeKey(data.appId, { method: req.method, path: req.path });
     } catch (err: any) {
       console.error("Failed to resolve Stripe key:", err.message);
       return res.status(400).json({ error: err.message });
@@ -141,7 +141,7 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
     // Resolve Stripe key: from key-service if appId provided, else STRIPE_SECRET_KEY env var
     let stripeKey: string;
     try {
-      stripeKey = await resolveStripeKey(data.appId);
+      stripeKey = await resolveStripeKey(data.appId, { method: req.method, path: req.path });
     } catch (err: any) {
       console.error("Failed to resolve Stripe key:", err.message);
       return res.status(400).json({ error: err.message });

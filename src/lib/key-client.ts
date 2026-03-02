@@ -12,17 +12,25 @@ interface DecryptAppKeyResponse {
   key: string;
 }
 
+interface CallerContext {
+  method: string;
+  path: string;
+}
+
 /**
  * Fetches the decrypted Stripe secret key for a given appId from key-service.
  * Calls GET /internal/app-keys/stripe/decrypt?appId=xxx
  */
-export async function getDecryptedStripeKey(appId: string): Promise<string> {
+export async function getDecryptedStripeKey(appId: string, caller: CallerContext): Promise<string> {
   const url = `${KEY_SERVICE_URL}/internal/app-keys/stripe/decrypt?appId=${encodeURIComponent(appId)}`;
 
   const response = await fetch(url, {
     method: "GET",
     headers: {
       "x-api-key": KEY_SERVICE_API_KEY,
+      "x-caller-service": "stripe",
+      "x-caller-method": caller.method,
+      "x-caller-path": caller.path,
     },
   });
 
