@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { serviceAuth } from "../../src/middleware/serviceAuth";
+import { requireIdentityHeaders } from "../../src/middleware/identityHeaders";
 import healthRoutes from "../../src/routes/health";
 import paymentRoutes from "../../src/routes/payments";
 import statusRoutes from "../../src/routes/status";
@@ -20,6 +21,7 @@ export function createTestApp() {
 
   app.use(express.json());
   app.use(serviceAuth);
+  app.use(requireIdentityHeaders);
 
   app.use("/", healthRoutes);
   app.use("/", paymentRoutes);

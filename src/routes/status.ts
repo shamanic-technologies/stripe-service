@@ -100,14 +100,13 @@ router.get("/status/by-run/:runId", async (req: Request, res: Response) => {
 
 // POST /stats - Aggregated stats
 router.post("/stats", async (req: Request, res: Response) => {
-  const { runIds, clerkOrgId, brandId, appId, campaignId } = req.body;
+  const { runIds, orgId, brandId, campaignId } = req.body;
 
   try {
     const conditions = [];
 
-    if (clerkOrgId) conditions.push(eq(stripePayments.orgId, clerkOrgId));
+    if (orgId) conditions.push(eq(stripePayments.orgId, orgId));
     if (brandId) conditions.push(eq(stripePayments.brandId, brandId));
-    if (appId) conditions.push(eq(stripePayments.appId, appId));
     if (campaignId) conditions.push(eq(stripePayments.campaignId, campaignId));
     if (runIds?.length) conditions.push(inArray(stripePayments.runId, runIds));
 

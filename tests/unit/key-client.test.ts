@@ -15,19 +15,31 @@ describe("key-client", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns decrypted key on success", async () => {
+  it("returns decrypted key and keySource on success", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ provider: "stripe", key: "sk_live_resolved123" }),
+      json: async () => ({ key: "sk_live_resolved123", keySource: "platform" }),
     });
 
-    const key = await getDecryptedStripeKey("app_123", { method: "GET", path: "/products/:productId" });
+    const result = await getDecryptedStripeKey("org_123", "user_456", { method: "GET", path: "/products/:productId" });
 
-    expect(key).toBe("sk_live_resolved123");
+    expect(result).toEqual({ key: "sk_live_resolved123", keySource: "platform" });
     expect(mockFetch).toHaveBeenCalledOnce();
     const url = mockFetch.mock.calls[0][0] as string;
-    expect(url).toContain("/internal/app-keys/stripe/decrypt");
-    expect(url).toContain("appId=app_123");
+    expect(url).toContain("/keys/stripe/decrypt");
+    expect(url).toContain("orgId=org_123");
+    expect(url).toContain("userId=user_456");
+  });
+
+  it("returns org keySource when org key is used", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ key: "sk_live_org_key", keySource: "org" }),
+    });
+
+    const result = await getDecryptedStripeKey("org_123", "user_456", { method: "GET", path: "/products/:productId" });
+
+    expect(result.keySource).toBe("org");
   });
 
   it("throws clear error on 404 (no key configured)", async () => {
@@ -37,8 +49,8 @@ describe("key-client", () => {
       text: async () => "Key not configured",
     });
 
-    await expect(getDecryptedStripeKey("app_missing", { method: "GET", path: "/products/:productId" })).rejects.toThrow(
-      "No Stripe key configured for appId 'app_missing'"
+    await expect(getDecryptedStripeKey("org_missing", "user_456", { method: "GET", path: "/products/:productId" })).rejects.toThrow(
+      "No Stripe key configured for org 'org_missing'"
     );
   });
 
@@ -49,30 +61,31 @@ describe("key-client", () => {
       text: async () => "Internal error",
     });
 
-    await expect(getDecryptedStripeKey("app_broken", { method: "GET", path: "/products/:productId" })).rejects.toThrow(
-      "key-service GET /internal/app-keys/stripe/decrypt failed: 500"
+    await expect(getDecryptedStripeKey("org_broken", "user_456", { method: "GET", path: "/products/:productId" })).rejects.toThrow(
+      "key-service GET /keys/stripe/decrypt failed: 500"
     );
   });
 
-  it("encodes appId in URL", async () => {
+  it("encodes orgId and userId in URL", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ provider: "stripe", key: "sk_test_123" }),
+      json: async () => ({ key: "sk_test_123", keySource: "platform" }),
     });
 
-    await getDecryptedStripeKey("app with spaces", { method: "GET", path: "/products/:productId" });
+    await getDecryptedStripeKey("org with spaces", "user with spaces", { method: "GET", path: "/products/:productId" });
 
     const url = mockFetch.mock.calls[0][0] as string;
-    expect(url).toContain("appId=app%20with%20spaces");
+    expect(url).toContain("orgId=org%20with%20spaces");
+    expect(url).toContain("userId=user%20with%20spaces");
   });
 
   it("sends x-api-key header", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ provider: "stripe", key: "sk_test_123" }),
+      json: async () => ({ key: "sk_test_123", keySource: "platform" }),
     });
 
-    await getDecryptedStripeKey("app_123", { method: "GET", path: "/products/:productId" });
+    await getDecryptedStripeKey("org_123", "user_456", { method: "GET", path: "/products/:productId" });
 
     const options = mockFetch.mock.calls[0][1] as RequestInit;
     expect(options.headers).toEqual(
@@ -83,10 +96,10 @@ describe("key-client", () => {
   it("sends X-Caller-Service, X-Caller-Method, X-Caller-Path headers", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ provider: "stripe", key: "sk_test_123" }),
+      json: async () => ({ key: "sk_test_123", keySource: "platform" }),
     });
 
-    await getDecryptedStripeKey("app_123", { method: "POST", path: "/checkout/create" });
+    await getDecryptedStripeKey("org_123", "user_456", { method: "POST", path: "/checkout/create" });
 
     const options = mockFetch.mock.calls[0][1] as RequestInit;
     const headers = options.headers as Record<string, string>;

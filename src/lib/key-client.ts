@@ -1,15 +1,15 @@
 /**
  * HTTP client for key-service
- * Resolves decrypted Stripe API keys for apps
+ * Resolves decrypted Stripe API keys for orgs
  */
 
 const KEY_SERVICE_URL =
   process.env.KEY_SERVICE_URL || "https://key.mcpfactory.org";
 const KEY_SERVICE_API_KEY = process.env.KEY_SERVICE_API_KEY || "";
 
-interface DecryptAppKeyResponse {
-  provider: string;
+export interface DecryptKeyResponse {
   key: string;
+  keySource: "platform" | "org";
 }
 
 interface CallerContext {
@@ -18,11 +18,15 @@ interface CallerContext {
 }
 
 /**
- * Fetches the decrypted Stripe secret key for a given appId from key-service.
- * Calls GET /internal/app-keys/stripe/decrypt?appId=xxx
+ * Fetches the decrypted Stripe secret key for a given org/user from key-service.
+ * Calls GET /keys/stripe/decrypt?orgId=xxx&userId=xxx
  */
-export async function getDecryptedStripeKey(appId: string, caller: CallerContext): Promise<string> {
-  const url = `${KEY_SERVICE_URL}/internal/app-keys/stripe/decrypt?appId=${encodeURIComponent(appId)}`;
+export async function getDecryptedStripeKey(
+  orgId: string,
+  userId: string,
+  caller: CallerContext
+): Promise<DecryptKeyResponse> {
+  const url = `${KEY_SERVICE_URL}/keys/stripe/decrypt?orgId=${encodeURIComponent(orgId)}&userId=${encodeURIComponent(userId)}`;
 
   const response = await fetch(url, {
     method: "GET",
@@ -36,17 +40,17 @@ export async function getDecryptedStripeKey(appId: string, caller: CallerContext
 
   if (response.status === 404) {
     throw new Error(
-      `No Stripe key configured for appId '${appId}'`
+      `No Stripe key configured for org '${orgId}'`
     );
   }
 
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(
-      `key-service GET /internal/app-keys/stripe/decrypt failed: ${response.status} - ${errorText}`
+      `key-service GET /keys/stripe/decrypt failed: ${response.status} - ${errorText}`
     );
   }
 
-  const data = (await response.json()) as DecryptAppKeyResponse;
-  return data.key;
+  const data = (await response.json()) as DecryptKeyResponse;
+  return data;
 }

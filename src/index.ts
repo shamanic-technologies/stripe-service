@@ -8,6 +8,7 @@ import path from "path";
 import fs from "fs";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { serviceAuth } from "./middleware/serviceAuth";
+import { requireIdentityHeaders } from "./middleware/identityHeaders";
 import { db } from "./db";
 import healthRoutes from "./routes/health";
 import paymentRoutes from "./routes/payments";
@@ -44,7 +45,7 @@ app.use(
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-API-Key", "X-Org-Id", "X-User-Id"],
   })
 );
 
@@ -58,6 +59,9 @@ app.use(express.json());
 
 // Service-to-service authentication (skips webhooks)
 app.use(serviceAuth);
+
+// Require identity headers (x-org-id, x-user-id) on all endpoints
+app.use(requireIdentityHeaders);
 
 // OpenAPI spec endpoint
 app.get("/openapi.json", (req, res) => {

@@ -28,11 +28,14 @@ router.post("/products/create", async (req: Request, res: Response) => {
   }
 
   const data = parsed.data;
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string;
 
   try {
     let stripeKey: string;
     try {
-      stripeKey = await resolveStripeKey(data.appId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      stripeKey = resolved.key;
     } catch (err: any) {
       console.error("Failed to resolve Stripe key:", err.message);
       return res.status(400).json({ error: err.message });
@@ -77,11 +80,14 @@ router.post("/prices/create", async (req: Request, res: Response) => {
   }
 
   const data = parsed.data;
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string;
 
   try {
     let stripeKey: string;
     try {
-      stripeKey = await resolveStripeKey(data.appId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      stripeKey = resolved.key;
     } catch (err: any) {
       console.error("Failed to resolve Stripe key:", err.message);
       return res.status(400).json({ error: err.message });
@@ -133,11 +139,14 @@ router.post("/coupons/create", async (req: Request, res: Response) => {
   }
 
   const data = parsed.data;
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string;
 
   try {
     let stripeKey: string;
     try {
-      stripeKey = await resolveStripeKey(data.appId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      stripeKey = resolved.key;
     } catch (err: any) {
       console.error("Failed to resolve Stripe key:", err.message);
       return res.status(400).json({ error: err.message });
@@ -185,16 +194,14 @@ router.post("/coupons/create", async (req: Request, res: Response) => {
 // GET /products/:productId
 router.get("/products/:productId", async (req: Request, res: Response) => {
   const { productId } = req.params;
-  const appId = req.query.appId as string | undefined;
-
-  if (!appId) {
-    return res.status(400).json({ error: "appId query parameter is required" });
-  }
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string;
 
   try {
     let stripeKey: string;
     try {
-      stripeKey = await resolveStripeKey(appId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      stripeKey = resolved.key;
     } catch (err: any) {
       return res.status(400).json({ error: err.message });
     }
@@ -215,16 +222,14 @@ router.get("/products/:productId", async (req: Request, res: Response) => {
 // GET /prices/:priceId
 router.get("/prices/:priceId", async (req: Request, res: Response) => {
   const { priceId } = req.params;
-  const appId = req.query.appId as string | undefined;
-
-  if (!appId) {
-    return res.status(400).json({ error: "appId query parameter is required" });
-  }
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string;
 
   try {
     let stripeKey: string;
     try {
-      stripeKey = await resolveStripeKey(appId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      stripeKey = resolved.key;
     } catch (err: any) {
       return res.status(400).json({ error: err.message });
     }
@@ -245,16 +250,14 @@ router.get("/prices/:priceId", async (req: Request, res: Response) => {
 // GET /prices/by-product/:productId
 router.get("/prices/by-product/:productId", async (req: Request, res: Response) => {
   const { productId } = req.params;
-  const appId = req.query.appId as string | undefined;
-
-  if (!appId) {
-    return res.status(400).json({ error: "appId query parameter is required" });
-  }
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string;
 
   try {
     let stripeKey: string;
     try {
-      stripeKey = await resolveStripeKey(appId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      stripeKey = resolved.key;
     } catch (err: any) {
       return res.status(400).json({ error: err.message });
     }
@@ -274,16 +277,14 @@ router.get("/prices/by-product/:productId", async (req: Request, res: Response) 
 // GET /coupons/:couponId
 router.get("/coupons/:couponId", async (req: Request, res: Response) => {
   const { couponId } = req.params;
-  const appId = req.query.appId as string | undefined;
-
-  if (!appId) {
-    return res.status(400).json({ error: "appId query parameter is required" });
-  }
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string;
 
   try {
     let stripeKey: string;
     try {
-      stripeKey = await resolveStripeKey(appId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      stripeKey = resolved.key;
     } catch (err: any) {
       return res.status(400).json({ error: err.message });
     }
