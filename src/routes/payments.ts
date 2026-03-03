@@ -26,24 +26,29 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
   }
 
   const data = parsed.data;
-  let runId = data.runId;
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string;
+  let runId = data.parentRunId;
 
   try {
-    // Resolve Stripe key: from key-service if appId provided, else STRIPE_SECRET_KEY env var
+    // Resolve Stripe key via key-service using orgId + userId
     let stripeKey: string;
+    let keySource: "platform" | "org";
     try {
-      stripeKey = await resolveStripeKey(data.appId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      stripeKey = resolved.key;
+      keySource = resolved.keySource;
     } catch (err: any) {
       console.error("Failed to resolve Stripe key:", err.message);
       return res.status(400).json({ error: err.message });
     }
 
-    // Create run in runs-service if orgId provided (BLOCKING)
-    if (data.orgId && !runId) {
+    // Create run in runs-service (BLOCKING)
+    if (!runId) {
       try {
         const run = await createRun({
-          clerkOrgId: data.orgId,
-          appId: data.appId || "stripe-service",
+          orgId,
+          userId,
           serviceName: "stripe-service",
           taskName: "create-checkout-session",
           brandId: data.brandId,
@@ -70,7 +75,7 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
         metadata: {
           ...data.metadata,
           ...(runId ? { runId } : {}),
-          ...(data.orgId ? { orgId: data.orgId } : {}),
+          orgId,
         },
         discounts: data.discounts,
       },
@@ -88,10 +93,10 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
     const [payment] = await db
       .insert(stripePayments)
       .values({
-        orgId: data.orgId,
+        orgId,
+        userId,
         runId,
         brandId: data.brandId,
-        appId: data.appId,
         campaignId: data.campaignId,
         stripeCheckoutSessionId: result.sessionId,
         amountInCents: 0, // Amount determined at checkout
@@ -104,7 +109,7 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
     // Add costs to run
     if (runId) {
       await addCosts(runId, [
-        { costName: "stripe-checkout-session", quantity: 1 },
+        { costName: "stripe-checkout-session", quantity: 1, costSource: keySource },
       ]).catch(console.error);
       await updateRun(runId, "completed").catch(console.error);
     }
@@ -135,24 +140,29 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
   }
 
   const data = parsed.data;
-  let runId = data.runId;
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string;
+  let runId = data.parentRunId;
 
   try {
-    // Resolve Stripe key: from key-service if appId provided, else STRIPE_SECRET_KEY env var
+    // Resolve Stripe key via key-service using orgId + userId
     let stripeKey: string;
+    let keySource: "platform" | "org";
     try {
-      stripeKey = await resolveStripeKey(data.appId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      stripeKey = resolved.key;
+      keySource = resolved.keySource;
     } catch (err: any) {
       console.error("Failed to resolve Stripe key:", err.message);
       return res.status(400).json({ error: err.message });
     }
 
-    // Create run in runs-service if orgId provided (BLOCKING)
-    if (data.orgId && !runId) {
+    // Create run in runs-service (BLOCKING)
+    if (!runId) {
       try {
         const run = await createRun({
-          clerkOrgId: data.orgId,
-          appId: data.appId || "stripe-service",
+          orgId,
+          userId,
           serviceName: "stripe-service",
           taskName: "create-payment-intent",
           brandId: data.brandId,
@@ -177,7 +187,7 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
         metadata: {
           ...data.metadata,
           ...(runId ? { runId } : {}),
-          ...(data.orgId ? { orgId: data.orgId } : {}),
+          orgId,
         },
       },
       stripeKey
@@ -194,10 +204,10 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
     const [payment] = await db
       .insert(stripePayments)
       .values({
-        orgId: data.orgId,
+        orgId,
+        userId,
         runId,
         brandId: data.brandId,
-        appId: data.appId,
         campaignId: data.campaignId,
         stripePaymentIntentId: result.paymentIntentId,
         amountInCents: data.amountInCents,
@@ -211,7 +221,7 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
     // Add costs to run
     if (runId) {
       await addCosts(runId, [
-        { costName: "stripe-payment-intent", quantity: 1 },
+        { costName: "stripe-payment-intent", quantity: 1, costSource: keySource },
       ]).catch(console.error);
       await updateRun(runId, "completed").catch(console.error);
     }

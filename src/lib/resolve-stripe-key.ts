@@ -1,4 +1,4 @@
-import { getDecryptedStripeKey } from "./key-client";
+import { getDecryptedStripeKey, DecryptKeyResponse } from "./key-client";
 
 interface CallerContext {
   method: string;
@@ -7,8 +7,12 @@ interface CallerContext {
 
 /**
  * Resolves the Stripe secret key for a request via key-service.
- * Always requires an appId — this service serves multiple apps by design.
+ * Uses orgId + userId to resolve the key. Returns key and keySource.
  */
-export async function resolveStripeKey(appId: string, caller: CallerContext): Promise<string> {
-  return getDecryptedStripeKey(appId, caller);
+export async function resolveStripeKey(
+  orgId: string,
+  userId: string,
+  caller: CallerContext
+): Promise<DecryptKeyResponse> {
+  return getDecryptedStripeKey(orgId, userId, caller);
 }

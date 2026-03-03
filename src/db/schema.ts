@@ -16,9 +16,9 @@ export const stripePayments = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     orgId: text("org_id"),
+    userId: text("user_id"),
     runId: text("run_id"),
     brandId: text("brand_id"),
-    appId: text("app_id"),
     campaignId: text("campaign_id"),
     stripePaymentIntentId: text("stripe_payment_intent_id"),
     stripeCheckoutSessionId: text("stripe_checkout_session_id"),
@@ -33,9 +33,9 @@ export const stripePayments = pgTable(
   },
   (table) => [
     index("idx_stripe_payments_org_id").on(table.orgId),
+    index("idx_stripe_payments_user_id").on(table.userId),
     index("idx_stripe_payments_run_id").on(table.runId),
     index("idx_stripe_payments_brand_id").on(table.brandId),
-    index("idx_stripe_payments_app_id").on(table.appId),
     index("idx_stripe_payments_campaign_id").on(table.campaignId),
     index("idx_stripe_payments_payment_intent_id").on(table.stripePaymentIntentId),
     index("idx_stripe_payments_checkout_session_id").on(table.stripeCheckoutSessionId),

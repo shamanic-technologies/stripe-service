@@ -28,9 +28,9 @@ vi.mock("../../src/lib/runs-client", () => ({
   addCosts: vi.fn().mockResolvedValue({ costs: [] }),
 }));
 
-// Mock the key resolver — always returns a key by default
+// Mock the key resolver — always returns a key + keySource by default
 vi.mock("../../src/lib/resolve-stripe-key", () => ({
-  resolveStripeKey: vi.fn().mockResolvedValue("sk_test_resolved_key"),
+  resolveStripeKey: vi.fn().mockResolvedValue({ key: "sk_test_resolved_key", keySource: "platform" }),
 }));
 
 // Mock the database
@@ -38,7 +38,7 @@ vi.mock("../../src/db", () => {
   const mockInsert = vi.fn().mockReturnValue({
     values: vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue([
-        { id: "payment_mock123", orgId: "org_123", amountInCents: 1000, currency: "usd", status: "pending" },
+        { id: "payment_mock123", orgId: "org_test_uuid", amountInCents: 1000, currency: "usd", status: "pending" },
       ]),
     }),
   });
@@ -52,6 +52,8 @@ vi.mock("../../src/db", () => {
 
 const app = createTestApp();
 const API_KEY = "test-secret-key";
+const ORG_ID = "org_test_uuid";
+const USER_ID = "user_test_uuid";
 
 describe("POST /checkout/create", () => {
   beforeEach(() => {
@@ -62,8 +64,9 @@ describe("POST /checkout/create", () => {
     const res = await request(app)
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
       .send({
-        appId: "app_test",
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
         cancelUrl: "https://example.com/cancel",
@@ -80,8 +83,9 @@ describe("POST /checkout/create", () => {
     const res = await request(app)
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
       .send({
-        appId: "app_test",
         lineItems: [],
         successUrl: "not-a-url",
       });
@@ -93,8 +97,9 @@ describe("POST /checkout/create", () => {
   it("returns 401 without API key", async () => {
     const res = await request(app)
       .post("/checkout/create")
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
       .send({
-        appId: "app_test",
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
         cancelUrl: "https://example.com/cancel",
@@ -103,12 +108,43 @@ describe("POST /checkout/create", () => {
     expect(res.status).toBe(401);
   });
 
+  it("returns 400 when x-org-id header is missing", async () => {
+    const res = await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", API_KEY)
+      .set("x-user-id", USER_ID)
+      .send({
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing required header: x-org-id");
+  });
+
+  it("returns 400 when x-user-id header is missing", async () => {
+    const res = await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .send({
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing required header: x-user-id");
+  });
+
   it("creates a checkout session with discounts", async () => {
     const res = await request(app)
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
       .send({
-        appId: "app_test",
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
         cancelUrl: "https://example.com/cancel",
@@ -133,8 +169,9 @@ describe("POST /checkout/create", () => {
     const res = await request(app)
       .post("/checkout/create")
       .set("X-API-Key", "wrong-key")
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
       .send({
-        appId: "app_test",
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
         cancelUrl: "https://example.com/cancel",
@@ -143,12 +180,13 @@ describe("POST /checkout/create", () => {
     expect(res.status).toBe(403);
   });
 
-  it("resolves Stripe key via key-service when appId is provided", async () => {
+  it("resolves Stripe key via key-service using identity headers", async () => {
     const res = await request(app)
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
       .send({
-        appId: "app_custom_123",
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
         cancelUrl: "https://example.com/cancel",
@@ -160,7 +198,7 @@ describe("POST /checkout/create", () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
-    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_123", expect.objectContaining({ method: "POST", path: "/checkout/create" }));
+    expect(resolveStripeKey).toHaveBeenCalledWith(ORG_ID, USER_ID, expect.objectContaining({ method: "POST", path: "/checkout/create" }));
 
     const { createCheckoutSession } = await import(
       "../../src/lib/stripe-client"
@@ -171,33 +209,20 @@ describe("POST /checkout/create", () => {
     );
   });
 
-  it("returns 400 when appId is missing", async () => {
-    const res = await request(app)
-      .post("/checkout/create")
-      .set("X-API-Key", API_KEY)
-      .send({
-        lineItems: [{ priceId: "price_123", quantity: 1 }],
-        successUrl: "https://example.com/success",
-        cancelUrl: "https://example.com/cancel",
-      });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Invalid request");
-  });
-
   it("returns 400 with clear error when key resolution fails", async () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
     (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error("No Stripe key configured for appId 'app_missing'")
+      new Error("No Stripe key configured for org 'org_missing'")
     );
 
     const res = await request(app)
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
+      .set("x-org-id", "org_missing")
+      .set("x-user-id", USER_ID)
       .send({
-        appId: "app_missing",
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
         cancelUrl: "https://example.com/cancel",
@@ -205,7 +230,7 @@ describe("POST /checkout/create", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe(
-      "No Stripe key configured for appId 'app_missing'"
+      "No Stripe key configured for org 'org_missing'"
     );
   });
 
@@ -220,8 +245,9 @@ describe("POST /payment-intent/create", () => {
     const res = await request(app)
       .post("/payment-intent/create")
       .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
       .send({
-        appId: "app_test",
         amountInCents: 5000,
         currency: "usd",
         description: "Test payment",
@@ -238,8 +264,9 @@ describe("POST /payment-intent/create", () => {
     const res = await request(app)
       .post("/payment-intent/create")
       .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
       .send({
-        appId: "app_test",
         amountInCents: 0,
       });
 
@@ -251,17 +278,20 @@ describe("POST /payment-intent/create", () => {
     const res = await request(app)
       .post("/payment-intent/create")
       .set("X-API-Key", API_KEY)
-      .send({ appId: "app_test" });
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
+      .send({});
 
     expect(res.status).toBe(400);
   });
 
-  it("resolves Stripe key via key-service when appId is provided", async () => {
+  it("resolves Stripe key via key-service using identity headers", async () => {
     const res = await request(app)
       .post("/payment-intent/create")
       .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
       .send({
-        appId: "app_custom_456",
         amountInCents: 3000,
       });
 
@@ -271,7 +301,7 @@ describe("POST /payment-intent/create", () => {
     const { resolveStripeKey } = await import(
       "../../src/lib/resolve-stripe-key"
     );
-    expect(resolveStripeKey).toHaveBeenCalledWith("app_custom_456", expect.objectContaining({ method: "POST", path: "/payment-intent/create" }));
+    expect(resolveStripeKey).toHaveBeenCalledWith(ORG_ID, USER_ID, expect.objectContaining({ method: "POST", path: "/payment-intent/create" }));
 
     const { createPaymentIntent } = await import(
       "../../src/lib/stripe-client"
@@ -287,20 +317,21 @@ describe("POST /payment-intent/create", () => {
       "../../src/lib/resolve-stripe-key"
     );
     (resolveStripeKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error("No Stripe key configured for appId 'app_failing'")
+      new Error("No Stripe key configured for org 'org_failing'")
     );
 
     const res = await request(app)
       .post("/payment-intent/create")
       .set("X-API-Key", API_KEY)
+      .set("x-org-id", "org_failing")
+      .set("x-user-id", USER_ID)
       .send({
-        appId: "app_failing",
         amountInCents: 3000,
       });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe(
-      "No Stripe key configured for appId 'app_failing'"
+      "No Stripe key configured for org 'org_failing'"
     );
   });
 });
