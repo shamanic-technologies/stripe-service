@@ -54,6 +54,7 @@ const app = createTestApp();
 const API_KEY = "test-secret-key";
 const ORG_ID = "org_test_uuid";
 const USER_ID = "user_test_uuid";
+const RUN_ID = "run_caller_123";
 
 describe("POST /checkout/create", () => {
   beforeEach(() => {
@@ -66,6 +67,7 @@ describe("POST /checkout/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
@@ -79,12 +81,54 @@ describe("POST /checkout/create", () => {
     expect(res.body.paymentId).toBe("payment_mock123");
   });
 
+  it("passes x-run-id as parentRunId to createRun", async () => {
+    await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
+      .send({
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+      });
+
+    const { createRun } = await import("../../src/lib/runs-client");
+    expect(createRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: ORG_ID,
+        userId: USER_ID,
+        serviceName: "stripe-service",
+        taskName: "create-checkout-session",
+        parentRunId: RUN_ID,
+      })
+    );
+  });
+
+  it("returns 400 when x-run-id header is missing", async () => {
+    const res = await request(app)
+      .post("/checkout/create")
+      .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
+      .send({
+        lineItems: [{ priceId: "price_123", quantity: 1 }],
+        successUrl: "https://example.com/success",
+        cancelUrl: "https://example.com/cancel",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing required header: x-run-id");
+  });
+
   it("returns 400 for invalid request", async () => {
     const res = await request(app)
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         lineItems: [],
         successUrl: "not-a-url",
@@ -99,6 +143,7 @@ describe("POST /checkout/create", () => {
       .post("/checkout/create")
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
@@ -113,6 +158,7 @@ describe("POST /checkout/create", () => {
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
@@ -128,6 +174,7 @@ describe("POST /checkout/create", () => {
       .post("/checkout/create")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
@@ -144,6 +191,7 @@ describe("POST /checkout/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
@@ -171,6 +219,7 @@ describe("POST /checkout/create", () => {
       .set("X-API-Key", "wrong-key")
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
@@ -186,6 +235,7 @@ describe("POST /checkout/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
@@ -222,6 +272,7 @@ describe("POST /checkout/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", "org_missing")
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         lineItems: [{ priceId: "price_123", quantity: 1 }],
         successUrl: "https://example.com/success",
@@ -247,6 +298,7 @@ describe("POST /payment-intent/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         amountInCents: 5000,
         currency: "usd",
@@ -260,12 +312,50 @@ describe("POST /payment-intent/create", () => {
     expect(res.body.paymentId).toBe("payment_mock123");
   });
 
+  it("passes x-run-id as parentRunId to createRun", async () => {
+    await request(app)
+      .post("/payment-intent/create")
+      .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
+      .send({
+        amountInCents: 3000,
+      });
+
+    const { createRun } = await import("../../src/lib/runs-client");
+    expect(createRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: ORG_ID,
+        userId: USER_ID,
+        serviceName: "stripe-service",
+        taskName: "create-payment-intent",
+        parentRunId: RUN_ID,
+      })
+    );
+  });
+
+  it("returns 400 when x-run-id header is missing", async () => {
+    const res = await request(app)
+      .post("/payment-intent/create")
+      .set("X-API-Key", API_KEY)
+      .set("x-org-id", ORG_ID)
+      .set("x-user-id", USER_ID)
+      .send({
+        amountInCents: 3000,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing required header: x-run-id");
+  });
+
   it("returns 400 for zero amount", async () => {
     const res = await request(app)
       .post("/payment-intent/create")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         amountInCents: 0,
       });
@@ -280,6 +370,7 @@ describe("POST /payment-intent/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({});
 
     expect(res.status).toBe(400);
@@ -291,6 +382,7 @@ describe("POST /payment-intent/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         amountInCents: 3000,
       });
@@ -325,6 +417,7 @@ describe("POST /payment-intent/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", "org_failing")
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         amountInCents: 3000,
       });

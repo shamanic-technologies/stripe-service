@@ -18,7 +18,7 @@ Payment processing service using Stripe. Handles checkout sessions, payment inte
 - **src/lib/resolve-stripe-key.ts** — Resolves Stripe key from key-service via orgId + userId
 - **src/lib/runs-client.ts** — Vendored runs-service HTTP client
 - **src/middleware/serviceAuth.ts** — X-API-Key authentication
-- **src/middleware/identityHeaders.ts** — Requires x-org-id and x-user-id headers
+- **src/middleware/identityHeaders.ts** — Requires x-org-id, x-user-id, and x-run-id headers
 - **src/routes/** — Express route handlers (health, payments, status, webhooks)
 - **src/db/schema.ts** — Drizzle table definitions
 - **scripts/generate-openapi.ts** — OpenAPI spec generator
@@ -26,10 +26,11 @@ Payment processing service using Stripe. Handles checkout sessions, payment inte
 ## Key Patterns
 - Zod schemas define all request/response types and auto-generate OpenAPI
 - Never edit openapi.json manually — always regenerate
-- **Identity headers**: All endpoints (except /health, /openapi.json, webhooks) require `x-org-id` and `x-user-id` headers (internal UUIDs from client-service)
+- **Identity headers**: All endpoints (except /health, /openapi.json, webhooks) require `x-org-id`, `x-user-id`, and `x-run-id` headers. `x-org-id` and `x-user-id` are internal UUIDs from client-service. `x-run-id` is the caller's run ID (used as `parentRunId` when creating this service's own child run in runs-service).
 - **Dynamic Stripe keys**: The Stripe key is resolved from key-service via `GET /keys/stripe/decrypt?orgId=...&userId=...`. Returns `{ key, keySource }`. No `appId` — identity comes from headers.
 - **Cost tracking**: `costSource` ("platform" or "org") is required on every runs-service cost item. Comes from key-service's decrypt response.
-- Runs-service integration is BLOCKING: create run → process payment → record → add costs (with costSource) → complete run
+- **Run hierarchy**: The service always creates its own child run (with `parentRunId` from `x-run-id` header), declares costs on its own `runId`, and completes its own run. The parent-child link lives only in runs-service.
+- Runs-service integration is BLOCKING: create child run → process payment → record → add costs (with costSource) → complete run
 - Webhooks use Stripe signature verification + idempotent inserts
 - All tests use Vitest + Supertest with mocked Stripe SDK
 
