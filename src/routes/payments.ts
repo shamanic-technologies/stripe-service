@@ -28,7 +28,8 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
   const data = parsed.data;
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
-  let runId = data.parentRunId;
+  const callerRunId = res.locals.runId as string;
+  let runId: string | undefined;
 
   try {
     // Resolve Stripe key via key-service using orgId + userId
@@ -43,24 +44,23 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
       return res.status(400).json({ error: err.message });
     }
 
-    // Create run in runs-service (BLOCKING)
-    if (!runId) {
-      try {
-        const run = await createRun({
-          orgId,
-          userId,
-          serviceName: "stripe-service",
-          taskName: "create-checkout-session",
-          brandId: data.brandId,
-          campaignId: data.campaignId,
-        });
-        runId = run.id;
-      } catch (err) {
-        console.error("Failed to create run:", err);
-        return res.status(500).json({
-          error: "Failed to create run in runs-service",
-        });
-      }
+    // Create own run in runs-service (BLOCKING), linked to caller's run
+    try {
+      const run = await createRun({
+        orgId,
+        userId,
+        serviceName: "stripe-service",
+        taskName: "create-checkout-session",
+        parentRunId: callerRunId,
+        brandId: data.brandId,
+        campaignId: data.campaignId,
+      });
+      runId = run.id;
+    } catch (err) {
+      console.error("Failed to create run:", err);
+      return res.status(500).json({
+        error: "Failed to create run in runs-service",
+      });
     }
 
     // Create Stripe checkout session
@@ -74,7 +74,7 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
         mode: data.mode,
         metadata: {
           ...data.metadata,
-          ...(runId ? { runId } : {}),
+          runId,
           orgId,
         },
         discounts: data.discounts,
@@ -83,9 +83,7 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
     );
 
     if (!result.success) {
-      if (runId) {
-        await updateRun(runId, "failed").catch(console.error);
-      }
+      await updateRun(runId, "failed").catch(console.error);
       return res.status(500).json({ error: result.error || "Stripe error" });
     }
 
@@ -107,12 +105,10 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
       .returning();
 
     // Add costs to run
-    if (runId) {
-      await addCosts(runId, [
-        { costName: "stripe-checkout-session", quantity: 1, costSource: keySource },
-      ]).catch(console.error);
-      await updateRun(runId, "completed").catch(console.error);
-    }
+    await addCosts(runId, [
+      { costName: "stripe-checkout-session", quantity: 1, costSource: keySource },
+    ]).catch(console.error);
+    await updateRun(runId, "completed").catch(console.error);
 
     return res.json({
       success: true,
@@ -142,7 +138,8 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
   const data = parsed.data;
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
-  let runId = data.parentRunId;
+  const callerRunId = res.locals.runId as string;
+  let runId: string | undefined;
 
   try {
     // Resolve Stripe key via key-service using orgId + userId
@@ -157,24 +154,23 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
       return res.status(400).json({ error: err.message });
     }
 
-    // Create run in runs-service (BLOCKING)
-    if (!runId) {
-      try {
-        const run = await createRun({
-          orgId,
-          userId,
-          serviceName: "stripe-service",
-          taskName: "create-payment-intent",
-          brandId: data.brandId,
-          campaignId: data.campaignId,
-        });
-        runId = run.id;
-      } catch (err) {
-        console.error("Failed to create run:", err);
-        return res.status(500).json({
-          error: "Failed to create run in runs-service",
-        });
-      }
+    // Create own run in runs-service (BLOCKING), linked to caller's run
+    try {
+      const run = await createRun({
+        orgId,
+        userId,
+        serviceName: "stripe-service",
+        taskName: "create-payment-intent",
+        parentRunId: callerRunId,
+        brandId: data.brandId,
+        campaignId: data.campaignId,
+      });
+      runId = run.id;
+    } catch (err) {
+      console.error("Failed to create run:", err);
+      return res.status(500).json({
+        error: "Failed to create run in runs-service",
+      });
     }
 
     // Create Stripe payment intent
@@ -186,7 +182,7 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
         description: data.description,
         metadata: {
           ...data.metadata,
-          ...(runId ? { runId } : {}),
+          runId,
           orgId,
         },
       },
@@ -194,9 +190,7 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
     );
 
     if (!result.success) {
-      if (runId) {
-        await updateRun(runId, "failed").catch(console.error);
-      }
+      await updateRun(runId, "failed").catch(console.error);
       return res.status(500).json({ error: result.error || "Stripe error" });
     }
 
@@ -219,12 +213,10 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
       .returning();
 
     // Add costs to run
-    if (runId) {
-      await addCosts(runId, [
-        { costName: "stripe-payment-intent", quantity: 1, costSource: keySource },
-      ]).catch(console.error);
-      await updateRun(runId, "completed").catch(console.error);
-    }
+    await addCosts(runId, [
+      { costName: "stripe-payment-intent", quantity: 1, costSource: keySource },
+    ]).catch(console.error);
+    await updateRun(runId, "completed").catch(console.error);
 
     return res.json({
       success: true,

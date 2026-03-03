@@ -29,7 +29,6 @@ export const ErrorResponseSchema = z
 
 export const CreateCheckoutSessionRequestSchema = z
   .object({
-    parentRunId: z.string().optional().openapi({ description: "Parent run ID" }),
     brandId: z.string().optional().openapi({ description: "Brand ID" }),
     campaignId: z.string().optional().openapi({ description: "Campaign ID" }),
     lineItems: z
@@ -81,7 +80,6 @@ export const CreateCheckoutSessionResponseSchema = z
 
 export const CreatePaymentIntentRequestSchema = z
   .object({
-    parentRunId: z.string().optional().openapi({ description: "Parent run ID" }),
     brandId: z.string().optional().openapi({ description: "Brand ID" }),
     campaignId: z.string().optional().openapi({ description: "Campaign ID" }),
     amountInCents: z.number().int().positive().openapi({ description: "Amount in cents" }),

@@ -11,8 +11,8 @@ function createApp() {
   app.get("/health", (_req, res) => res.json({ status: "ok" }));
   app.get("/openapi.json", (_req, res) => res.json({ openapi: "3.0.0" }));
   app.post("/webhooks/stripe", (_req, res) => res.json({ received: true }));
-  app.get("/test", (_req, res) => res.json({ orgId: res.locals.orgId, userId: res.locals.userId }));
-  app.post("/test", (_req, res) => res.json({ orgId: res.locals.orgId, userId: res.locals.userId }));
+  app.get("/test", (_req, res) => res.json({ orgId: res.locals.orgId, userId: res.locals.userId, runId: res.locals.runId }));
+  app.post("/test", (_req, res) => res.json({ orgId: res.locals.orgId, userId: res.locals.userId, runId: res.locals.runId }));
 
   return app;
 }
@@ -23,7 +23,8 @@ describe("requireIdentityHeaders middleware", () => {
   it("returns 400 when x-org-id is missing", async () => {
     const res = await request(app)
       .get("/test")
-      .set("x-user-id", "user_123");
+      .set("x-user-id", "user_123")
+      .set("x-run-id", "run_123");
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Missing required header: x-org-id");
@@ -32,28 +33,41 @@ describe("requireIdentityHeaders middleware", () => {
   it("returns 400 when x-user-id is missing", async () => {
     const res = await request(app)
       .get("/test")
-      .set("x-org-id", "org_123");
+      .set("x-org-id", "org_123")
+      .set("x-run-id", "run_123");
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Missing required header: x-user-id");
   });
 
-  it("returns 400 when both headers are missing", async () => {
+  it("returns 400 when x-run-id is missing", async () => {
+    const res = await request(app)
+      .get("/test")
+      .set("x-org-id", "org_123")
+      .set("x-user-id", "user_123");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing required header: x-run-id");
+  });
+
+  it("returns 400 when all headers are missing", async () => {
     const res = await request(app).get("/test");
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Missing required header: x-org-id");
   });
 
-  it("passes through when both headers are present", async () => {
+  it("passes through when all headers are present", async () => {
     const res = await request(app)
       .get("/test")
       .set("x-org-id", "org_123")
-      .set("x-user-id", "user_456");
+      .set("x-user-id", "user_456")
+      .set("x-run-id", "run_789");
 
     expect(res.status).toBe(200);
     expect(res.body.orgId).toBe("org_123");
     expect(res.body.userId).toBe("user_456");
+    expect(res.body.runId).toBe("run_789");
   });
 
   it("skips validation for /health", async () => {

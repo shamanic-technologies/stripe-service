@@ -104,6 +104,7 @@ const app = createTestApp();
 const API_KEY = "test-secret-key";
 const ORG_ID = "org_test_uuid";
 const USER_ID = "user_test_uuid";
+const RUN_ID = "run_caller_123";
 
 describe("POST /products/create", () => {
   beforeEach(() => {
@@ -116,6 +117,7 @@ describe("POST /products/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         name: "Premium Course",
         description: "A comprehensive TypeScript course",
@@ -133,6 +135,7 @@ describe("POST /products/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         name: "Premium Course",
         metadata: { courseId: "course_abc" },
@@ -148,6 +151,7 @@ describe("POST /products/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({});
 
     expect(res.status).toBe(400);
@@ -160,6 +164,7 @@ describe("POST /products/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({ name: "" });
 
     expect(res.status).toBe(400);
@@ -171,6 +176,7 @@ describe("POST /products/create", () => {
       .post("/products/create")
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({ name: "Test" });
 
     expect(res.status).toBe(401);
@@ -182,6 +188,7 @@ describe("POST /products/create", () => {
       .set("X-API-Key", "wrong-key")
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({ name: "Test" });
 
     expect(res.status).toBe(403);
@@ -199,6 +206,7 @@ describe("POST /products/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({ name: "Test Product" });
 
     expect(res.status).toBe(500);
@@ -217,6 +225,7 @@ describe("POST /prices/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         productId: "prod_123",
         unitAmountInCents: 2999,
@@ -236,6 +245,7 @@ describe("POST /prices/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         productId: "prod_123",
         unitAmountInCents: 999,
@@ -253,6 +263,7 @@ describe("POST /prices/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         unitAmountInCents: 2999,
       });
@@ -267,6 +278,7 @@ describe("POST /prices/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         productId: "prod_123",
         unitAmountInCents: 0,
@@ -282,6 +294,7 @@ describe("POST /prices/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         productId: "prod_123",
         unitAmountInCents: -100,
@@ -296,6 +309,7 @@ describe("POST /prices/create", () => {
       .post("/prices/create")
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         productId: "prod_123",
         unitAmountInCents: 2999,
@@ -316,6 +330,7 @@ describe("POST /prices/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         productId: "prod_invalid",
         unitAmountInCents: 2999,
@@ -337,6 +352,7 @@ describe("POST /coupons/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         name: "50% Off",
         percentOff: 50,
@@ -367,6 +383,7 @@ describe("POST /coupons/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         name: "$10 Off",
         amountOffInCents: 1000,
@@ -385,6 +402,7 @@ describe("POST /coupons/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         name: "Invalid",
       });
@@ -399,6 +417,7 @@ describe("POST /coupons/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         amountOffInCents: 1000,
       });
@@ -412,6 +431,7 @@ describe("POST /coupons/create", () => {
       .post("/coupons/create")
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({ percentOff: 50 });
 
     expect(res.status).toBe(401);
@@ -429,6 +449,7 @@ describe("POST /coupons/create", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({ percentOff: 50 });
 
     expect(res.status).toBe(500);
@@ -446,7 +467,8 @@ describe("GET /products/:productId", () => {
       .get("/products/prod_test_mock123")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
-      .set("x-user-id", USER_ID);
+      .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID);
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -466,7 +488,8 @@ describe("GET /products/:productId", () => {
       .get("/products/prod_nonexistent")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
-      .set("x-user-id", USER_ID);
+      .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID);
 
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("Product not found");
@@ -489,7 +512,8 @@ describe("GET /prices/:priceId", () => {
       .get("/prices/price_test_mock123")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
-      .set("x-user-id", USER_ID);
+      .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID);
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -511,7 +535,8 @@ describe("GET /prices/:priceId", () => {
       .get("/prices/price_nonexistent")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
-      .set("x-user-id", USER_ID);
+      .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID);
 
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("Price not found");
@@ -534,7 +559,8 @@ describe("GET /prices/by-product/:productId", () => {
       .get("/prices/by-product/prod_test_mock123")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
-      .set("x-user-id", USER_ID);
+      .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID);
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -554,7 +580,8 @@ describe("GET /prices/by-product/:productId", () => {
       .get("/prices/by-product/prod_test_mock123")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
-      .set("x-user-id", USER_ID);
+      .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID);
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("Stripe error");
@@ -577,7 +604,8 @@ describe("GET /coupons/:couponId", () => {
       .get("/coupons/coupon_test_mock123")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
-      .set("x-user-id", USER_ID);
+      .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID);
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -599,7 +627,8 @@ describe("GET /coupons/:couponId", () => {
       .get("/coupons/coupon_nonexistent")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
-      .set("x-user-id", USER_ID);
+      .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID);
 
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("Coupon not found");
@@ -623,6 +652,7 @@ describe("Dynamic Stripe key resolution via identity headers", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         name: "Custom App Product",
       });
@@ -648,6 +678,7 @@ describe("Dynamic Stripe key resolution via identity headers", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         productId: "prod_123",
         unitAmountInCents: 2999,
@@ -673,6 +704,7 @@ describe("Dynamic Stripe key resolution via identity headers", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         percentOff: 50,
       });
@@ -696,7 +728,8 @@ describe("Dynamic Stripe key resolution via identity headers", () => {
       .get("/products/prod_test_mock123")
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
-      .set("x-user-id", USER_ID);
+      .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID);
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -726,6 +759,7 @@ describe("Dynamic Stripe key resolution via identity headers", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", "org_failing")
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         name: "Should Fail",
       });
@@ -746,6 +780,7 @@ describe("Idempotent creates with custom id", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         id: "prod_custom_123",
         name: "Custom Product",
@@ -767,6 +802,7 @@ describe("Idempotent creates with custom id", () => {
       .set("X-API-Key", API_KEY)
       .set("x-org-id", ORG_ID)
       .set("x-user-id", USER_ID)
+      .set("x-run-id", RUN_ID)
       .send({
         id: "coupon_custom_123",
         percentOff: 25,
