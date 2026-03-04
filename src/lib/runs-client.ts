@@ -51,18 +51,32 @@ export interface CostItem {
   costSource: "platform" | "org";
 }
 
+export interface IdentityContext {
+  orgId: string;
+  userId: string;
+  runId?: string;
+}
+
 // --- HTTP helpers ---
 
 async function runsRequest<T>(
   path: string,
-  options: { method?: string; body?: unknown } = {}
+  options: { method?: string; body?: unknown; identity?: IdentityContext } = {}
 ): Promise<T> {
-  const { method = "GET", body } = options;
+  const { method = "GET", body, identity } = options;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "X-API-Key": RUNS_SERVICE_API_KEY,
   };
+
+  if (identity) {
+    headers["x-org-id"] = identity.orgId;
+    headers["x-user-id"] = identity.userId;
+    if (identity.runId) {
+      headers["x-run-id"] = identity.runId;
+    }
+  }
 
   const response = await fetch(`${RUNS_SERVICE_URL}${path}`, {
     method,
@@ -83,29 +97,35 @@ async function runsRequest<T>(
 // --- Public API ---
 
 export async function createRun(params: CreateRunParams): Promise<Run> {
+  const { orgId, userId, parentRunId, ...body } = params;
   return runsRequest<Run>("/v1/runs", {
     method: "POST",
-    body: params,
+    body,
+    identity: { orgId, userId, runId: parentRunId },
   });
 }
 
 export async function updateRun(
   runId: string,
   status: "completed" | "failed",
+  identity: IdentityContext,
   error?: string
 ): Promise<Run> {
   return runsRequest<Run>(`/v1/runs/${runId}`, {
     method: "PATCH",
     body: { status, error },
+    identity,
   });
 }
 
 export async function addCosts(
   runId: string,
-  items: CostItem[]
+  items: CostItem[],
+  identity: IdentityContext
 ): Promise<{ costs: RunCost[] }> {
   return runsRequest<{ costs: RunCost[] }>(`/v1/runs/${runId}/costs`, {
     method: "POST",
     body: { items },
+    identity,
   });
 }

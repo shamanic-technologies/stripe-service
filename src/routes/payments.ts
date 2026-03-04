@@ -30,6 +30,7 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
   const userId = res.locals.userId as string;
   const callerRunId = res.locals.runId as string;
   let runId: string | undefined;
+  const identity = { orgId, userId };
 
   try {
     // Resolve Stripe key via key-service using orgId + userId
@@ -83,7 +84,7 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
     );
 
     if (!result.success) {
-      await updateRun(runId, "failed").catch(console.error);
+      await updateRun(runId, "failed", { ...identity, runId }).catch(console.error);
       return res.status(500).json({ error: result.error || "Stripe error" });
     }
 
@@ -107,8 +108,8 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
     // Add costs to run
     await addCosts(runId, [
       { costName: "stripe-checkout-session", quantity: 1, costSource: keySource },
-    ]).catch(console.error);
-    await updateRun(runId, "completed").catch(console.error);
+    ], { ...identity, runId }).catch(console.error);
+    await updateRun(runId, "completed", { ...identity, runId }).catch(console.error);
 
     return res.json({
       success: true,
@@ -119,7 +120,7 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("Checkout create error:", error);
     if (runId) {
-      await updateRun(runId, "failed").catch(console.error);
+      await updateRun(runId, "failed", { ...identity, runId }).catch(console.error);
     }
     return res.status(500).json({ error: error.message || "Internal server error" });
   }
@@ -140,6 +141,7 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
   const userId = res.locals.userId as string;
   const callerRunId = res.locals.runId as string;
   let runId: string | undefined;
+  const identity = { orgId, userId };
 
   try {
     // Resolve Stripe key via key-service using orgId + userId
@@ -190,7 +192,7 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
     );
 
     if (!result.success) {
-      await updateRun(runId, "failed").catch(console.error);
+      await updateRun(runId, "failed", { ...identity, runId }).catch(console.error);
       return res.status(500).json({ error: result.error || "Stripe error" });
     }
 
@@ -215,8 +217,8 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
     // Add costs to run
     await addCosts(runId, [
       { costName: "stripe-payment-intent", quantity: 1, costSource: keySource },
-    ]).catch(console.error);
-    await updateRun(runId, "completed").catch(console.error);
+    ], { ...identity, runId }).catch(console.error);
+    await updateRun(runId, "completed", { ...identity, runId }).catch(console.error);
 
     return res.json({
       success: true,
@@ -228,7 +230,7 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("Payment intent create error:", error);
     if (runId) {
-      await updateRun(runId, "failed").catch(console.error);
+      await updateRun(runId, "failed", { ...identity, runId }).catch(console.error);
     }
     return res.status(500).json({ error: error.message || "Internal server error" });
   }

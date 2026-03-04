@@ -107,4 +107,18 @@ describe("key-client", () => {
     expect(headers["x-caller-method"]).toBe("POST");
     expect(headers["x-caller-path"]).toBe("/checkout/create");
   });
+
+  it("sends x-org-id and x-user-id identity headers", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ key: "sk_test_123", keySource: "platform" }),
+    });
+
+    await getDecryptedStripeKey("org_abc", "user_xyz", { method: "GET", path: "/products/:productId" });
+
+    const options = mockFetch.mock.calls[0][1] as RequestInit;
+    const headers = options.headers as Record<string, string>;
+    expect(headers["x-org-id"]).toBe("org_abc");
+    expect(headers["x-user-id"]).toBe("user_xyz");
+  });
 });
