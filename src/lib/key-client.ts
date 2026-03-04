@@ -32,6 +32,8 @@ export async function getDecryptedStripeKey(
     method: "GET",
     headers: {
       "x-api-key": KEY_SERVICE_API_KEY,
+      "x-org-id": orgId,
+      "x-user-id": userId,
       "x-caller-service": "stripe",
       "x-caller-method": caller.method,
       "x-caller-path": caller.path,
