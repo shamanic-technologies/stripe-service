@@ -367,6 +367,15 @@ export const StatsRequestSchema = z
   })
   .openapi("StatsRequest");
 
+export const StatsQuerySchema = z
+  .object({
+    runIds: z.string().optional().openapi({ description: "Comma-separated run IDs" }),
+    orgId: z.string().optional().openapi({ description: "Filter by org ID" }),
+    brandId: z.string().optional().openapi({ description: "Filter by brand ID" }),
+    campaignId: z.string().optional().openapi({ description: "Filter by campaign ID" }),
+  })
+  .openapi("StatsQuery");
+
 export const StatsResponseSchema = z
   .object({
     totalPayments: z.number(),
@@ -749,9 +758,27 @@ registry.registerPath({
 // --- Stats ---
 
 registry.registerPath({
-  method: "post",
+  method: "get",
   path: "/stats",
   summary: "Get aggregated payment stats",
+  tags: ["Payment Status"],
+  security: [{ apiKey: [] }],
+  request: {
+    headers: WorkflowTrackingHeadersSchema,
+    query: StatsQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "Aggregated stats",
+      content: { "application/json": { schema: StatsResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/stats",
+  summary: "Get aggregated payment stats (deprecated, use GET)",
   tags: ["Payment Status"],
   security: [{ apiKey: [] }],
   request: {

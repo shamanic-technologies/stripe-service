@@ -1837,8 +1837,103 @@
       }
     },
     "/stats": {
-      "post": {
+      "get": {
         "summary": "Get aggregated payment stats",
+        "tags": [
+          "Payment Status"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated run IDs"
+            },
+            "required": false,
+            "description": "Comma-separated run IDs",
+            "name": "runIds",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by org ID"
+            },
+            "required": false,
+            "description": "Filter by org ID",
+            "name": "orgId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by brand ID"
+            },
+            "required": false,
+            "description": "Filter by brand ID",
+            "name": "brandId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by campaign ID"
+            },
+            "required": false,
+            "description": "Filter by campaign ID",
+            "name": "campaignId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Aggregated stats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Get aggregated payment stats (deprecated, use GET)",
         "tags": [
           "Payment Status"
         ],
