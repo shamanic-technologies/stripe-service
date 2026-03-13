@@ -822,30 +822,6 @@
           "refundCount",
           "disputeCount"
         ]
-      },
-      "StatsRequest": {
-        "type": "object",
-        "properties": {
-          "runIds": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Filter by run IDs"
-          },
-          "orgId": {
-            "type": "string",
-            "description": "Filter by org ID"
-          },
-          "brandId": {
-            "type": "string",
-            "description": "Filter by brand ID"
-          },
-          "campaignId": {
-            "type": "string",
-            "description": "Filter by campaign ID"
-          }
-        }
       }
     },
     "parameters": {}
@@ -1919,70 +1895,6 @@
             "in": "header"
           }
         ],
-        "responses": {
-          "200": {
-            "description": "Aggregated stats",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StatsResponse"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "summary": "Get aggregated payment stats (deprecated, use GET)",
-        "tags": [
-          "Payment Status"
-        ],
-        "security": [
-          {
-            "apiKey": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "description": "Campaign ID (injected by workflow-service)"
-            },
-            "required": false,
-            "description": "Campaign ID (injected by workflow-service)",
-            "name": "x-campaign-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Brand ID (injected by workflow-service)"
-            },
-            "required": false,
-            "description": "Brand ID (injected by workflow-service)",
-            "name": "x-brand-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Workflow name (injected by workflow-service)"
-            },
-            "required": false,
-            "description": "Workflow name (injected by workflow-service)",
-            "name": "x-workflow-name",
-            "in": "header"
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StatsRequest"
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Aggregated stats",
