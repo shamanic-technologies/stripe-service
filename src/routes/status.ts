@@ -98,71 +98,101 @@ router.get("/status/by-run/:runId", async (req: Request, res: Response) => {
   }
 });
 
-// POST /stats - Aggregated stats
-router.post("/stats", async (req: Request, res: Response) => {
-  const { runIds, orgId, brandId, campaignId } = req.body;
+// Shared stats logic
+async function handleStats(filters: {
+  runIds?: string[];
+  orgId?: string;
+  brandId?: string;
+  campaignId?: string;
+}) {
+  const { runIds, orgId, brandId, campaignId } = filters;
+  const conditions = [];
 
+  if (orgId) conditions.push(eq(stripePayments.orgId, orgId));
+  if (brandId) conditions.push(eq(stripePayments.brandId, brandId));
+  if (campaignId) conditions.push(eq(stripePayments.campaignId, campaignId));
+  if (runIds?.length) conditions.push(inArray(stripePayments.runId, runIds));
+
+  const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+  const payments = await db
+    .select()
+    .from(stripePayments)
+    .where(whereClause);
+
+  const intentIds = payments
+    .map((p) => p.stripePaymentIntentId)
+    .filter(Boolean) as string[];
+
+  let successCount = 0;
+  let failureCount = 0;
+  let refundCount = 0;
+  let disputeCount = 0;
+
+  if (intentIds.length > 0) {
+    const [successes, failures, refundsResult, disputesResult] = await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(stripePaymentSuccesses)
+        .where(inArray(stripePaymentSuccesses.stripePaymentIntentId, intentIds)),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(stripePaymentFailures)
+        .where(inArray(stripePaymentFailures.stripePaymentIntentId, intentIds)),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(stripeRefunds)
+        .where(inArray(stripeRefunds.stripePaymentIntentId, intentIds)),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(stripeDisputes)
+        .where(inArray(stripeDisputes.stripePaymentIntentId, intentIds)),
+    ]);
+
+    successCount = Number(successes[0]?.count || 0);
+    failureCount = Number(failures[0]?.count || 0);
+    refundCount = Number(refundsResult[0]?.count || 0);
+    disputeCount = Number(disputesResult[0]?.count || 0);
+  }
+
+  const totalAmountInCents = payments.reduce((sum, p) => sum + p.amountInCents, 0);
+
+  return {
+    totalPayments: payments.length,
+    totalAmountInCents,
+    successCount,
+    failureCount,
+    refundCount,
+    disputeCount,
+  };
+}
+
+// GET /stats - Aggregated stats (preferred)
+router.get("/stats", async (req: Request, res: Response) => {
   try {
-    const conditions = [];
+    const { runIds, orgId, brandId, campaignId } = req.query;
+    const parsedRunIds = typeof runIds === "string" && runIds
+      ? runIds.split(",").map((id) => id.trim())
+      : undefined;
 
-    if (orgId) conditions.push(eq(stripePayments.orgId, orgId));
-    if (brandId) conditions.push(eq(stripePayments.brandId, brandId));
-    if (campaignId) conditions.push(eq(stripePayments.campaignId, campaignId));
-    if (runIds?.length) conditions.push(inArray(stripePayments.runId, runIds));
-
-    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
-
-    const payments = await db
-      .select()
-      .from(stripePayments)
-      .where(whereClause);
-
-    // Gather all payment intent IDs for event queries
-    const intentIds = payments
-      .map((p) => p.stripePaymentIntentId)
-      .filter(Boolean) as string[];
-
-    let successCount = 0;
-    let failureCount = 0;
-    let refundCount = 0;
-    let disputeCount = 0;
-
-    if (intentIds.length > 0) {
-      const [successes, failures, refundsResult, disputesResult] = await Promise.all([
-        db
-          .select({ count: sql<number>`count(*)` })
-          .from(stripePaymentSuccesses)
-          .where(inArray(stripePaymentSuccesses.stripePaymentIntentId, intentIds)),
-        db
-          .select({ count: sql<number>`count(*)` })
-          .from(stripePaymentFailures)
-          .where(inArray(stripePaymentFailures.stripePaymentIntentId, intentIds)),
-        db
-          .select({ count: sql<number>`count(*)` })
-          .from(stripeRefunds)
-          .where(inArray(stripeRefunds.stripePaymentIntentId, intentIds)),
-        db
-          .select({ count: sql<number>`count(*)` })
-          .from(stripeDisputes)
-          .where(inArray(stripeDisputes.stripePaymentIntentId, intentIds)),
-      ]);
-
-      successCount = Number(successes[0]?.count || 0);
-      failureCount = Number(failures[0]?.count || 0);
-      refundCount = Number(refundsResult[0]?.count || 0);
-      disputeCount = Number(disputesResult[0]?.count || 0);
-    }
-
-    const totalAmountInCents = payments.reduce((sum, p) => sum + p.amountInCents, 0);
-
-    return res.json({
-      totalPayments: payments.length,
-      totalAmountInCents,
-      successCount,
-      failureCount,
-      refundCount,
-      disputeCount,
+    const result = await handleStats({
+      runIds: parsedRunIds,
+      orgId: typeof orgId === "string" ? orgId : undefined,
+      brandId: typeof brandId === "string" ? brandId : undefined,
+      campaignId: typeof campaignId === "string" ? campaignId : undefined,
     });
+    return res.json(result);
+  } catch (error: any) {
+    console.error("Stats error:", error);
+    return res.status(500).json({ error: error.message || "Internal server error" });
+  }
+});
+
+// POST /stats - Aggregated stats (deprecated, use GET /stats)
+router.post("/stats", async (req: Request, res: Response) => {
+  try {
+    const result = await handleStats(req.body);
+    return res.json(result);
   } catch (error: any) {
     console.error("Stats error:", error);
     return res.status(500).json({ error: error.message || "Internal server error" });
