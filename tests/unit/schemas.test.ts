@@ -5,7 +5,7 @@ import {
   CreateProductRequestSchema,
   CreatePriceRequestSchema,
   CreateCouponRequestSchema,
-  StatsRequestSchema,
+  StatsQuerySchema,
   ErrorResponseSchema,
 } from "../../src/schemas";
 
@@ -336,15 +336,15 @@ describe("CreateCheckoutSessionRequestSchema with discounts", () => {
   });
 });
 
-describe("StatsRequestSchema", () => {
-  it("accepts empty body", () => {
-    const result = StatsRequestSchema.safeParse({});
+describe("StatsQuerySchema", () => {
+  it("accepts empty query", () => {
+    const result = StatsQuerySchema.safeParse({});
     expect(result.success).toBe(true);
   });
 
   it("accepts all filter fields", () => {
-    const result = StatsRequestSchema.safeParse({
-      runIds: ["run_1", "run_2"],
+    const result = StatsQuerySchema.safeParse({
+      runIds: "run_1,run_2",
       orgId: "org_123",
       brandId: "brand_123",
       campaignId: "campaign_123",

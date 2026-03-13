@@ -358,15 +358,6 @@ export const PaymentStatusResponseSchema = z
 
 // ===== Stats =====
 
-export const StatsRequestSchema = z
-  .object({
-    runIds: z.array(z.string()).optional().openapi({ description: "Filter by run IDs" }),
-    orgId: z.string().optional().openapi({ description: "Filter by org ID" }),
-    brandId: z.string().optional().openapi({ description: "Filter by brand ID" }),
-    campaignId: z.string().optional().openapi({ description: "Filter by campaign ID" }),
-  })
-  .openapi("StatsRequest");
-
 export const StatsQuerySchema = z
   .object({
     runIds: z.string().optional().openapi({ description: "Comma-separated run IDs" }),
@@ -766,26 +757,6 @@ registry.registerPath({
   request: {
     headers: WorkflowTrackingHeadersSchema,
     query: StatsQuerySchema,
-  },
-  responses: {
-    200: {
-      description: "Aggregated stats",
-      content: { "application/json": { schema: StatsResponseSchema } },
-    },
-  },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/stats",
-  summary: "Get aggregated payment stats (deprecated, use GET)",
-  tags: ["Payment Status"],
-  security: [{ apiKey: [] }],
-  request: {
-    headers: WorkflowTrackingHeadersSchema,
-    body: {
-      content: { "application/json": { schema: StatsRequestSchema } },
-    },
   },
   responses: {
     200: {

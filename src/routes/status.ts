@@ -188,15 +188,5 @@ router.get("/stats", async (req: Request, res: Response) => {
   }
 });
 
-// POST /stats - Aggregated stats (deprecated, use GET /stats)
-router.post("/stats", async (req: Request, res: Response) => {
-  try {
-    const result = await handleStats(req.body);
-    return res.json(result);
-  } catch (error: any) {
-    console.error("Stats error:", error);
-    return res.status(500).json({ error: error.message || "Internal server error" });
-  }
-});
 
 export default router;

@@ -125,36 +125,3 @@ describe("GET /stats", () => {
     expect(res.status).toBe(400);
   });
 });
-
-describe("POST /stats (deprecated)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("still works with body params", async () => {
-    const res = await request(app)
-      .post("/stats")
-      .set(authHeaders)
-      .send({ orgId: "org_abc", brandId: "brand_1" });
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      totalPayments: 0,
-      totalAmountInCents: 0,
-      successCount: 0,
-      failureCount: 0,
-      refundCount: 0,
-      disputeCount: 0,
-    });
-  });
-
-  it("still works with runIds array in body", async () => {
-    const res = await request(app)
-      .post("/stats")
-      .set(authHeaders)
-      .send({ runIds: ["run_1", "run_2"] });
-
-    expect(res.status).toBe(200);
-    expect(res.body.totalPayments).toBe(0);
-  });
-});
