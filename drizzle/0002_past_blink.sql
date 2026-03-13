@@ -1,0 +1,1 @@
+ALTER TABLE "stripe_payments" ADD COLUMN "workflow_name" text;

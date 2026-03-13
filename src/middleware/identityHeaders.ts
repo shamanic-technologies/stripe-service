@@ -33,5 +33,14 @@ export function requireIdentityHeaders(req: Request, res: Response, next: NextFu
   res.locals.userId = userId;
   res.locals.runId = runId;
 
+  // Optional workflow tracking headers — read when present, ignore when absent
+  const campaignId = req.headers["x-campaign-id"];
+  const brandId = req.headers["x-brand-id"];
+  const workflowName = req.headers["x-workflow-name"];
+
+  if (typeof campaignId === "string") res.locals.campaignId = campaignId;
+  if (typeof brandId === "string") res.locals.brandId = brandId;
+  if (typeof workflowName === "string") res.locals.workflowName = workflowName;
+
   next();
 }

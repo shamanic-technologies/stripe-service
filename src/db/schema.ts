@@ -20,6 +20,7 @@ export const stripePayments = pgTable(
     runId: text("run_id"),
     brandId: text("brand_id"),
     campaignId: text("campaign_id"),
+    workflowName: text("workflow_name"),
     stripePaymentIntentId: text("stripe_payment_intent_id"),
     stripeCheckoutSessionId: text("stripe_checkout_session_id"),
     stripeCustomerId: text("stripe_customer_id"),

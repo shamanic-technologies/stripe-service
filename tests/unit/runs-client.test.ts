@@ -87,6 +87,49 @@ describe("runs-client", () => {
     });
   });
 
+  describe("workflow tracking headers", () => {
+    it("forwards x-campaign-id, x-brand-id, x-workflow-name when present in identity", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "run_123", status: "completed" }),
+      });
+
+      await updateRun("run_123", "completed", {
+        orgId: "org_abc",
+        userId: "user_xyz",
+        runId: "run_123",
+        workflow: {
+          campaignId: "camp_1",
+          brandId: "brand_2",
+          workflowName: "my-dag",
+        },
+      });
+
+      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
+      expect(headers["x-campaign-id"]).toBe("camp_1");
+      expect(headers["x-brand-id"]).toBe("brand_2");
+      expect(headers["x-workflow-name"]).toBe("my-dag");
+    });
+
+    it("omits workflow headers when workflow context is absent", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "run_123", status: "completed" }),
+      });
+
+      await updateRun("run_123", "completed", {
+        orgId: "org_abc",
+        userId: "user_xyz",
+        runId: "run_123",
+      });
+
+      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
+      expect(headers).not.toHaveProperty("x-campaign-id");
+      expect(headers).not.toHaveProperty("x-brand-id");
+      expect(headers).not.toHaveProperty("x-workflow-name");
+    });
+  });
+
   describe("addCosts", () => {
     it("sends identity headers", async () => {
       mockFetch.mockResolvedValueOnce({
