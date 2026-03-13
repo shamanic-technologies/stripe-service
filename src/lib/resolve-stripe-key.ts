@@ -3,6 +3,9 @@ import { getDecryptedStripeKey, DecryptKeyResponse } from "./key-client";
 interface CallerContext {
   method: string;
   path: string;
+  campaignId?: string;
+  brandId?: string;
+  workflowName?: string;
 }
 
 /**

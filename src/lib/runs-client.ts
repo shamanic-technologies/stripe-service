@@ -51,10 +51,17 @@ export interface CostItem {
   costSource: "platform" | "org";
 }
 
+export interface WorkflowContext {
+  campaignId?: string;
+  brandId?: string;
+  workflowName?: string;
+}
+
 export interface IdentityContext {
   orgId: string;
   userId: string;
   runId?: string;
+  workflow?: WorkflowContext;
 }
 
 // --- HTTP helpers ---
@@ -75,6 +82,15 @@ async function runsRequest<T>(
     headers["x-user-id"] = identity.userId;
     if (identity.runId) {
       headers["x-run-id"] = identity.runId;
+    }
+    if (identity.workflow?.campaignId) {
+      headers["x-campaign-id"] = identity.workflow.campaignId;
+    }
+    if (identity.workflow?.brandId) {
+      headers["x-brand-id"] = identity.workflow.brandId;
+    }
+    if (identity.workflow?.workflowName) {
+      headers["x-workflow-name"] = identity.workflow.workflowName;
     }
   }
 

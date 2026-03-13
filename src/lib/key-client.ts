@@ -15,6 +15,9 @@ export interface DecryptKeyResponse {
 interface CallerContext {
   method: string;
   path: string;
+  campaignId?: string;
+  brandId?: string;
+  workflowName?: string;
 }
 
 /**
@@ -28,16 +31,21 @@ export async function getDecryptedStripeKey(
 ): Promise<DecryptKeyResponse> {
   const url = `${KEY_SERVICE_URL}/keys/stripe/decrypt?orgId=${encodeURIComponent(orgId)}&userId=${encodeURIComponent(userId)}`;
 
+  const headers: Record<string, string> = {
+    "x-api-key": KEY_SERVICE_API_KEY,
+    "x-org-id": orgId,
+    "x-user-id": userId,
+    "x-caller-service": "stripe",
+    "x-caller-method": caller.method,
+    "x-caller-path": caller.path,
+  };
+  if (caller.campaignId) headers["x-campaign-id"] = caller.campaignId;
+  if (caller.brandId) headers["x-brand-id"] = caller.brandId;
+  if (caller.workflowName) headers["x-workflow-name"] = caller.workflowName;
+
   const response = await fetch(url, {
     method: "GET",
-    headers: {
-      "x-api-key": KEY_SERVICE_API_KEY,
-      "x-org-id": orgId,
-      "x-user-id": userId,
-      "x-caller-service": "stripe",
-      "x-caller-method": caller.method,
-      "x-caller-path": caller.path,
-    },
+    headers,
   });
 
   if (response.status === 404) {

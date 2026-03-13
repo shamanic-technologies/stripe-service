@@ -17,6 +17,15 @@ import { resolveStripeKey } from "../lib/resolve-stripe-key";
 
 const router = Router();
 
+// Helper to extract workflow context from res.locals
+function getWorkflowContext(res: Response) {
+  return {
+    campaignId: res.locals.campaignId as string | undefined,
+    brandId: res.locals.brandId as string | undefined,
+    workflowName: res.locals.workflowName as string | undefined,
+  };
+}
+
 // POST /products/create
 router.post("/products/create", async (req: Request, res: Response) => {
   const parsed = CreateProductRequestSchema.safeParse(req.body);
@@ -30,11 +39,12 @@ router.post("/products/create", async (req: Request, res: Response) => {
   const data = parsed.data;
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
+  const wf = getWorkflowContext(res);
 
   try {
     let stripeKey: string;
     try {
-      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path, ...wf });
       stripeKey = resolved.key;
     } catch (err: any) {
       console.error("Failed to resolve Stripe key:", err.message);
@@ -82,11 +92,12 @@ router.post("/prices/create", async (req: Request, res: Response) => {
   const data = parsed.data;
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
+  const wf = getWorkflowContext(res);
 
   try {
     let stripeKey: string;
     try {
-      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path, ...wf });
       stripeKey = resolved.key;
     } catch (err: any) {
       console.error("Failed to resolve Stripe key:", err.message);
@@ -141,11 +152,12 @@ router.post("/coupons/create", async (req: Request, res: Response) => {
   const data = parsed.data;
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
+  const wf = getWorkflowContext(res);
 
   try {
     let stripeKey: string;
     try {
-      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path, ...wf });
       stripeKey = resolved.key;
     } catch (err: any) {
       console.error("Failed to resolve Stripe key:", err.message);
@@ -196,11 +208,12 @@ router.get("/products/:productId", async (req: Request, res: Response) => {
   const { productId } = req.params;
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
+  const wf = getWorkflowContext(res);
 
   try {
     let stripeKey: string;
     try {
-      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path, ...wf });
       stripeKey = resolved.key;
     } catch (err: any) {
       return res.status(400).json({ error: err.message });
@@ -224,11 +237,12 @@ router.get("/prices/:priceId", async (req: Request, res: Response) => {
   const { priceId } = req.params;
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
+  const wf = getWorkflowContext(res);
 
   try {
     let stripeKey: string;
     try {
-      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path, ...wf });
       stripeKey = resolved.key;
     } catch (err: any) {
       return res.status(400).json({ error: err.message });
@@ -252,11 +266,12 @@ router.get("/prices/by-product/:productId", async (req: Request, res: Response) 
   const { productId } = req.params;
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
+  const wf = getWorkflowContext(res);
 
   try {
     let stripeKey: string;
     try {
-      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path, ...wf });
       stripeKey = resolved.key;
     } catch (err: any) {
       return res.status(400).json({ error: err.message });
@@ -279,11 +294,12 @@ router.get("/coupons/:couponId", async (req: Request, res: Response) => {
   const { couponId } = req.params;
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
+  const wf = getWorkflowContext(res);
 
   try {
     let stripeKey: string;
     try {
-      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path, ...wf });
       stripeKey = resolved.key;
     } catch (err: any) {
       return res.status(400).json({ error: err.message });

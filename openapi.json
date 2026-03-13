@@ -1,0 +1,1954 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Stripe Service API",
+    "description": "Payment processing service built on Stripe. Handles checkout sessions, payment intents, webhook processing for payment events, and integrates with runs-service for cost tracking.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://stripe.mcpfactory.org",
+      "description": "Production"
+    },
+    {
+      "url": "http://localhost:3011",
+      "description": "Local development"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Health",
+      "description": "Health check endpoints"
+    },
+    {
+      "name": "Payments",
+      "description": "Create payments via Stripe"
+    },
+    {
+      "name": "Products",
+      "description": "Create and manage Stripe products and prices"
+    },
+    {
+      "name": "Payment Status",
+      "description": "Query payment status and stats"
+    },
+    {
+      "name": "Webhooks",
+      "description": "Stripe webhook handlers"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "Service-to-service API key"
+      }
+    },
+    "schemas": {
+      "CreateCheckoutSessionResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "paymentId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Internal payment record ID"
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Stripe Checkout Session ID"
+          },
+          "url": {
+            "type": "string",
+            "description": "Stripe Checkout URL"
+          }
+        },
+        "required": [
+          "success",
+          "paymentId"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Error message"
+          },
+          "details": {
+            "nullable": true,
+            "description": "Additional error details"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "CreateCheckoutSessionRequest": {
+        "type": "object",
+        "properties": {
+          "brandId": {
+            "type": "string",
+            "description": "Brand ID"
+          },
+          "campaignId": {
+            "type": "string",
+            "description": "Campaign ID"
+          },
+          "lineItems": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "priceId": {
+                  "type": "string",
+                  "description": "Stripe Price ID"
+                },
+                "quantity": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "exclusiveMinimum": true,
+                  "description": "Quantity"
+                }
+              },
+              "required": [
+                "priceId",
+                "quantity"
+              ]
+            },
+            "minItems": 1,
+            "description": "Line items for checkout"
+          },
+          "successUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "Redirect URL on success"
+          },
+          "cancelUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "Redirect URL on cancel"
+          },
+          "customerId": {
+            "type": "string",
+            "description": "Stripe Customer ID"
+          },
+          "customerEmail": {
+            "type": "string",
+            "format": "email",
+            "description": "Customer email"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "payment",
+              "subscription"
+            ],
+            "default": "payment",
+            "description": "Checkout mode"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Custom metadata"
+          },
+          "discounts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "coupon": {
+                  "type": "string",
+                  "description": "Stripe Coupon ID"
+                },
+                "promotionCode": {
+                  "type": "string",
+                  "description": "Stripe Promotion Code ID"
+                }
+              }
+            },
+            "description": "Discounts to apply to the checkout session"
+          }
+        },
+        "required": [
+          "lineItems",
+          "successUrl",
+          "cancelUrl"
+        ]
+      },
+      "CreatePaymentIntentResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "paymentId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Internal payment record ID"
+          },
+          "paymentIntentId": {
+            "type": "string",
+            "description": "Stripe Payment Intent ID"
+          },
+          "clientSecret": {
+            "type": "string",
+            "description": "Client secret for frontend"
+          },
+          "status": {
+            "type": "string",
+            "description": "Payment intent status"
+          }
+        },
+        "required": [
+          "success",
+          "paymentId"
+        ]
+      },
+      "CreatePaymentIntentRequest": {
+        "type": "object",
+        "properties": {
+          "brandId": {
+            "type": "string",
+            "description": "Brand ID"
+          },
+          "campaignId": {
+            "type": "string",
+            "description": "Campaign ID"
+          },
+          "amountInCents": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Amount in cents"
+          },
+          "currency": {
+            "type": "string",
+            "default": "usd",
+            "description": "Currency code"
+          },
+          "customerId": {
+            "type": "string",
+            "description": "Stripe Customer ID"
+          },
+          "description": {
+            "type": "string",
+            "description": "Payment description"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Custom metadata"
+          }
+        },
+        "required": [
+          "amountInCents"
+        ]
+      },
+      "CreateProductResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "productId": {
+            "type": "string",
+            "description": "Stripe Product ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Product name"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "Product description"
+          }
+        },
+        "required": [
+          "success",
+          "productId",
+          "name"
+        ]
+      },
+      "CreateProductRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Custom Stripe Product ID for idempotent creates"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Product name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Product description"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Custom metadata"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "CreatePriceResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "priceId": {
+            "type": "string",
+            "description": "Stripe Price ID"
+          },
+          "productId": {
+            "type": "string",
+            "description": "Associated Stripe Product ID"
+          },
+          "unitAmountInCents": {
+            "type": "number",
+            "description": "Price amount in cents"
+          },
+          "currency": {
+            "type": "string",
+            "description": "Currency code"
+          }
+        },
+        "required": [
+          "success",
+          "priceId",
+          "productId",
+          "unitAmountInCents",
+          "currency"
+        ]
+      },
+      "CreatePriceRequest": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stripe Product ID to attach the price to"
+          },
+          "unitAmountInCents": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Price amount in cents"
+          },
+          "currency": {
+            "type": "string",
+            "default": "usd",
+            "description": "Currency code (default: usd)"
+          },
+          "recurring": {
+            "type": "object",
+            "properties": {
+              "interval": {
+                "type": "string",
+                "enum": [
+                  "day",
+                  "week",
+                  "month",
+                  "year"
+                ],
+                "description": "Billing interval"
+              },
+              "intervalCount": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true,
+                "default": 1,
+                "description": "Number of intervals between billings"
+              }
+            },
+            "required": [
+              "interval"
+            ],
+            "description": "Recurring pricing configuration. Omit for one-time prices."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Custom metadata"
+          }
+        },
+        "required": [
+          "productId",
+          "unitAmountInCents"
+        ]
+      },
+      "CreateCouponResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "couponId": {
+            "type": "string",
+            "description": "Stripe Coupon ID"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Coupon display name"
+          },
+          "percentOff": {
+            "type": "number",
+            "nullable": true,
+            "description": "Percentage discount"
+          },
+          "amountOffInCents": {
+            "type": "number",
+            "nullable": true,
+            "description": "Fixed amount discount in cents"
+          },
+          "currency": {
+            "type": "string",
+            "nullable": true,
+            "description": "Currency code"
+          },
+          "duration": {
+            "type": "string",
+            "description": "Coupon duration"
+          }
+        },
+        "required": [
+          "success",
+          "couponId",
+          "name",
+          "percentOff",
+          "amountOffInCents",
+          "currency",
+          "duration"
+        ]
+      },
+      "CreateCouponRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Custom Stripe Coupon ID for idempotent creates"
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name for the coupon"
+          },
+          "percentOff": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Percentage discount (1-100). Provide this OR amountOffInCents."
+          },
+          "amountOffInCents": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Fixed amount discount in cents. Provide this OR percentOff."
+          },
+          "currency": {
+            "type": "string",
+            "description": "Currency code. Required if amountOffInCents is provided."
+          },
+          "duration": {
+            "type": "string",
+            "enum": [
+              "once",
+              "repeating",
+              "forever"
+            ],
+            "default": "once",
+            "description": "How long the coupon applies (default: once)"
+          },
+          "durationInMonths": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Number of months (required if duration is repeating)"
+          },
+          "maxRedemptions": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Maximum number of times the coupon can be redeemed"
+          },
+          "redeemBy": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 date after which the coupon can no longer be redeemed"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Custom metadata"
+          }
+        }
+      },
+      "GetProductResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "productId": {
+            "type": "string",
+            "description": "Stripe Product ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Product name"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "Product description"
+          }
+        },
+        "required": [
+          "success",
+          "productId",
+          "name",
+          "description"
+        ]
+      },
+      "GetPriceResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "priceId": {
+            "type": "string",
+            "description": "Stripe Price ID"
+          },
+          "productId": {
+            "type": "string",
+            "description": "Associated Stripe Product ID"
+          },
+          "unitAmountInCents": {
+            "type": "number",
+            "nullable": true,
+            "description": "Price amount in cents"
+          },
+          "currency": {
+            "type": "string",
+            "description": "Currency code"
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Whether the price is active"
+          }
+        },
+        "required": [
+          "success",
+          "priceId",
+          "productId",
+          "unitAmountInCents",
+          "currency",
+          "active"
+        ]
+      },
+      "ListPricesResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "prices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "priceId": {
+                  "type": "string",
+                  "description": "Stripe Price ID"
+                },
+                "productId": {
+                  "type": "string",
+                  "description": "Associated Stripe Product ID"
+                },
+                "unitAmountInCents": {
+                  "type": "number",
+                  "nullable": true,
+                  "description": "Price amount in cents"
+                },
+                "currency": {
+                  "type": "string",
+                  "description": "Currency code"
+                },
+                "active": {
+                  "type": "boolean",
+                  "description": "Whether the price is active"
+                }
+              },
+              "required": [
+                "priceId",
+                "productId",
+                "unitAmountInCents",
+                "currency",
+                "active"
+              ]
+            }
+          }
+        },
+        "required": [
+          "success",
+          "prices"
+        ]
+      },
+      "GetCouponResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "couponId": {
+            "type": "string",
+            "description": "Stripe Coupon ID"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Coupon display name"
+          },
+          "percentOff": {
+            "type": "number",
+            "nullable": true,
+            "description": "Percentage discount"
+          },
+          "amountOffInCents": {
+            "type": "number",
+            "nullable": true,
+            "description": "Fixed amount discount in cents"
+          },
+          "currency": {
+            "type": "string",
+            "nullable": true,
+            "description": "Currency code"
+          },
+          "duration": {
+            "type": "string",
+            "description": "Coupon duration"
+          },
+          "valid": {
+            "type": "boolean",
+            "description": "Whether the coupon is still valid"
+          }
+        },
+        "required": [
+          "success",
+          "couponId",
+          "name",
+          "percentOff",
+          "amountOffInCents",
+          "currency",
+          "duration",
+          "valid"
+        ]
+      },
+      "PaymentStatusResponse": {
+        "type": "object",
+        "properties": {
+          "payment": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "orgId": {
+                "type": "string",
+                "nullable": true
+              },
+              "userId": {
+                "type": "string",
+                "nullable": true
+              },
+              "runId": {
+                "type": "string",
+                "nullable": true
+              },
+              "brandId": {
+                "type": "string",
+                "nullable": true
+              },
+              "campaignId": {
+                "type": "string",
+                "nullable": true
+              },
+              "workflowName": {
+                "type": "string",
+                "nullable": true
+              },
+              "stripePaymentIntentId": {
+                "type": "string",
+                "nullable": true
+              },
+              "stripeCheckoutSessionId": {
+                "type": "string",
+                "nullable": true
+              },
+              "stripeCustomerId": {
+                "type": "string",
+                "nullable": true
+              },
+              "amountInCents": {
+                "type": "number"
+              },
+              "currency": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string",
+                "nullable": true
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "orgId",
+              "userId",
+              "runId",
+              "brandId",
+              "campaignId",
+              "workflowName",
+              "stripePaymentIntentId",
+              "stripeCheckoutSessionId",
+              "stripeCustomerId",
+              "amountInCents",
+              "currency",
+              "status",
+              "description",
+              "createdAt",
+              "updatedAt"
+            ]
+          },
+          "events": {
+            "type": "object",
+            "properties": {
+              "successes": {
+                "type": "array",
+                "items": {
+                  "nullable": true
+                }
+              },
+              "failures": {
+                "type": "array",
+                "items": {
+                  "nullable": true
+                }
+              },
+              "refunds": {
+                "type": "array",
+                "items": {
+                  "nullable": true
+                }
+              },
+              "disputes": {
+                "type": "array",
+                "items": {
+                  "nullable": true
+                }
+              }
+            },
+            "required": [
+              "successes",
+              "failures",
+              "refunds",
+              "disputes"
+            ]
+          }
+        },
+        "required": [
+          "payment",
+          "events"
+        ]
+      },
+      "StatsResponse": {
+        "type": "object",
+        "properties": {
+          "totalPayments": {
+            "type": "number"
+          },
+          "totalAmountInCents": {
+            "type": "number"
+          },
+          "successCount": {
+            "type": "number"
+          },
+          "failureCount": {
+            "type": "number"
+          },
+          "refundCount": {
+            "type": "number"
+          },
+          "disputeCount": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "totalPayments",
+          "totalAmountInCents",
+          "successCount",
+          "failureCount",
+          "refundCount",
+          "disputeCount"
+        ]
+      },
+      "StatsRequest": {
+        "type": "object",
+        "properties": {
+          "runIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Filter by run IDs"
+          },
+          "orgId": {
+            "type": "string",
+            "description": "Filter by org ID"
+          },
+          "brandId": {
+            "type": "string",
+            "description": "Filter by brand ID"
+          },
+          "campaignId": {
+            "type": "string",
+            "description": "Filter by campaign ID"
+          }
+        }
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "tags": [
+          "Health"
+        ],
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "service": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "service"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/checkout/create": {
+      "post": {
+        "summary": "Create a Stripe checkout session",
+        "description": "Creates a Stripe Checkout Session and records the payment in the database. Runs-service integration is BLOCKING.",
+        "tags": [
+          "Payments"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCheckoutSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Checkout session created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateCheckoutSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payment-intent/create": {
+      "post": {
+        "summary": "Create a Stripe payment intent",
+        "description": "Creates a Stripe Payment Intent and records the payment in the database. Runs-service integration is BLOCKING.",
+        "tags": [
+          "Payments"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePaymentIntentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Payment intent created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatePaymentIntentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/products/create": {
+      "post": {
+        "summary": "Create a Stripe product",
+        "description": "Creates a product in Stripe. Pass an optional id for idempotent creates — if the product already exists, it will be returned.",
+        "tags": [
+          "Products"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProductRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Product created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateProductResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/prices/create": {
+      "post": {
+        "summary": "Create a Stripe price for a product",
+        "description": "Creates a price attached to a Stripe product. Use the returned priceId in checkout sessions.",
+        "tags": [
+          "Products"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePriceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Price created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatePriceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/coupons/create": {
+      "post": {
+        "summary": "Create a Stripe coupon",
+        "description": "Creates a coupon in Stripe. Pass an optional id for idempotent creates — if the coupon already exists, it will be returned.",
+        "tags": [
+          "Products"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCouponRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Coupon created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateCouponResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/products/{productId}": {
+      "get": {
+        "summary": "Get a Stripe product by ID",
+        "tags": [
+          "Products"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "productId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Product found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetProductResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Product not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/prices/{priceId}": {
+      "get": {
+        "summary": "Get a Stripe price by ID",
+        "tags": [
+          "Products"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "priceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Price found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetPriceResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Price not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/prices/by-product/{productId}": {
+      "get": {
+        "summary": "List active prices for a product",
+        "tags": [
+          "Products"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "productId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prices for product",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPricesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/coupons/{couponId}": {
+      "get": {
+        "summary": "Get a Stripe coupon by ID",
+        "tags": [
+          "Products"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "couponId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Coupon found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetCouponResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Coupon not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/status/{paymentId}": {
+      "get": {
+        "summary": "Get payment status with events",
+        "tags": [
+          "Payment Status"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "paymentId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Payment status with events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentStatusResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Payment not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/status/by-org/{orgId}": {
+      "get": {
+        "summary": "List payments by organization",
+        "tags": [
+          "Payment Status"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of payments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "payments": {
+                      "type": "array",
+                      "items": {
+                        "nullable": true
+                      }
+                    }
+                  },
+                  "required": [
+                    "payments"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/status/by-run/{runId}": {
+      "get": {
+        "summary": "List payments by run",
+        "tags": [
+          "Payment Status"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "runId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of payments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "payments": {
+                      "type": "array",
+                      "items": {
+                        "nullable": true
+                      }
+                    }
+                  },
+                  "required": [
+                    "payments"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stats": {
+      "post": {
+        "summary": "Get aggregated payment stats",
+        "tags": [
+          "Payment Status"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Campaign ID (injected by workflow-service)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Brand ID (injected by workflow-service)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name (injected by workflow-service)"
+            },
+            "required": false,
+            "description": "Workflow name (injected by workflow-service)",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Aggregated stats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/stripe": {
+      "post": {
+        "summary": "Handle Stripe webhook events",
+        "description": "Receives and processes Stripe webhook events. Uses Stripe signature verification.",
+        "tags": [
+          "Webhooks"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "nullable": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Webhook processed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "received": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "received"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

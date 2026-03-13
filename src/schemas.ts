@@ -16,6 +16,14 @@ registry.registerComponent("securitySchemes", "apiKey", {
   description: "Service-to-service API key",
 });
 
+// ===== Workflow tracking header schemas =====
+
+export const WorkflowTrackingHeadersSchema = z.object({
+  "x-campaign-id": z.string().optional().openapi({ description: "Campaign ID (injected by workflow-service)" }),
+  "x-brand-id": z.string().optional().openapi({ description: "Brand ID (injected by workflow-service)" }),
+  "x-workflow-name": z.string().optional().openapi({ description: "Workflow name (injected by workflow-service)" }),
+});
+
 // ===== Shared schemas =====
 
 export const ErrorResponseSchema = z
@@ -328,6 +336,7 @@ export const PaymentStatusResponseSchema = z
       runId: z.string().nullable(),
       brandId: z.string().nullable(),
       campaignId: z.string().nullable(),
+      workflowName: z.string().nullable(),
       stripePaymentIntentId: z.string().nullable(),
       stripeCheckoutSessionId: z.string().nullable(),
       stripeCustomerId: z.string().nullable(),
@@ -406,6 +415,7 @@ registry.registerPath({
   tags: ["Payments"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     body: {
       content: { "application/json": { schema: CreateCheckoutSessionRequestSchema } },
     },
@@ -437,6 +447,7 @@ registry.registerPath({
   tags: ["Payments"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     body: {
       content: { "application/json": { schema: CreatePaymentIntentRequestSchema } },
     },
@@ -468,6 +479,7 @@ registry.registerPath({
   tags: ["Products"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     body: {
       content: {
         "application/json": { schema: CreateProductRequestSchema },
@@ -503,6 +515,7 @@ registry.registerPath({
   tags: ["Products"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     body: {
       content: {
         "application/json": { schema: CreatePriceRequestSchema },
@@ -538,6 +551,7 @@ registry.registerPath({
   tags: ["Products"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     body: {
       content: {
         "application/json": { schema: CreateCouponRequestSchema },
@@ -571,6 +585,7 @@ registry.registerPath({
   tags: ["Products"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     params: z.object({ productId: z.string() }),
   },
   responses: {
@@ -594,6 +609,7 @@ registry.registerPath({
   tags: ["Products"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     params: z.object({ priceId: z.string() }),
   },
   responses: {
@@ -617,6 +633,7 @@ registry.registerPath({
   tags: ["Products"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     params: z.object({ productId: z.string() }),
   },
   responses: {
@@ -636,6 +653,7 @@ registry.registerPath({
   tags: ["Products"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     params: z.object({ couponId: z.string() }),
   },
   responses: {
@@ -659,6 +677,7 @@ registry.registerPath({
   tags: ["Payment Status"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     params: z.object({
       paymentId: z.string().uuid(),
     }),
@@ -682,6 +701,7 @@ registry.registerPath({
   tags: ["Payment Status"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     params: z.object({
       orgId: z.string(),
     }),
@@ -707,6 +727,7 @@ registry.registerPath({
   tags: ["Payment Status"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     params: z.object({
       runId: z.string(),
     }),
@@ -734,6 +755,7 @@ registry.registerPath({
   tags: ["Payment Status"],
   security: [{ apiKey: [] }],
   request: {
+    headers: WorkflowTrackingHeadersSchema,
     body: {
       content: { "application/json": { schema: StatsRequestSchema } },
     },

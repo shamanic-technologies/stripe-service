@@ -29,15 +29,20 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
   const callerRunId = res.locals.runId as string;
+  // Headers take precedence over body for campaign/brand tracking
+  const campaignId = (res.locals.campaignId as string | undefined) ?? data.campaignId;
+  const brandId = (res.locals.brandId as string | undefined) ?? data.brandId;
+  const workflowName = res.locals.workflowName as string | undefined;
   let runId: string | undefined;
-  const identity = { orgId, userId };
+  const workflow = { campaignId, brandId, workflowName };
+  const identity = { orgId, userId, workflow };
 
   try {
     // Resolve Stripe key via key-service using orgId + userId
     let stripeKey: string;
     let keySource: "platform" | "org";
     try {
-      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path, campaignId, brandId, workflowName });
       stripeKey = resolved.key;
       keySource = resolved.keySource;
     } catch (err: any) {
@@ -53,8 +58,8 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
         serviceName: "stripe-service",
         taskName: "create-checkout-session",
         parentRunId: callerRunId,
-        brandId: data.brandId,
-        campaignId: data.campaignId,
+        brandId,
+        campaignId,
       });
       runId = run.id;
     } catch (err) {
@@ -95,8 +100,9 @@ router.post("/checkout/create", async (req: Request, res: Response) => {
         orgId,
         userId,
         runId,
-        brandId: data.brandId,
-        campaignId: data.campaignId,
+        brandId,
+        campaignId,
+        workflowName,
         stripeCheckoutSessionId: result.sessionId,
         amountInCents: 0, // Amount determined at checkout
         currency: "usd",
@@ -140,15 +146,19 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
   const callerRunId = res.locals.runId as string;
+  const campaignId = (res.locals.campaignId as string | undefined) ?? data.campaignId;
+  const brandId = (res.locals.brandId as string | undefined) ?? data.brandId;
+  const workflowName = res.locals.workflowName as string | undefined;
   let runId: string | undefined;
-  const identity = { orgId, userId };
+  const workflow = { campaignId, brandId, workflowName };
+  const identity = { orgId, userId, workflow };
 
   try {
     // Resolve Stripe key via key-service using orgId + userId
     let stripeKey: string;
     let keySource: "platform" | "org";
     try {
-      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path });
+      const resolved = await resolveStripeKey(orgId, userId, { method: req.method, path: req.path, campaignId, brandId, workflowName });
       stripeKey = resolved.key;
       keySource = resolved.keySource;
     } catch (err: any) {
@@ -164,8 +174,8 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
         serviceName: "stripe-service",
         taskName: "create-payment-intent",
         parentRunId: callerRunId,
-        brandId: data.brandId,
-        campaignId: data.campaignId,
+        brandId,
+        campaignId,
       });
       runId = run.id;
     } catch (err) {
@@ -203,8 +213,9 @@ router.post("/payment-intent/create", async (req: Request, res: Response) => {
         orgId,
         userId,
         runId,
-        brandId: data.brandId,
-        campaignId: data.campaignId,
+        brandId,
+        campaignId,
+        workflowName,
         stripePaymentIntentId: result.paymentIntentId,
         amountInCents: data.amountInCents,
         currency: data.currency || "usd",
