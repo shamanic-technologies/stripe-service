@@ -14,6 +14,7 @@ const PUBLIC_PATHS = new Set(["/", "/health", "/openapi.json"]);
 export function requireIdentityHeaders(req: Request, res: Response, next: NextFunction) {
   if (PUBLIC_PATHS.has(req.path)) return next();
   if (req.path.startsWith("/v1/webhooks")) return next();
+  if (req.path.startsWith("/public/")) return next();
 
   const orgId = req.headers["x-org-id"];
   const userId = req.headers["x-user-id"];

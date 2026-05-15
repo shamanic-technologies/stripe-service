@@ -153,6 +153,34 @@ export const ListPaymentIntentsQuerySchema = z
   })
   .openapi("ListPaymentIntentsQuery");
 
+// ===== Customer balance transactions =====
+
+export const ListCustomerBalanceTransactionsQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    starting_after: z.string().optional(),
+    ending_before: z.string().optional(),
+  })
+  .openapi("ListCustomerBalanceTransactionsQuery");
+
+// ===== Public stats =====
+
+const PublicStatsBucketSchema = z
+  .object({
+    period: z.string().openapi({ description: "ISO date (YYYY-MM-DD) at start of bucket" }),
+    paid_cents: z.string(),
+  })
+  .openapi("PublicStatsBucket");
+
+export const PublicStatsBillingResponseSchema = z
+  .object({
+    total_paid_cents: z.string(),
+    accounts_with_payment_method: z.number().int().nonnegative(),
+    monthly_growth: z.array(PublicStatsBucketSchema),
+    weekly_growth: z.array(PublicStatsBucketSchema),
+  })
+  .openapi("PublicStatsBillingResponse");
+
 // ===== Billing portal sessions =====
 
 export const CreateBillingPortalSessionRequestSchema = z
@@ -356,6 +384,49 @@ registry.registerPath({
   },
   responses: {
     200: { description: "PaymentIntent list", content: { "application/json": { schema: StripeListSchema } } },
+  },
+});
+
+// --- Balance transactions (org-implicit) ---
+
+registry.registerPath({
+  method: "get",
+  path: "/v1/balance_transactions",
+  summary: "List balance transactions for the caller's org Stripe customer (DB-backed mirror)",
+  description:
+    "Org-implicit list. Resolves the org's Stripe customer server-side via x-org-id (assumes 1:1 org→customer). Returns Stripe-shape customer_balance_transaction list. Falls back to Stripe and upserts when DB has no rows. Returns 404 when the org has no Stripe customer.",
+  tags: ["BalanceTransactions"],
+  security: apiKeySec,
+  request: {
+    headers: IdentityHeadersSchema,
+    query: ListCustomerBalanceTransactionsQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "Balance transaction list",
+      content: { "application/json": { schema: StripeListSchema } },
+    },
+    404: {
+      description: "Org has no Stripe customer",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+// --- Public stats ---
+
+registry.registerPath({
+  method: "get",
+  path: "/public/stats/billing",
+  summary: "Public aggregate billing stats (no auth, cross-org)",
+  description:
+    "Aggregate Stripe-side payment stats across all orgs. Public endpoint — no X-API-Key, no identity headers.",
+  tags: ["Public"],
+  responses: {
+    200: {
+      description: "Aggregate stats",
+      content: { "application/json": { schema: PublicStatsBillingResponseSchema } },
+    },
   },
 });
 
