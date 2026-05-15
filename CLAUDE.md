@@ -76,8 +76,7 @@ api_call_log       — request audit: method, path, status, identity headers, st
 ## Environment variables
 - `STRIPE_SERVICE_DATABASE_URL` — Neon Postgres connection string
 - `STRIPE_SERVICE_API_KEY` — Service-to-service auth key
-- `STRIPE_WEBHOOK_SECRET` — Stripe webhook signing secret
-- `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` — Key service connection (per-org Stripe keys + platform Stripe key for event poller)
+- `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` — Key service connection. Resolves three Stripe-related keys at runtime via key-service: per-org Stripe keys (`/keys/stripe/decrypt`), the platform Stripe key for the event poller (`/keys/platform/stripe/decrypt`), and the Stripe webhook signing secret (`/keys/platform/stripe-webhook/decrypt`). No Stripe secret is ever stored in env vars on this service.
 - `RUN_EVENT_POLLER` — set to `"false"` to disable the background poller (default: enabled)
 - `PORT` — Server port (default 3011)
 

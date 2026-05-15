@@ -16,6 +16,12 @@ vi.mock("../../src/lib/stripe-client", () => ({
   stripeErrorStatus: () => 500,
   isResourceMissing: () => false,
 }));
+vi.mock("../../src/lib/key-client", () => ({
+  resolvePlatformKey: vi
+    .fn()
+    .mockResolvedValue({ provider: "stripe-webhook", key: "whsec_test_fake" }),
+  getDecryptedStripeKey: vi.fn(),
+}));
 
 import { createTestApp } from "../helpers/test-app";
 
@@ -24,7 +30,6 @@ const app = createTestApp();
 beforeEach(() => {
   vi.clearAllMocks();
   constructWebhookEventMock.mockReset();
-  process.env.STRIPE_WEBHOOK_SECRET = "whsec_test_fake";
 });
 
 describe("POST /v1/webhooks", () => {
