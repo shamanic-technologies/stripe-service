@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from "express";
-import { eq, and, desc, lt } from "drizzle-orm";
+import { eq, and, desc, lt, sql } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "../db";
 import { customers } from "../db/schema";
@@ -109,11 +109,16 @@ router.get("/v1/customers", async (req: Request, res: Response, next: NextFuncti
       return res.status(400).json({ error: "Invalid query", details: parsed.error.flatten() });
     }
     const orgId = res.locals.orgId as string;
-    const { email, limit, starting_after } = parsed.data;
+    const { email, limit, starting_after, metadata } = parsed.data;
     const effectiveLimit = limit ?? 10;
 
     const filters = [eq(customers.orgId, orgId)];
     if (email) filters.push(eq(customers.email, email));
+    if (metadata) {
+      for (const [key, value] of Object.entries(metadata)) {
+        filters.push(sql`${customers.metadata}->>${key} = ${value}`);
+      }
+    }
     if (starting_after) {
       const anchor = await db
         .select({ syncedAt: customers.syncedAt })

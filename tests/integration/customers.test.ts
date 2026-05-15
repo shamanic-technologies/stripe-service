@@ -209,4 +209,70 @@ describe("GET /v1/customers (list)", () => {
     expect(res.body.data).toHaveLength(2);
     expect(res.body.has_more).toBe(true);
   });
+
+  it("accepts single metadata filter", async () => {
+    dbMock.queueSelect("customers", [
+      {
+        id: "cus_match",
+        rawJson: { id: "cus_match", object: "customer", metadata: { brand_id: "brand_A" } },
+      },
+    ]);
+
+    const res = await request(app)
+      .get("/v1/customers?metadata[brand_id]=brand_A")
+      .set(authHeaders());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].id).toBe("cus_match");
+  });
+
+  it("accepts multiple metadata filters AND'd", async () => {
+    dbMock.queueSelect("customers", [
+      {
+        id: "cus_both",
+        rawJson: {
+          id: "cus_both",
+          object: "customer",
+          metadata: { brand_id: "brand_A", campaign_id: "camp_X" },
+        },
+      },
+    ]);
+
+    const res = await request(app)
+      .get("/v1/customers?metadata[brand_id]=brand_A&metadata[campaign_id]=camp_X")
+      .set(authHeaders());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+  });
+
+  it("combines metadata with email + limit filters", async () => {
+    dbMock.queueSelect("customers", [
+      {
+        id: "cus_combo",
+        rawJson: {
+          id: "cus_combo",
+          object: "customer",
+          email: "combo@example.com",
+          metadata: { brand_id: "brand_A" },
+        },
+      },
+    ]);
+
+    const res = await request(app)
+      .get("/v1/customers?metadata[brand_id]=brand_A&email=combo@example.com&limit=5")
+      .set(authHeaders());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+  });
+
+  it("rejects 400 when metadata value is not a string", async () => {
+    const res = await request(app)
+      .get("/v1/customers?metadata[brand_id][]=brand_A&metadata[brand_id][]=brand_B")
+      .set(authHeaders());
+
+    expect(res.status).toBe(400);
+  });
 });
