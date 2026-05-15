@@ -1,20 +1,37 @@
 import { Router, Request, Response } from "express";
 import type Stripe from "stripe";
 import { constructWebhookEvent } from "../lib/stripe-client";
+import { resolvePlatformKey } from "../lib/key-client";
 import { processEvent } from "../lib/event-processor";
 
 const router = Router();
 
-router.post("/v1/webhooks", async (req: Request, res: Response) => {
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!webhookSecret) {
-    console.error("[stripe-service] STRIPE_WEBHOOK_SECRET not configured");
-    return res.status(500).json({ error: "Webhook secret not configured" });
-  }
+// Module-level cache: the webhook signing secret is static per environment.
+// Lazy-fetched on first webhook hit; never refreshed once set.
+let cachedWebhookSecret: string | null = null;
 
+async function getWebhookSecret(): Promise<string> {
+  if (cachedWebhookSecret) return cachedWebhookSecret;
+  const { key } = await resolvePlatformKey("stripe-webhook", {
+    method: "POST",
+    path: "/v1/webhooks",
+  });
+  cachedWebhookSecret = key;
+  return key;
+}
+
+router.post("/v1/webhooks", async (req: Request, res: Response) => {
   const signature = req.headers["stripe-signature"];
   if (typeof signature !== "string") {
     return res.status(400).json({ error: "Missing stripe-signature header" });
+  }
+
+  let webhookSecret: string;
+  try {
+    webhookSecret = await getWebhookSecret();
+  } catch (err) {
+    console.error("[stripe-service] Failed to resolve stripe-webhook secret from key-service:", err);
+    return res.status(500).json({ error: "Webhook secret unavailable" });
   }
 
   let event: Stripe.Event;
