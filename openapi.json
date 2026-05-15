@@ -626,6 +626,19 @@
           },
           {
             "schema": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Filter by Stripe customer metadata. Use repeated query params: metadata[key]=value. AND'd across keys."
+            },
+            "required": false,
+            "description": "Filter by Stripe customer metadata. Use repeated query params: metadata[key]=value. AND'd across keys.",
+            "name": "metadata",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "string",
               "description": "Internal org UUID (required)"
             },

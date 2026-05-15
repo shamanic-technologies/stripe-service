@@ -82,6 +82,13 @@ export const ListCustomersQuerySchema = z
     email: z.string().email().optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
     starting_after: z.string().optional(),
+    metadata: z
+      .record(z.string(), z.string())
+      .optional()
+      .openapi({
+        description:
+          "Filter by Stripe customer metadata. Use repeated query params: metadata[key]=value. AND'd across keys.",
+      }),
   })
   .openapi("ListCustomersQuery");
 

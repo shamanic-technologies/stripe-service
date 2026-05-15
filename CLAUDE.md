@@ -26,13 +26,13 @@ knowledge of its callers — all reload/dedupe logic lives in clients.
 - **src/lib/request-context.ts** — Builds per-request Stripe client + identity context
 - **src/lib/event-processor.ts** — Idempotent event ingestion + Stripe-shape table upserts (shared by webhook handler and event-poller)
 - **src/lib/event-poller.ts** — 5-min background poll of `GET /v1/events` from Stripe (webhook-loss recovery)
-- **src/routes/** — `customers.ts`, `checkout-sessions.ts`, `payment-intents.ts`, `billing-portal-sessions.ts`, `webhooks.ts`, `health.ts`
+- **src/routes/** — `customers.ts`, `checkout-sessions.ts`, `payment-intents.ts`, `billing-portal-sessions.ts`, `customer-balance-transactions.ts`, `public-stats.ts`, `webhooks.ts`, `health.ts`
 - **src/db/schema.ts** — Drizzle table definitions (Stripe-shape mirror)
 - **scripts/generate-openapi.ts** — OpenAPI spec generator
 
-## Routes (v1)
+## Routes
 
-All under `/v1/` except `/health` and `/openapi.json`.
+`/v1/*` = auth'd (X-API-Key + identity headers). `/public/*` = no auth, cross-org. `/health`, `/openapi.json` = public utility.
 
 ```
 POST  /v1/customers                       — create
@@ -45,13 +45,17 @@ GET   /v1/checkout/sessions               — list (DB-only)
 POST  /v1/payment_intents                 — create
 GET   /v1/payment_intents/:id             — retrieve (DB-first, Stripe fallback)
 GET   /v1/payment_intents                 — list (DB-only) — used by callers to check in-flight reloads
+GET   /v1/balance_transactions            — list customer balance transactions for caller's org (org-implicit, DB-first + Stripe fallback)
 POST  /v1/billing_portal/sessions         — create (no DB persistence; single-use URL)
 POST  /v1/webhooks                        — Stripe webhook handler (signature-verified)
+GET   /public/stats/billing               — cross-org aggregate Stripe stats (no auth)
 ```
 
 ## Key patterns
 
-- **Stripe-shape passthrough.** Request bodies are validated with `.passthrough()` Zod schemas and forwarded verbatim to the Stripe SDK. Responses are the unmodified Stripe object. No custom request/response naming.
+- **Stripe-shape passthrough.** Request bodies are validated with `.passthrough()` Zod schemas and forwarded verbatim to the Stripe SDK. Responses are the unmodified Stripe object. No custom request/response naming. **If a Stripe object does NOT have a corresponding Stripe API endpoint, do NOT invent a convenience wrapper here** — direct the caller to read the field off the parent Stripe-API endpoint we already mirror (e.g. `customer.balance` and `customer.invoice_settings.default_payment_method` read from `GET /v1/customers/:id`, not from `/v1/customers/balance` or `/v1/customers/has-payment-method`). Convenience flatteners with snake_case wrappers (`balance_cents` as string, flattened status enums, etc.) violate this rule.
+- **1:1 org ↔ Stripe customer.** Each org has exactly one Stripe customer. Org-implicit reads (e.g. `GET /v1/balance_transactions`) resolve `customers WHERE org_id = $1 ORDER BY created_stripe DESC LIMIT 1`; 404 if no customer. Callers (billing-service) do NOT store `cus_xxx` — stripe-service is the source of truth for the mapping.
+- **Public routes.** `/public/*` bypasses `serviceAuth` and `requireIdentityHeaders` middleware. Reserved for cross-org domain aggregates (stats, status pages). Not for Stripe-shape endpoints — those live under `/v1/`. Adding a new `/public/*` route is a deliberate architectural choice; reject the request unless the data is genuinely cross-org and non-sensitive.
 - **org_id stamping.** On every `POST /v1/{customers,checkout/sessions,payment_intents}`, stripe-service stamps `metadata.org_id = <x-org-id>` so webhook events route back to the right tenant via `event.data.object.metadata.org_id`.
 - **Webhook + 5-min poll sync.** Webhooks are primary. A background `setInterval(5min)` pulls Stripe `events.list` since the cursor stored in `event_sync_cursor` and processes any missed events. Both paths share `processEvent()` which is idempotent via `ON CONFLICT DO NOTHING` on `events.id`.
 - **No service-side reload dedupe.** Stripe-service has no in-flight lock, no customer-scope coalesce, no gap-fill logic. Clients (billing-service) inspect in-flight PaymentIntents via `GET /v1/payment_intents?customer=cus_X` and own the business logic for "don't trigger reload too often".
@@ -63,12 +67,13 @@ POST  /v1/webhooks                        — Stripe webhook handler (signature-
 ## DB tables
 
 ```
-customers          — id (cus_…) PK, org_id, email, name, metadata, raw_json, synced_at
-checkout_sessions  — id (cs_…)  PK, org_id, customer, payment_intent, mode, status, raw_json, synced_at
-payment_intents    — id (pi_…)  PK, org_id, customer, amount, status, raw_json, synced_at
-events             — id (evt_…) PK, type, object_id, payload, source ('webhook'|'poll'), received_at
-event_sync_cursor  — id=1, last_event_id, last_synced_at  (single-row)
-api_call_log       — request audit: method, path, status, identity headers, stripe_object_id, duration_ms
+customers                       — id (cus_…)   PK, org_id, email, name, metadata, raw_json, synced_at
+checkout_sessions               — id (cs_…)    PK, org_id, customer, payment_intent, mode, status, raw_json, synced_at
+payment_intents                 — id (pi_…)    PK, org_id, customer, amount, status, raw_json, synced_at
+customer_balance_transactions   — id (cbtxn_…) PK, org_id, customer, amount, currency, type, credit_note, invoice, raw_json, synced_at
+events                          — id (evt_…)   PK, type, object_id, payload, source ('webhook'|'poll'), received_at
+event_sync_cursor               — id=1, last_event_id, last_synced_at  (single-row)
+api_call_log                    — request audit: method, path, status, identity headers, stripe_object_id, duration_ms
 ```
 
 `raw_json` holds the unmodified Stripe object — `GET /v1/{obj}/:id` returns this directly so the response shape matches Stripe verbatim.
