@@ -35,6 +35,7 @@ function makeDbMock(vi) {
       set: () => chain,
       from: (table) => makeChain(op, tableName(table) ?? t),
       where: () => chain,
+      groupBy: () => chain,
       orderBy: () => chain,
       limit: () => chain,
       offset: () => chain,
@@ -68,7 +69,13 @@ function makeDbMock(vi) {
 
 function makeStripeMock(vi) {
   return {
-    customers: { create: vi.fn(), retrieve: vi.fn(), update: vi.fn(), list: vi.fn() },
+    customers: {
+      create: vi.fn(),
+      retrieve: vi.fn(),
+      update: vi.fn(),
+      list: vi.fn(),
+      listBalanceTransactions: vi.fn(),
+    },
     checkout: { sessions: { create: vi.fn(), retrieve: vi.fn(), list: vi.fn() } },
     paymentIntents: { create: vi.fn(), retrieve: vi.fn(), list: vi.fn() },
     billingPortal: { sessions: { create: vi.fn() } },
