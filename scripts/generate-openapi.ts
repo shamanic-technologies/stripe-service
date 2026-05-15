@@ -13,7 +13,7 @@ const document = generator.generateDocument({
     version: "2.0.0",
   },
   servers: [
-    { url: "https://stripe.mcpfactory.org", description: "Production" },
+    { url: "https://stripe.distribute.you", description: "Production" },
     { url: "http://localhost:3011", description: "Local development" },
   ],
   tags: [

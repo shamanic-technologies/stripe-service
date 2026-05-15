@@ -7,7 +7,7 @@
   },
   "servers": [
     {
-      "url": "https://stripe.mcpfactory.org",
+      "url": "https://stripe.distribute.you",
       "description": "Production"
     },
     {
