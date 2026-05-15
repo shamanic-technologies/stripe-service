@@ -1,7 +1,7 @@
 import { db } from "../db";
 import { eventSyncCursor } from "../db/schema";
 import { eq, sql } from "drizzle-orm";
-import { resolveStripeKey } from "./resolve-stripe-key";
+import { resolvePlatformKey } from "./key-client";
 import { makeStripeClient } from "./stripe-client";
 import { processEvent } from "./event-processor";
 
@@ -12,9 +12,9 @@ let timer: NodeJS.Timeout | null = null;
  * Periodically pull Stripe events since the last seen cursor and process them.
  * Backup for missed webhooks. Idempotent via processEvent.
  *
- * Uses the platform Stripe key (system identity) since events span all orgs
+ * Uses the platform Stripe key (account-wide) since events span all customers
  * on the connected Stripe account. Per-org segregation arises naturally from
- * each event's metadata.org_id.
+ * each event's metadata.org_id stamped at create time.
  */
 export function startEventPoller(): void {
   if (timer) return;
@@ -24,7 +24,6 @@ export function startEventPoller(): void {
   }
   console.log(`[stripe-service] Event poller starting, interval=${POLL_INTERVAL_MS}ms`);
   timer = setInterval(pollOnce, POLL_INTERVAL_MS);
-  // Don't keep the process alive solely for the poller (Railway / tests)
   timer.unref?.();
 }
 
@@ -37,16 +36,7 @@ export function stopEventPoller(): void {
 
 export async function pollOnce(): Promise<number> {
   try {
-    const orgId = process.env.PLATFORM_ORG_ID;
-    const userId = process.env.PLATFORM_USER_ID;
-    if (!orgId || !userId) {
-      console.error(
-        "[stripe-service] Event poller misconfigured: PLATFORM_ORG_ID / PLATFORM_USER_ID required"
-      );
-      return 0;
-    }
-
-    const { key } = await resolveStripeKey(orgId, userId, {
+    const { key } = await resolvePlatformKey("stripe", {
       method: "POST",
       path: "/internal/event-poller",
     });
