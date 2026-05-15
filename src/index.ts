@@ -1,4 +1,3 @@
-// Load environment variables BEFORE any other imports
 import * as dotenv from "dotenv";
 dotenv.config();
 
@@ -9,17 +8,19 @@ import fs from "fs";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { serviceAuth } from "./middleware/serviceAuth";
 import { requireIdentityHeaders } from "./middleware/identityHeaders";
+import { callLog } from "./middleware/callLog";
 import { db } from "./db";
 import healthRoutes from "./routes/health";
-import paymentRoutes from "./routes/payments";
-import statusRoutes from "./routes/status";
+import customersRoutes from "./routes/customers";
+import checkoutSessionsRoutes from "./routes/checkout-sessions";
+import paymentIntentsRoutes from "./routes/payment-intents";
+import billingPortalSessionsRoutes from "./routes/billing-portal-sessions";
 import webhooksRoutes from "./routes/webhooks";
-import productRoutes from "./routes/products";
+import { startEventPoller } from "./lib/event-poller";
 
 const app = express();
 const PORT = process.env.PORT || 3011;
 
-// CORS configuration
 const allowedOrigins = [
   "http://localhost:3001",
   "http://localhost:3002",
@@ -34,37 +35,36 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (service-to-service calls)
       if (!origin) return callback(null, true);
-
-      if (allowedOrigins.indexOf(origin) !== -1) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
+      if (allowedOrigins.indexOf(origin) !== -1) callback(null, true);
+      else callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-API-Key", "X-Org-Id", "X-User-Id", "X-Run-Id"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-API-Key",
+      "X-Org-Id",
+      "X-User-Id",
+      "X-Brand-Id",
+      "X-Campaign-Id",
+      "X-Workflow-Slug",
+      "Idempotency-Key",
+      "Stripe-Signature",
+    ],
   })
 );
 
-// Raw body for webhook signature verification (must be before express.json)
-app.use(
-  "/webhooks/stripe",
-  express.raw({ type: "application/json" })
-);
+// Raw body for Stripe webhook signature verification (must precede express.json)
+app.use("/v1/webhooks", express.raw({ type: "application/json" }));
 
 app.use(express.json());
-
-// Service-to-service authentication (skips webhooks)
 app.use(serviceAuth);
-
-// Require identity headers (x-org-id, x-user-id) on all endpoints
 app.use(requireIdentityHeaders);
+app.use(callLog);
 
-// OpenAPI spec endpoint
-app.get("/openapi.json", (req, res) => {
+app.get("/openapi.json", (_req, res) => {
   const specPath = path.resolve(__dirname, "../openapi.json");
   if (fs.existsSync(specPath)) {
     const spec = JSON.parse(fs.readFileSync(specPath, "utf-8"));
@@ -74,24 +74,24 @@ app.get("/openapi.json", (req, res) => {
   }
 });
 
-// Mount routes
 app.use("/", healthRoutes);
-app.use("/", paymentRoutes);
-app.use("/", statusRoutes);
+app.use("/", customersRoutes);
+app.use("/", checkoutSessionsRoutes);
+app.use("/", paymentIntentsRoutes);
+app.use("/", billingPortalSessionsRoutes);
 app.use("/", webhooksRoutes);
-app.use("/", productRoutes);
 
-// Only start server if not in test environment
 if (process.env.NODE_ENV !== "test") {
   migrate(db, { migrationsFolder: "./drizzle" })
     .then(() => {
-      console.log("Migrations complete");
+      console.log("[stripe-service] Migrations complete");
       app.listen(Number(PORT), "::", () => {
-        console.log(`Service running on port ${PORT}`);
+        console.log(`[stripe-service] Service running on port ${PORT}`);
+        startEventPoller();
       });
     })
     .catch((err) => {
-      console.error("Migration failed:", err);
+      console.error("[stripe-service] Migration failed:", err);
       process.exit(1);
     });
 }

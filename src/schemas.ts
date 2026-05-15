@@ -16,373 +16,167 @@ registry.registerComponent("securitySchemes", "apiKey", {
   description: "Service-to-service API key",
 });
 
-// ===== Workflow tracking header schemas =====
+// ===== Identity / workflow headers =====
 
-export const WorkflowTrackingHeadersSchema = z.object({
-  "x-campaign-id": z.string().optional().openapi({ description: "Campaign ID (injected by workflow-service)" }),
-  "x-brand-id": z.string().optional().openapi({ description: "Brand ID (injected by workflow-service)" }),
-  "x-workflow-name": z.string().optional().openapi({ description: "Workflow name (injected by workflow-service)" }),
+export const IdentityHeadersSchema = z.object({
+  "x-org-id": z.string().openapi({ description: "Internal org UUID (required)" }),
+  "x-user-id": z.string().openapi({ description: "Internal user UUID (required)" }),
+  "x-brand-id": z.string().optional().openapi({ description: "Brand ID (optional, logged)" }),
+  "x-campaign-id": z.string().optional().openapi({ description: "Campaign ID (optional, logged)" }),
+  "x-workflow-slug": z.string().optional().openapi({ description: "Workflow slug (optional, logged)" }),
+  "idempotency-key": z.string().optional().openapi({ description: "Forwarded to Stripe verbatim" }),
 });
 
-// ===== Shared schemas =====
+// ===== Shared response shapes =====
 
 export const ErrorResponseSchema = z
   .object({
     error: z.string().openapi({ description: "Error message" }),
-    details: z.any().optional().openapi({ description: "Additional error details" }),
+    details: z.any().optional(),
   })
   .openapi("ErrorResponse");
 
-// ===== Create Checkout Session =====
+export const StripeObjectSchema = z.record(z.string(), z.any()).openapi("StripeObject");
+export const StripeListSchema = z
+  .object({
+    object: z.literal("list"),
+    data: z.array(StripeObjectSchema),
+    has_more: z.boolean(),
+    url: z.string(),
+  })
+  .openapi("StripeList");
+
+// ===== Customers =====
+
+export const CreateCustomerRequestSchema = z
+  .object({
+    email: z.string().email().optional(),
+    name: z.string().optional(),
+    description: z.string().optional(),
+    phone: z.string().optional(),
+    metadata: z.record(z.string(), z.string()).optional(),
+    address: z.record(z.string(), z.any()).optional(),
+    shipping: z.record(z.string(), z.any()).optional(),
+    payment_method: z.string().optional(),
+    invoice_settings: z.record(z.string(), z.any()).optional(),
+  })
+  .passthrough()
+  .openapi("CreateCustomerRequest");
+
+export const UpdateCustomerRequestSchema = z
+  .object({
+    email: z.string().email().optional(),
+    name: z.string().optional(),
+    description: z.string().optional(),
+    phone: z.string().optional(),
+    metadata: z.record(z.string(), z.string()).optional(),
+    address: z.record(z.string(), z.any()).optional(),
+    shipping: z.record(z.string(), z.any()).optional(),
+    invoice_settings: z.record(z.string(), z.any()).optional(),
+  })
+  .passthrough()
+  .openapi("UpdateCustomerRequest");
+
+export const ListCustomersQuerySchema = z
+  .object({
+    email: z.string().email().optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    starting_after: z.string().optional(),
+  })
+  .openapi("ListCustomersQuery");
+
+// ===== Checkout sessions =====
+
+const LineItemSchema = z
+  .object({
+    price: z.string().optional(),
+    price_data: z.record(z.string(), z.any()).optional(),
+    quantity: z.number().int().positive().optional(),
+    adjustable_quantity: z.record(z.string(), z.any()).optional(),
+  })
+  .passthrough();
 
 export const CreateCheckoutSessionRequestSchema = z
   .object({
-    brandId: z.string().optional().openapi({ description: "Brand ID" }),
-    campaignId: z.string().optional().openapi({ description: "Campaign ID" }),
-    lineItems: z
-      .array(
-        z.object({
-          priceId: z.string().openapi({ description: "Stripe Price ID" }),
-          quantity: z.number().int().positive().openapi({ description: "Quantity" }),
-        })
-      )
-      .min(1)
-      .openapi({ description: "Line items for checkout" }),
-    successUrl: z.string().url().openapi({ description: "Redirect URL on success" }),
-    cancelUrl: z.string().url().openapi({ description: "Redirect URL on cancel" }),
-    customerId: z.string().optional().openapi({ description: "Stripe Customer ID" }),
-    customerEmail: z.string().email().optional().openapi({ description: "Customer email" }),
-    mode: z
-      .enum(["payment", "subscription"])
-      .optional()
-      .default("payment")
-      .openapi({ description: "Checkout mode" }),
-    metadata: z.record(z.string(), z.string()).optional().openapi({ description: "Custom metadata" }),
-    discounts: z
-      .array(
-        z.object({
-          coupon: z.string().optional().openapi({ description: "Stripe Coupon ID" }),
-          promotionCode: z
-            .string()
-            .optional()
-            .openapi({ description: "Stripe Promotion Code ID" }),
-        })
-      )
-      .optional()
-      .openapi({ description: "Discounts to apply to the checkout session" }),
+    mode: z.enum(["payment", "subscription", "setup"]),
+    line_items: z.array(LineItemSchema).min(1),
+    success_url: z.string().url(),
+    cancel_url: z.string().url().optional(),
+    customer: z.string().optional(),
+    customer_email: z.string().email().optional(),
+    metadata: z.record(z.string(), z.string()).optional(),
+    payment_intent_data: z.record(z.string(), z.any()).optional(),
+    payment_method_types: z.array(z.string()).optional(),
+    subscription_data: z.record(z.string(), z.any()).optional(),
+    discounts: z.array(z.record(z.string(), z.any())).optional(),
+    expires_at: z.number().int().optional(),
   })
+  .passthrough()
   .openapi("CreateCheckoutSessionRequest");
 
-export type CreateCheckoutSessionRequest = z.infer<typeof CreateCheckoutSessionRequestSchema>;
-
-export const CreateCheckoutSessionResponseSchema = z
+export const ListCheckoutSessionsQuerySchema = z
   .object({
-    success: z.boolean(),
-    paymentId: z.string().uuid().openapi({ description: "Internal payment record ID" }),
-    sessionId: z.string().optional().openapi({ description: "Stripe Checkout Session ID" }),
-    url: z.string().optional().openapi({ description: "Stripe Checkout URL" }),
+    customer: z.string().optional(),
+    payment_intent: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    starting_after: z.string().optional(),
   })
-  .openapi("CreateCheckoutSessionResponse");
+  .openapi("ListCheckoutSessionsQuery");
 
-// ===== Create Payment Intent =====
+// ===== Payment intents =====
 
 export const CreatePaymentIntentRequestSchema = z
   .object({
-    brandId: z.string().optional().openapi({ description: "Brand ID" }),
-    campaignId: z.string().optional().openapi({ description: "Campaign ID" }),
-    amountInCents: z.number().int().positive().openapi({ description: "Amount in cents" }),
-    currency: z.string().optional().default("usd").openapi({ description: "Currency code" }),
-    customerId: z.string().optional().openapi({ description: "Stripe Customer ID" }),
-    description: z.string().optional().openapi({ description: "Payment description" }),
-    metadata: z.record(z.string(), z.string()).optional().openapi({ description: "Custom metadata" }),
+    amount: z.number().int().positive(),
+    currency: z.string().min(3),
+    customer: z.string().optional(),
+    payment_method: z.string().optional(),
+    payment_method_types: z.array(z.string()).optional(),
+    automatic_payment_methods: z.record(z.string(), z.any()).optional(),
+    confirm: z.boolean().optional(),
+    off_session: z.boolean().optional(),
+    description: z.string().optional(),
+    metadata: z.record(z.string(), z.string()).optional(),
+    setup_future_usage: z.string().optional(),
+    capture_method: z.string().optional(),
+    receipt_email: z.string().email().optional(),
+    statement_descriptor: z.string().optional(),
   })
+  .passthrough()
   .openapi("CreatePaymentIntentRequest");
 
-export type CreatePaymentIntentRequest = z.infer<typeof CreatePaymentIntentRequestSchema>;
-
-export const CreatePaymentIntentResponseSchema = z
+export const ListPaymentIntentsQuerySchema = z
   .object({
-    success: z.boolean(),
-    paymentId: z.string().uuid().openapi({ description: "Internal payment record ID" }),
-    paymentIntentId: z.string().optional().openapi({ description: "Stripe Payment Intent ID" }),
-    clientSecret: z.string().optional().openapi({ description: "Client secret for frontend" }),
-    status: z.string().optional().openapi({ description: "Payment intent status" }),
+    customer: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    starting_after: z.string().optional(),
   })
-  .openapi("CreatePaymentIntentResponse");
+  .openapi("ListPaymentIntentsQuery");
 
-// ===== Create Product =====
+// ===== Billing portal sessions =====
 
-export const CreateProductRequestSchema = z
+export const CreateBillingPortalSessionRequestSchema = z
   .object({
-    id: z.string().optional().openapi({ description: "Custom Stripe Product ID for idempotent creates" }),
-    name: z.string().min(1).openapi({ description: "Product name" }),
-    description: z
-      .string()
-      .optional()
-      .openapi({ description: "Product description" }),
-    metadata: z
-      .record(z.string(), z.string())
-      .optional()
-      .openapi({ description: "Custom metadata" }),
+    customer: z.string(),
+    return_url: z.string().url().optional(),
+    configuration: z.string().optional(),
+    flow_data: z.record(z.string(), z.any()).optional(),
   })
-  .openapi("CreateProductRequest");
+  .passthrough()
+  .openapi("CreateBillingPortalSessionRequest");
 
-export type CreateProductRequest = z.infer<typeof CreateProductRequestSchema>;
+// ===== Health =====
 
-export const CreateProductResponseSchema = z
+const HealthResponseSchema = z
   .object({
-    success: z.boolean(),
-    productId: z.string().openapi({ description: "Stripe Product ID" }),
-    name: z.string().openapi({ description: "Product name" }),
-    description: z.string().nullable().optional().openapi({ description: "Product description" }),
+    status: z.literal("ok"),
+    service: z.string(),
   })
-  .openapi("CreateProductResponse");
-
-export const GetProductResponseSchema = z
-  .object({
-    success: z.boolean(),
-    productId: z.string().openapi({ description: "Stripe Product ID" }),
-    name: z.string().openapi({ description: "Product name" }),
-    description: z.string().nullable().openapi({ description: "Product description" }),
-  })
-  .openapi("GetProductResponse");
-
-// ===== Create Price =====
-
-export const CreatePriceRequestSchema = z
-  .object({
-    productId: z
-      .string()
-      .min(1)
-      .openapi({ description: "Stripe Product ID to attach the price to" }),
-    unitAmountInCents: z
-      .number()
-      .int()
-      .positive()
-      .openapi({ description: "Price amount in cents" }),
-    currency: z
-      .string()
-      .optional()
-      .default("usd")
-      .openapi({ description: "Currency code (default: usd)" }),
-    recurring: z
-      .object({
-        interval: z
-          .enum(["day", "week", "month", "year"])
-          .openapi({ description: "Billing interval" }),
-        intervalCount: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .default(1)
-          .openapi({ description: "Number of intervals between billings" }),
-      })
-      .optional()
-      .openapi({
-        description:
-          "Recurring pricing configuration. Omit for one-time prices.",
-      }),
-    metadata: z
-      .record(z.string(), z.string())
-      .optional()
-      .openapi({ description: "Custom metadata" }),
-  })
-  .openapi("CreatePriceRequest");
-
-export type CreatePriceRequest = z.infer<typeof CreatePriceRequestSchema>;
-
-export const CreatePriceResponseSchema = z
-  .object({
-    success: z.boolean(),
-    priceId: z.string().openapi({ description: "Stripe Price ID" }),
-    productId: z
-      .string()
-      .openapi({ description: "Associated Stripe Product ID" }),
-    unitAmountInCents: z
-      .number()
-      .openapi({ description: "Price amount in cents" }),
-    currency: z.string().openapi({ description: "Currency code" }),
-  })
-  .openapi("CreatePriceResponse");
-
-const PriceItemSchema = z.object({
-  priceId: z.string().openapi({ description: "Stripe Price ID" }),
-  productId: z.string().openapi({ description: "Associated Stripe Product ID" }),
-  unitAmountInCents: z.number().nullable().openapi({ description: "Price amount in cents" }),
-  currency: z.string().openapi({ description: "Currency code" }),
-  active: z.boolean().openapi({ description: "Whether the price is active" }),
-});
-
-export const GetPriceResponseSchema = z
-  .object({
-    success: z.boolean(),
-  })
-  .merge(PriceItemSchema)
-  .openapi("GetPriceResponse");
-
-export const ListPricesResponseSchema = z
-  .object({
-    success: z.boolean(),
-    prices: z.array(PriceItemSchema),
-  })
-  .openapi("ListPricesResponse");
-
-// ===== Create Coupon =====
-
-export const CreateCouponRequestSchema = z
-  .object({
-    id: z.string().optional().openapi({ description: "Custom Stripe Coupon ID for idempotent creates" }),
-    name: z
-      .string()
-      .optional()
-      .openapi({ description: "Display name for the coupon" }),
-    percentOff: z
-      .number()
-      .min(1)
-      .max(100)
-      .optional()
-      .openapi({ description: "Percentage discount (1-100). Provide this OR amountOffInCents." }),
-    amountOffInCents: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .openapi({ description: "Fixed amount discount in cents. Provide this OR percentOff." }),
-    currency: z
-      .string()
-      .optional()
-      .openapi({ description: "Currency code. Required if amountOffInCents is provided." }),
-    duration: z
-      .enum(["once", "repeating", "forever"])
-      .optional()
-      .default("once")
-      .openapi({ description: "How long the coupon applies (default: once)" }),
-    durationInMonths: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .openapi({ description: "Number of months (required if duration is repeating)" }),
-    maxRedemptions: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .openapi({ description: "Maximum number of times the coupon can be redeemed" }),
-    redeemBy: z
-      .string()
-      .datetime()
-      .optional()
-      .openapi({ description: "ISO 8601 date after which the coupon can no longer be redeemed" }),
-    metadata: z
-      .record(z.string(), z.string())
-      .optional()
-      .openapi({ description: "Custom metadata" }),
-  })
-  .refine((data) => data.percentOff != null || data.amountOffInCents != null, {
-    message: "Either percentOff or amountOffInCents must be provided",
-  })
-  .refine(
-    (data) => !(data.amountOffInCents != null && !data.currency),
-    { message: "currency is required when amountOffInCents is provided" }
-  )
-  .openapi("CreateCouponRequest");
-
-export type CreateCouponRequest = z.infer<typeof CreateCouponRequestSchema>;
-
-export const CreateCouponResponseSchema = z
-  .object({
-    success: z.boolean(),
-    couponId: z.string().openapi({ description: "Stripe Coupon ID" }),
-    name: z.string().nullable().openapi({ description: "Coupon display name" }),
-    percentOff: z
-      .number()
-      .nullable()
-      .openapi({ description: "Percentage discount" }),
-    amountOffInCents: z
-      .number()
-      .nullable()
-      .openapi({ description: "Fixed amount discount in cents" }),
-    currency: z
-      .string()
-      .nullable()
-      .openapi({ description: "Currency code" }),
-    duration: z.string().openapi({ description: "Coupon duration" }),
-  })
-  .openapi("CreateCouponResponse");
-
-export const GetCouponResponseSchema = z
-  .object({
-    success: z.boolean(),
-    couponId: z.string().openapi({ description: "Stripe Coupon ID" }),
-    name: z.string().nullable().openapi({ description: "Coupon display name" }),
-    percentOff: z.number().nullable().openapi({ description: "Percentage discount" }),
-    amountOffInCents: z.number().nullable().openapi({ description: "Fixed amount discount in cents" }),
-    currency: z.string().nullable().openapi({ description: "Currency code" }),
-    duration: z.string().openapi({ description: "Coupon duration" }),
-    valid: z.boolean().openapi({ description: "Whether the coupon is still valid" }),
-  })
-  .openapi("GetCouponResponse");
-
-// ===== Payment Status =====
-
-export const PaymentStatusResponseSchema = z
-  .object({
-    payment: z.object({
-      id: z.string().uuid(),
-      orgId: z.string().nullable(),
-      userId: z.string().nullable(),
-      runId: z.string().nullable(),
-      brandId: z.string().nullable(),
-      campaignId: z.string().nullable(),
-      workflowName: z.string().nullable(),
-      stripePaymentIntentId: z.string().nullable(),
-      stripeCheckoutSessionId: z.string().nullable(),
-      stripeCustomerId: z.string().nullable(),
-      amountInCents: z.number(),
-      currency: z.string(),
-      status: z.string(),
-      description: z.string().nullable(),
-      createdAt: z.string(),
-      updatedAt: z.string(),
-    }),
-    events: z.object({
-      successes: z.array(z.any()),
-      failures: z.array(z.any()),
-      refunds: z.array(z.any()),
-      disputes: z.array(z.any()),
-    }),
-  })
-  .openapi("PaymentStatusResponse");
-
-// ===== Stats =====
-
-export const StatsQuerySchema = z
-  .object({
-    runIds: z.string().optional().openapi({ description: "Comma-separated run IDs" }),
-    orgId: z.string().optional().openapi({ description: "Filter by org ID" }),
-    brandId: z.string().optional().openapi({ description: "Filter by brand ID" }),
-    campaignId: z.string().optional().openapi({ description: "Filter by campaign ID" }),
-  })
-  .openapi("StatsQuery");
-
-export const StatsResponseSchema = z
-  .object({
-    totalPayments: z.number(),
-    totalAmountInCents: z.number(),
-    successCount: z.number(),
-    failureCount: z.number(),
-    refundCount: z.number(),
-    disputeCount: z.number(),
-  })
-  .openapi("StatsResponse");
+  .openapi("HealthResponse");
 
 // ================================================================
-// Register all API paths
+// Path registrations
 // ================================================================
-
-// --- Health ---
 
 registry.registerPath({
   method: "get",
@@ -392,377 +186,193 @@ registry.registerPath({
   responses: {
     200: {
       description: "Service is healthy",
-      content: {
-        "application/json": {
-          schema: z.object({
-            status: z.string(),
-            service: z.string(),
-          }),
-        },
-      },
+      content: { "application/json": { schema: HealthResponseSchema } },
     },
   },
 });
 
-// --- Create Checkout Session ---
+const apiKeySec = [{ apiKey: [] }];
+
+// --- Customers ---
 
 registry.registerPath({
   method: "post",
-  path: "/checkout/create",
-  summary: "Create a Stripe checkout session",
+  path: "/v1/customers",
+  summary: "Create a Stripe customer",
   description:
-    "Creates a Stripe Checkout Session and records the payment in the database. Runs-service integration is BLOCKING.",
-  tags: ["Payments"],
-  security: [{ apiKey: [] }],
+    "Thin Stripe wrapper. Body forwarded to Stripe verbatim. Response is the Stripe Customer object.",
+  tags: ["Customers"],
+  security: apiKeySec,
   request: {
-    headers: WorkflowTrackingHeadersSchema,
-    body: {
-      content: { "application/json": { schema: CreateCheckoutSessionRequestSchema } },
-    },
+    headers: IdentityHeadersSchema,
+    body: { content: { "application/json": { schema: CreateCustomerRequestSchema } } },
   },
   responses: {
-    200: {
-      description: "Checkout session created",
-      content: { "application/json": { schema: CreateCheckoutSessionResponseSchema } },
-    },
-    400: {
-      description: "Invalid request",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    500: {
-      description: "Server error",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
+    200: { description: "Customer created", content: { "application/json": { schema: StripeObjectSchema } } },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });
 
-// --- Create Payment Intent ---
+registry.registerPath({
+  method: "get",
+  path: "/v1/customers/{id}",
+  summary: "Retrieve a Stripe customer",
+  description: "Returns the cached row if present, falls back to Stripe and upserts otherwise.",
+  tags: ["Customers"],
+  security: apiKeySec,
+  request: {
+    headers: IdentityHeadersSchema,
+    params: z.object({ id: z.string() }),
+  },
+  responses: {
+    200: { description: "Customer", content: { "application/json": { schema: StripeObjectSchema } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
 
 registry.registerPath({
   method: "post",
-  path: "/payment-intent/create",
-  summary: "Create a Stripe payment intent",
-  description:
-    "Creates a Stripe Payment Intent and records the payment in the database. Runs-service integration is BLOCKING.",
-  tags: ["Payments"],
-  security: [{ apiKey: [] }],
+  path: "/v1/customers/{id}",
+  summary: "Update a Stripe customer",
+  tags: ["Customers"],
+  security: apiKeySec,
   request: {
-    headers: WorkflowTrackingHeadersSchema,
-    body: {
-      content: { "application/json": { schema: CreatePaymentIntentRequestSchema } },
-    },
+    headers: IdentityHeadersSchema,
+    params: z.object({ id: z.string() }),
+    body: { content: { "application/json": { schema: UpdateCustomerRequestSchema } } },
   },
   responses: {
-    200: {
-      description: "Payment intent created",
-      content: { "application/json": { schema: CreatePaymentIntentResponseSchema } },
-    },
-    400: {
-      description: "Invalid request",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    500: {
-      description: "Server error",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
+    200: { description: "Customer updated", content: { "application/json": { schema: StripeObjectSchema } } },
   },
 });
 
-// --- Create Product ---
+registry.registerPath({
+  method: "get",
+  path: "/v1/customers",
+  summary: "List Stripe customers (DB-backed mirror)",
+  tags: ["Customers"],
+  security: apiKeySec,
+  request: {
+    headers: IdentityHeadersSchema,
+    query: ListCustomersQuerySchema,
+  },
+  responses: {
+    200: { description: "Customer list", content: { "application/json": { schema: StripeListSchema } } },
+  },
+});
+
+// --- Checkout sessions ---
 
 registry.registerPath({
   method: "post",
-  path: "/products/create",
-  summary: "Create a Stripe product",
-  description:
-    "Creates a product in Stripe. Pass an optional id for idempotent creates — if the product already exists, it will be returned.",
-  tags: ["Products"],
-  security: [{ apiKey: [] }],
+  path: "/v1/checkout/sessions",
+  summary: "Create a Checkout Session",
+  tags: ["Checkout"],
+  security: apiKeySec,
   request: {
-    headers: WorkflowTrackingHeadersSchema,
-    body: {
-      content: {
-        "application/json": { schema: CreateProductRequestSchema },
-      },
-    },
+    headers: IdentityHeadersSchema,
+    body: { content: { "application/json": { schema: CreateCheckoutSessionRequestSchema } } },
   },
   responses: {
-    200: {
-      description: "Product created",
-      content: {
-        "application/json": { schema: CreateProductResponseSchema },
-      },
-    },
-    400: {
-      description: "Invalid request",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    500: {
-      description: "Server error",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
+    200: { description: "Session created", content: { "application/json": { schema: StripeObjectSchema } } },
   },
 });
 
-// --- Create Price ---
+registry.registerPath({
+  method: "get",
+  path: "/v1/checkout/sessions/{id}",
+  summary: "Retrieve a Checkout Session",
+  tags: ["Checkout"],
+  security: apiKeySec,
+  request: {
+    headers: IdentityHeadersSchema,
+    params: z.object({ id: z.string() }),
+  },
+  responses: {
+    200: { description: "Session", content: { "application/json": { schema: StripeObjectSchema } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/v1/checkout/sessions",
+  summary: "List Checkout Sessions (DB-backed mirror)",
+  tags: ["Checkout"],
+  security: apiKeySec,
+  request: {
+    headers: IdentityHeadersSchema,
+    query: ListCheckoutSessionsQuerySchema,
+  },
+  responses: {
+    200: { description: "Session list", content: { "application/json": { schema: StripeListSchema } } },
+  },
+});
+
+// --- Payment intents ---
 
 registry.registerPath({
   method: "post",
-  path: "/prices/create",
-  summary: "Create a Stripe price for a product",
-  description:
-    "Creates a price attached to a Stripe product. Use the returned priceId in checkout sessions.",
-  tags: ["Products"],
-  security: [{ apiKey: [] }],
+  path: "/v1/payment_intents",
+  summary: "Create a PaymentIntent",
+  tags: ["PaymentIntents"],
+  security: apiKeySec,
   request: {
-    headers: WorkflowTrackingHeadersSchema,
-    body: {
-      content: {
-        "application/json": { schema: CreatePriceRequestSchema },
-      },
-    },
+    headers: IdentityHeadersSchema,
+    body: { content: { "application/json": { schema: CreatePaymentIntentRequestSchema } } },
   },
   responses: {
-    200: {
-      description: "Price created",
-      content: {
-        "application/json": { schema: CreatePriceResponseSchema },
-      },
-    },
-    400: {
-      description: "Invalid request",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    500: {
-      description: "Server error",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
+    200: { description: "PaymentIntent created", content: { "application/json": { schema: StripeObjectSchema } } },
   },
 });
 
-// --- Create Coupon ---
+registry.registerPath({
+  method: "get",
+  path: "/v1/payment_intents/{id}",
+  summary: "Retrieve a PaymentIntent",
+  tags: ["PaymentIntents"],
+  security: apiKeySec,
+  request: {
+    headers: IdentityHeadersSchema,
+    params: z.object({ id: z.string() }),
+  },
+  responses: {
+    200: { description: "PaymentIntent", content: { "application/json": { schema: StripeObjectSchema } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/v1/payment_intents",
+  summary: "List PaymentIntents (DB-backed mirror)",
+  description:
+    "Returns DB-cached PaymentIntents. Status is webhook-updated. Callers use this to inspect in-flight reloads per customer before triggering new payments.",
+  tags: ["PaymentIntents"],
+  security: apiKeySec,
+  request: {
+    headers: IdentityHeadersSchema,
+    query: ListPaymentIntentsQuerySchema,
+  },
+  responses: {
+    200: { description: "PaymentIntent list", content: { "application/json": { schema: StripeListSchema } } },
+  },
+});
+
+// --- Billing portal sessions ---
 
 registry.registerPath({
   method: "post",
-  path: "/coupons/create",
-  summary: "Create a Stripe coupon",
-  description:
-    "Creates a coupon in Stripe. Pass an optional id for idempotent creates — if the coupon already exists, it will be returned.",
-  tags: ["Products"],
-  security: [{ apiKey: [] }],
+  path: "/v1/billing_portal/sessions",
+  summary: "Create a Billing Portal Session",
+  tags: ["BillingPortal"],
+  security: apiKeySec,
   request: {
-    headers: WorkflowTrackingHeadersSchema,
-    body: {
-      content: {
-        "application/json": { schema: CreateCouponRequestSchema },
-      },
-    },
+    headers: IdentityHeadersSchema,
+    body: { content: { "application/json": { schema: CreateBillingPortalSessionRequestSchema } } },
   },
   responses: {
-    200: {
-      description: "Coupon created",
-      content: {
-        "application/json": { schema: CreateCouponResponseSchema },
-      },
-    },
-    400: {
-      description: "Invalid request",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    500: {
-      description: "Server error",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-  },
-});
-
-// --- Get Product ---
-
-registry.registerPath({
-  method: "get",
-  path: "/products/{productId}",
-  summary: "Get a Stripe product by ID",
-  tags: ["Products"],
-  security: [{ apiKey: [] }],
-  request: {
-    headers: WorkflowTrackingHeadersSchema,
-    params: z.object({ productId: z.string() }),
-  },
-  responses: {
-    200: {
-      description: "Product found",
-      content: { "application/json": { schema: GetProductResponseSchema } },
-    },
-    404: {
-      description: "Product not found",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-  },
-});
-
-// --- Get Price ---
-
-registry.registerPath({
-  method: "get",
-  path: "/prices/{priceId}",
-  summary: "Get a Stripe price by ID",
-  tags: ["Products"],
-  security: [{ apiKey: [] }],
-  request: {
-    headers: WorkflowTrackingHeadersSchema,
-    params: z.object({ priceId: z.string() }),
-  },
-  responses: {
-    200: {
-      description: "Price found",
-      content: { "application/json": { schema: GetPriceResponseSchema } },
-    },
-    404: {
-      description: "Price not found",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-  },
-});
-
-// --- List Prices by Product ---
-
-registry.registerPath({
-  method: "get",
-  path: "/prices/by-product/{productId}",
-  summary: "List active prices for a product",
-  tags: ["Products"],
-  security: [{ apiKey: [] }],
-  request: {
-    headers: WorkflowTrackingHeadersSchema,
-    params: z.object({ productId: z.string() }),
-  },
-  responses: {
-    200: {
-      description: "Prices for product",
-      content: { "application/json": { schema: ListPricesResponseSchema } },
-    },
-  },
-});
-
-// --- Get Coupon ---
-
-registry.registerPath({
-  method: "get",
-  path: "/coupons/{couponId}",
-  summary: "Get a Stripe coupon by ID",
-  tags: ["Products"],
-  security: [{ apiKey: [] }],
-  request: {
-    headers: WorkflowTrackingHeadersSchema,
-    params: z.object({ couponId: z.string() }),
-  },
-  responses: {
-    200: {
-      description: "Coupon found",
-      content: { "application/json": { schema: GetCouponResponseSchema } },
-    },
-    404: {
-      description: "Coupon not found",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-  },
-});
-
-// --- Payment Status ---
-
-registry.registerPath({
-  method: "get",
-  path: "/status/{paymentId}",
-  summary: "Get payment status with events",
-  tags: ["Payment Status"],
-  security: [{ apiKey: [] }],
-  request: {
-    headers: WorkflowTrackingHeadersSchema,
-    params: z.object({
-      paymentId: z.string().uuid(),
-    }),
-  },
-  responses: {
-    200: {
-      description: "Payment status with events",
-      content: { "application/json": { schema: PaymentStatusResponseSchema } },
-    },
-    404: {
-      description: "Payment not found",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-  },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/status/by-org/{orgId}",
-  summary: "List payments by organization",
-  tags: ["Payment Status"],
-  security: [{ apiKey: [] }],
-  request: {
-    headers: WorkflowTrackingHeadersSchema,
-    params: z.object({
-      orgId: z.string(),
-    }),
-  },
-  responses: {
-    200: {
-      description: "List of payments",
-      content: {
-        "application/json": {
-          schema: z.object({
-            payments: z.array(z.any()),
-          }),
-        },
-      },
-    },
-  },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/status/by-run/{runId}",
-  summary: "List payments by run",
-  tags: ["Payment Status"],
-  security: [{ apiKey: [] }],
-  request: {
-    headers: WorkflowTrackingHeadersSchema,
-    params: z.object({
-      runId: z.string(),
-    }),
-  },
-  responses: {
-    200: {
-      description: "List of payments",
-      content: {
-        "application/json": {
-          schema: z.object({
-            payments: z.array(z.any()),
-          }),
-        },
-      },
-    },
-  },
-});
-
-// --- Stats ---
-
-registry.registerPath({
-  method: "get",
-  path: "/stats",
-  summary: "Get aggregated payment stats",
-  tags: ["Payment Status"],
-  security: [{ apiKey: [] }],
-  request: {
-    headers: WorkflowTrackingHeadersSchema,
-    query: StatsQuerySchema,
-  },
-  responses: {
-    200: {
-      description: "Aggregated stats",
-      content: { "application/json": { schema: StatsResponseSchema } },
-    },
+    200: { description: "Session created", content: { "application/json": { schema: StripeObjectSchema } } },
   },
 });
 
@@ -770,24 +380,16 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
-  path: "/webhooks/stripe",
-  summary: "Handle Stripe webhook events",
+  path: "/v1/webhooks",
+  summary: "Stripe webhook handler",
   description:
-    "Receives and processes Stripe webhook events. Uses Stripe signature verification.",
+    "Verifies signature, persists event, upserts target object. No auth — uses Stripe signature only.",
   tags: ["Webhooks"],
   request: {
-    body: {
-      content: { "application/json": { schema: z.any() } },
-    },
+    body: { content: { "application/json": { schema: z.any() } } },
   },
   responses: {
-    200: {
-      description: "Webhook processed",
-      content: { "application/json": { schema: z.object({ received: z.boolean() }) } },
-    },
-    400: {
-      description: "Invalid signature",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
+    200: { description: "Event processed", content: { "application/json": { schema: z.object({ received: z.boolean() }) } } },
+    400: { description: "Invalid signature", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });

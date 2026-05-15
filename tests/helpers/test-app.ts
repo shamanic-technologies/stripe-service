@@ -2,32 +2,27 @@ import express from "express";
 import cors from "cors";
 import { serviceAuth } from "../../src/middleware/serviceAuth";
 import { requireIdentityHeaders } from "../../src/middleware/identityHeaders";
+import { callLog } from "../../src/middleware/callLog";
 import healthRoutes from "../../src/routes/health";
-import paymentRoutes from "../../src/routes/payments";
-import statusRoutes from "../../src/routes/status";
+import customersRoutes from "../../src/routes/customers";
+import checkoutSessionsRoutes from "../../src/routes/checkout-sessions";
+import paymentIntentsRoutes from "../../src/routes/payment-intents";
+import billingPortalSessionsRoutes from "../../src/routes/billing-portal-sessions";
 import webhooksRoutes from "../../src/routes/webhooks";
-import productRoutes from "../../src/routes/products";
 
 export function createTestApp() {
   const app = express();
-
   app.use(cors());
-
-  // Raw body for webhook signature verification
-  app.use(
-    "/webhooks/stripe",
-    express.raw({ type: "application/json" })
-  );
-
+  app.use("/v1/webhooks", express.raw({ type: "application/json" }));
   app.use(express.json());
   app.use(serviceAuth);
   app.use(requireIdentityHeaders);
-
+  app.use(callLog);
   app.use("/", healthRoutes);
-  app.use("/", paymentRoutes);
-  app.use("/", statusRoutes);
+  app.use("/", customersRoutes);
+  app.use("/", checkoutSessionsRoutes);
+  app.use("/", paymentIntentsRoutes);
+  app.use("/", billingPortalSessionsRoutes);
   app.use("/", webhooksRoutes);
-  app.use("/", productRoutes);
-
   return app;
 }
