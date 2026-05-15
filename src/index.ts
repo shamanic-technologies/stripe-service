@@ -15,6 +15,8 @@ import customersRoutes from "./routes/customers";
 import checkoutSessionsRoutes from "./routes/checkout-sessions";
 import paymentIntentsRoutes from "./routes/payment-intents";
 import billingPortalSessionsRoutes from "./routes/billing-portal-sessions";
+import customerBalanceTransactionsRoutes from "./routes/customer-balance-transactions";
+import publicStatsRoutes from "./routes/public-stats";
 import webhooksRoutes from "./routes/webhooks";
 import { startEventPoller } from "./lib/event-poller";
 
@@ -79,6 +81,8 @@ app.use("/", customersRoutes);
 app.use("/", checkoutSessionsRoutes);
 app.use("/", paymentIntentsRoutes);
 app.use("/", billingPortalSessionsRoutes);
+app.use("/", customerBalanceTransactionsRoutes);
+app.use("/", publicStatsRoutes);
 app.use("/", webhooksRoutes);
 
 if (process.env.NODE_ENV !== "test") {

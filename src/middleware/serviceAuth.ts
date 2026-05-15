@@ -5,6 +5,7 @@ const PUBLIC_PATHS = new Set(["/", "/health", "/openapi.json"]);
 export function serviceAuth(req: Request, res: Response, next: NextFunction) {
   if (PUBLIC_PATHS.has(req.path)) return next();
   if (req.path.startsWith("/v1/webhooks")) return next();
+  if (req.path.startsWith("/public/")) return next();
 
   const apiKey = req.headers["x-api-key"];
   const validSecret = process.env.STRIPE_SERVICE_API_KEY;

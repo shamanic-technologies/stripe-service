@@ -383,6 +383,52 @@
           "nullable": true
         }
       },
+      "PublicStatsBillingResponse": {
+        "type": "object",
+        "properties": {
+          "total_paid_cents": {
+            "type": "string"
+          },
+          "accounts_with_payment_method": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "monthly_growth": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicStatsBucket"
+            }
+          },
+          "weekly_growth": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicStatsBucket"
+            }
+          }
+        },
+        "required": [
+          "total_paid_cents",
+          "accounts_with_payment_method",
+          "monthly_growth",
+          "weekly_growth"
+        ]
+      },
+      "PublicStatsBucket": {
+        "type": "object",
+        "properties": {
+          "period": {
+            "type": "string",
+            "description": "ISO date (YYYY-MM-DD) at start of bucket"
+          },
+          "paid_cents": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "period",
+          "paid_cents"
+        ]
+      },
       "CreateBillingPortalSessionRequest": {
         "type": "object",
         "properties": {
@@ -1487,6 +1533,151 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/balance_transactions": {
+      "get": {
+        "summary": "List balance transactions for the caller's org Stripe customer (DB-backed mirror)",
+        "description": "Org-implicit list. Resolves the org's Stripe customer server-side via x-org-id (assumes 1:1 org→customer). Returns Stripe-shape customer_balance_transaction list. Falls back to Stripe and upserts when DB has no rows. Returns 404 when the org has no Stripe customer.",
+        "tags": [
+          "BalanceTransactions"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "starting_after",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "ending_before",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Internal org UUID (required)"
+            },
+            "required": true,
+            "description": "Internal org UUID (required)",
+            "name": "x-org-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Internal user UUID (required)"
+            },
+            "required": true,
+            "description": "Internal user UUID (required)",
+            "name": "x-user-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID (optional, logged)"
+            },
+            "required": false,
+            "description": "Brand ID (optional, logged)",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID (optional, logged)"
+            },
+            "required": false,
+            "description": "Campaign ID (optional, logged)",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug (optional, logged)"
+            },
+            "required": false,
+            "description": "Workflow slug (optional, logged)",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Forwarded to Stripe verbatim"
+            },
+            "required": false,
+            "description": "Forwarded to Stripe verbatim",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Balance transaction list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StripeList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Org has no Stripe customer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/public/stats/billing": {
+      "get": {
+        "summary": "Public aggregate billing stats (no auth, cross-org)",
+        "description": "Aggregate Stripe-side payment stats across all orgs. Public endpoint — no X-API-Key, no identity headers.",
+        "tags": [
+          "Public"
+        ],
+        "responses": {
+          "200": {
+            "description": "Aggregate stats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicStatsBillingResponse"
                 }
               }
             }

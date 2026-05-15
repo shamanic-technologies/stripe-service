@@ -67,3 +67,68 @@ describe("processEvent — idempotence", () => {
     expect(result).toBe(false);
   });
 });
+
+describe("processEvent — customer_balance_transaction.*", () => {
+  it("upserts CBT row on customer_balance_transaction.created", async () => {
+    dbMock.queueInsert("events", [{ id: "evt_cbt_1" }]);
+    dbMock.queueSelect("customers", [{ orgId: TEST_ORG_ID }]);
+
+    const result = await processEvent(
+      {
+        id: "evt_cbt_1",
+        type: "customer_balance_transaction.created",
+        api_version: "2024-12-18",
+        livemode: false,
+        created: 1700000000,
+        data: {
+          object: {
+            id: "cbtxn_1",
+            object: "customer_balance_transaction",
+            amount: -2500,
+            currency: "usd",
+            type: "adjustment",
+            customer: "cus_1",
+            credit_note: null,
+            invoice: null,
+            description: null,
+            metadata: {},
+            created: 1700000000,
+            livemode: false,
+          },
+        },
+      } as never,
+      "webhook"
+    );
+
+    expect(result).toBe(true);
+  });
+
+  it("idempotent on replay", async () => {
+    dbMock.queueInsert("events", []);
+
+    const result = await processEvent(
+      {
+        id: "evt_cbt_1",
+        type: "customer_balance_transaction.created",
+        api_version: "2024-12-18",
+        livemode: false,
+        created: 1700000000,
+        data: {
+          object: {
+            id: "cbtxn_1",
+            object: "customer_balance_transaction",
+            amount: -2500,
+            currency: "usd",
+            type: "adjustment",
+            customer: "cus_1",
+            created: 1700000000,
+            livemode: false,
+          },
+        },
+      } as never,
+      "webhook"
+    );
+
+    expect(result).toBe(false);
+  });
+});
