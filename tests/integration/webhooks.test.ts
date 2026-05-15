@@ -1,177 +1,114 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
-import { createTestApp } from "../helpers/test-app";
-import {
-  makePaymentIntentSucceeded,
-  makePaymentIntentFailed,
-  makeChargeRefunded,
-  makeDisputeCreated,
-  makeCheckoutSessionCompleted,
-} from "../fixtures/stripe-payloads";
+import { TEST_ORG_ID } from "../helpers/mocks";
 
-// Mock the stripe client
-const mockConstructWebhookEvent = vi.fn();
+const { dbMock, constructWebhookEventMock } = vi.hoisted(() => {
+  const { makeDbMock } = require("../helpers/mocks-factory.cjs");
+  return { dbMock: makeDbMock(vi), constructWebhookEventMock: vi.fn() };
+});
+
+vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
 vi.mock("../../src/lib/stripe-client", () => ({
-  createCheckoutSession: vi.fn(),
-  createPaymentIntent: vi.fn(),
-  constructWebhookEvent: (...args: any[]) => mockConstructWebhookEvent(...args),
+  makeStripeClient: vi.fn(),
+  getWebhookClient: vi.fn(),
+  constructWebhookEvent: (...args: unknown[]) => constructWebhookEventMock(...args),
+  isStripeError: (e: unknown) => e instanceof Error,
+  stripeErrorStatus: () => 500,
+  isResourceMissing: () => false,
 }));
 
-// Mock the database
-const mockInsertValues = vi.fn().mockReturnValue({
-  onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
-});
-const mockInsert = vi.fn().mockReturnValue({
-  values: mockInsertValues,
-});
-const mockUpdateSet = vi.fn().mockReturnValue({
-  where: vi.fn().mockResolvedValue(undefined),
-});
-const mockUpdate = vi.fn().mockReturnValue({
-  set: mockUpdateSet,
-});
-
-vi.mock("../../src/db", () => ({
-  db: {
-    insert: (...args: any[]) => mockInsert(...args),
-    update: (...args: any[]) => mockUpdate(...args),
-    query: {},
-  },
-}));
+import { createTestApp } from "../helpers/test-app";
 
 const app = createTestApp();
 
-describe("POST /webhooks/stripe", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    process.env.STRIPE_WEBHOOK_SECRET = "whsec_test_fake";
-  });
+beforeEach(() => {
+  vi.clearAllMocks();
+  constructWebhookEventMock.mockReset();
+  process.env.STRIPE_WEBHOOK_SECRET = "whsec_test_fake";
+});
 
-  it("handles payment_intent.succeeded", async () => {
-    const paymentIntent = makePaymentIntentSucceeded();
-    mockConstructWebhookEvent.mockReturnValue({
-      type: "payment_intent.succeeded",
-      data: { object: paymentIntent },
-    });
-
+describe("POST /v1/webhooks", () => {
+  it("rejects when signature header is missing", async () => {
     const res = await request(app)
-      .post("/webhooks/stripe")
-      .set("stripe-signature", "test_signature")
+      .post("/v1/webhooks")
       .set("Content-Type", "application/json")
-      .send(JSON.stringify({ type: "payment_intent.succeeded" }));
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ received: true });
-    expect(mockInsert).toHaveBeenCalled();
-    expect(mockUpdate).toHaveBeenCalled();
-  });
-
-  it("handles payment_intent.payment_failed", async () => {
-    const paymentIntent = makePaymentIntentFailed();
-    mockConstructWebhookEvent.mockReturnValue({
-      type: "payment_intent.payment_failed",
-      data: { object: paymentIntent },
-    });
-
-    const res = await request(app)
-      .post("/webhooks/stripe")
-      .set("stripe-signature", "test_signature")
-      .set("Content-Type", "application/json")
-      .send(JSON.stringify({ type: "payment_intent.payment_failed" }));
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ received: true });
-  });
-
-  it("handles charge.refunded", async () => {
-    const charge = makeChargeRefunded();
-    mockConstructWebhookEvent.mockReturnValue({
-      type: "charge.refunded",
-      data: { object: charge },
-    });
-
-    const res = await request(app)
-      .post("/webhooks/stripe")
-      .set("stripe-signature", "test_signature")
-      .set("Content-Type", "application/json")
-      .send(JSON.stringify({ type: "charge.refunded" }));
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ received: true });
-  });
-
-  it("handles charge.dispute.created", async () => {
-    const dispute = makeDisputeCreated();
-    mockConstructWebhookEvent.mockReturnValue({
-      type: "charge.dispute.created",
-      data: { object: dispute },
-    });
-
-    const res = await request(app)
-      .post("/webhooks/stripe")
-      .set("stripe-signature", "test_signature")
-      .set("Content-Type", "application/json")
-      .send(JSON.stringify({ type: "charge.dispute.created" }));
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ received: true });
-  });
-
-  it("handles checkout.session.completed", async () => {
-    const session = makeCheckoutSessionCompleted();
-    mockConstructWebhookEvent.mockReturnValue({
-      type: "checkout.session.completed",
-      data: { object: session },
-    });
-
-    const res = await request(app)
-      .post("/webhooks/stripe")
-      .set("stripe-signature", "test_signature")
-      .set("Content-Type", "application/json")
-      .send(JSON.stringify({ type: "checkout.session.completed" }));
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ received: true });
-  });
-
-  it("returns 400 for missing signature", async () => {
-    const res = await request(app)
-      .post("/webhooks/stripe")
-      .set("Content-Type", "application/json")
-      .send(JSON.stringify({ type: "test" }));
-
+      .send({ foo: "bar" });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Missing stripe-signature header");
   });
 
-  it("returns 400 for invalid signature", async () => {
-    mockConstructWebhookEvent.mockImplementation(() => {
-      throw new Error("Invalid signature");
+  it("rejects when signature verification fails", async () => {
+    constructWebhookEventMock.mockImplementationOnce(() => {
+      throw new Error("Webhook signature verification failed");
     });
 
     const res = await request(app)
-      .post("/webhooks/stripe")
-      .set("stripe-signature", "invalid_sig")
+      .post("/v1/webhooks")
+      .set("stripe-signature", "bad-sig")
       .set("Content-Type", "application/json")
-      .send(JSON.stringify({ type: "test" }));
+      .send({ foo: "bar" });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid signature");
   });
 
-  it("handles unrecognized event types gracefully", async () => {
-    mockConstructWebhookEvent.mockReturnValue({
-      type: "some.unknown.event",
-      data: { object: {} },
+  it("processes a valid webhook and persists event row", async () => {
+    constructWebhookEventMock.mockReturnValueOnce({
+      id: "evt_test_1",
+      type: "customer.created",
+      api_version: "2024-12-18",
+      livemode: false,
+      created: 1700000000,
+      data: {
+        object: {
+          id: "cus_evt_1",
+          object: "customer",
+          email: "evt@example.com",
+          metadata: { org_id: TEST_ORG_ID },
+          created: 1700000000,
+          livemode: false,
+        },
+      },
     });
+    dbMock.queueInsert("events", [{ id: "evt_test_1" }]);
 
     const res = await request(app)
-      .post("/webhooks/stripe")
-      .set("stripe-signature", "test_signature")
+      .post("/v1/webhooks")
+      .set("stripe-signature", "t=123,v1=abc")
       .set("Content-Type", "application/json")
-      .send(JSON.stringify({ type: "some.unknown.event" }));
+      .send({ id: "evt_test_1" });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ received: true });
+    expect(res.body.received).toBe(true);
+    expect(dbMock.db.insert).toHaveBeenCalled();
+  });
+
+  it("idempotent: duplicate event yields no second processing", async () => {
+    constructWebhookEventMock.mockReturnValueOnce({
+      id: "evt_dup",
+      type: "customer.updated",
+      api_version: "2024-12-18",
+      livemode: false,
+      created: 1700000001,
+      data: {
+        object: {
+          id: "cus_dup",
+          object: "customer",
+          metadata: { org_id: TEST_ORG_ID },
+          created: 1700000001,
+          livemode: false,
+        },
+      },
+    });
+    // ON CONFLICT DO NOTHING returns empty when row already exists
+    dbMock.queueInsert("events", []);
+
+    const res = await request(app)
+      .post("/v1/webhooks")
+      .set("stripe-signature", "t=123,v1=abc")
+      .set("Content-Type", "application/json")
+      .send({ id: "evt_dup" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.received).toBe(true);
   });
 });

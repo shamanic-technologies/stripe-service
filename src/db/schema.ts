@@ -1,146 +1,142 @@
 import {
   pgTable,
-  uuid,
   text,
   integer,
   timestamp,
   index,
-  uniqueIndex,
-  boolean,
+  jsonb,
+  bigint,
+  uuid,
 } from "drizzle-orm/pg-core";
 
-// ===== Main payment records =====
+// ===== Stripe-shape mirror tables =====
+// PK = Stripe ID (cus_..., pi_..., cs_..., evt_...).
+// raw_json holds unmapped fields. synced_at = last upsert time (webhook or write-back).
 
-export const stripePayments = pgTable(
-  "stripe_payments",
+export const customers = pgTable(
+  "customers",
+  {
+    id: text("id").primaryKey(), // cus_...
+    orgId: text("org_id").notNull(),
+    email: text("email"),
+    name: text("name"),
+    description: text("description"),
+    phone: text("phone"),
+    metadata: jsonb("metadata"),
+    livemode: text("livemode"),
+    createdStripe: bigint("created_stripe", { mode: "number" }),
+    rawJson: jsonb("raw_json"),
+    syncedAt: timestamp("synced_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_customers_org_id").on(table.orgId),
+    index("idx_customers_email").on(table.email),
+  ]
+);
+
+export const checkoutSessions = pgTable(
+  "checkout_sessions",
+  {
+    id: text("id").primaryKey(), // cs_...
+    orgId: text("org_id").notNull(),
+    customer: text("customer"),
+    paymentIntent: text("payment_intent"),
+    mode: text("mode"),
+    status: text("status"),
+    paymentStatus: text("payment_status"),
+    amountTotal: bigint("amount_total", { mode: "number" }),
+    currency: text("currency"),
+    url: text("url"),
+    successUrl: text("success_url"),
+    cancelUrl: text("cancel_url"),
+    metadata: jsonb("metadata"),
+    livemode: text("livemode"),
+    createdStripe: bigint("created_stripe", { mode: "number" }),
+    rawJson: jsonb("raw_json"),
+    syncedAt: timestamp("synced_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_checkout_sessions_org_id").on(table.orgId),
+    index("idx_checkout_sessions_customer").on(table.customer),
+    index("idx_checkout_sessions_payment_intent").on(table.paymentIntent),
+  ]
+);
+
+export const paymentIntents = pgTable(
+  "payment_intents",
+  {
+    id: text("id").primaryKey(), // pi_...
+    orgId: text("org_id").notNull(),
+    customer: text("customer"),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    amountReceived: bigint("amount_received", { mode: "number" }),
+    currency: text("currency").notNull(),
+    status: text("status").notNull(),
+    description: text("description"),
+    paymentMethod: text("payment_method"),
+    latestCharge: text("latest_charge"),
+    clientSecret: text("client_secret"),
+    metadata: jsonb("metadata"),
+    lastPaymentError: jsonb("last_payment_error"),
+    livemode: text("livemode"),
+    createdStripe: bigint("created_stripe", { mode: "number" }),
+    rawJson: jsonb("raw_json"),
+    syncedAt: timestamp("synced_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_payment_intents_org_id").on(table.orgId),
+    index("idx_payment_intents_customer").on(table.customer),
+    index("idx_payment_intents_status").on(table.status),
+  ]
+);
+
+// Append-only webhook event ledger. Idempotent: PK is Stripe event ID.
+export const events = pgTable(
+  "events",
+  {
+    id: text("id").primaryKey(), // evt_...
+    type: text("type").notNull(),
+    apiVersion: text("api_version"),
+    livemode: text("livemode"),
+    createdStripe: bigint("created_stripe", { mode: "number" }),
+    objectId: text("object_id"), // e.g. cus_..., pi_..., cs_... referenced by the event
+    payload: jsonb("payload").notNull(),
+    source: text("source").notNull(), // "webhook" | "poll"
+    receivedAt: timestamp("received_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_events_type").on(table.type),
+    index("idx_events_object_id").on(table.objectId),
+    index("idx_events_received_at").on(table.receivedAt),
+  ]
+);
+
+// Cursor for reconciliation poller. Single row.
+export const eventSyncCursor = pgTable("event_sync_cursor", {
+  id: integer("id").primaryKey(), // always 1
+  lastEventId: text("last_event_id"),
+  lastSyncedAt: timestamp("last_synced_at").defaultNow().notNull(),
+});
+
+// Audit log of API calls into stripe-service. Identity headers logged when present.
+export const apiCallLog = pgTable(
+  "api_call_log",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    method: text("method").notNull(),
+    path: text("path").notNull(),
+    statusCode: integer("status_code"),
     orgId: text("org_id"),
     userId: text("user_id"),
-    runId: text("run_id"),
     brandId: text("brand_id"),
     campaignId: text("campaign_id"),
-    workflowName: text("workflow_name"),
-    stripePaymentIntentId: text("stripe_payment_intent_id"),
-    stripeCheckoutSessionId: text("stripe_checkout_session_id"),
-    stripeCustomerId: text("stripe_customer_id"),
-    amountInCents: integer("amount_in_cents").notNull(),
-    currency: text("currency").notNull().default("usd"),
-    status: text("status").notNull().default("pending"),
-    description: text("description"),
-    metadata: text("metadata"), // JSON string
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at").defaultNow().notNull(),
-  },
-  (table) => [
-    index("idx_stripe_payments_org_id").on(table.orgId),
-    index("idx_stripe_payments_user_id").on(table.userId),
-    index("idx_stripe_payments_run_id").on(table.runId),
-    index("idx_stripe_payments_brand_id").on(table.brandId),
-    index("idx_stripe_payments_campaign_id").on(table.campaignId),
-    index("idx_stripe_payments_payment_intent_id").on(table.stripePaymentIntentId),
-    index("idx_stripe_payments_checkout_session_id").on(table.stripeCheckoutSessionId),
-  ]
-);
-
-// ===== Payment success events =====
-
-export const stripePaymentSuccesses = pgTable(
-  "stripe_payment_successes",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    stripePaymentIntentId: text("stripe_payment_intent_id").notNull(),
-    stripeChargeId: text("stripe_charge_id"),
-    amountInCents: integer("amount_in_cents").notNull(),
-    currency: text("currency").notNull(),
-    receiptUrl: text("receipt_url"),
-    rawPayload: text("raw_payload"),
+    workflowSlug: text("workflow_slug"),
+    stripeObjectId: text("stripe_object_id"),
+    durationMs: integer("duration_ms"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [
-    uniqueIndex("idx_payment_successes_intent_id").on(table.stripePaymentIntentId),
-  ]
-);
-
-// ===== Payment failure events =====
-
-export const stripePaymentFailures = pgTable(
-  "stripe_payment_failures",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    stripePaymentIntentId: text("stripe_payment_intent_id").notNull(),
-    failureCode: text("failure_code"),
-    failureMessage: text("failure_message"),
-    rawPayload: text("raw_payload"),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-  },
-  (table) => [
-    index("idx_payment_failures_intent_id").on(table.stripePaymentIntentId),
-  ]
-);
-
-// ===== Refund events =====
-
-export const stripeRefunds = pgTable(
-  "stripe_refunds",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    stripeRefundId: text("stripe_refund_id").notNull(),
-    stripePaymentIntentId: text("stripe_payment_intent_id"),
-    stripeChargeId: text("stripe_charge_id").notNull(),
-    amountInCents: integer("amount_in_cents").notNull(),
-    currency: text("currency").notNull(),
-    reason: text("reason"),
-    status: text("status").notNull(),
-    rawPayload: text("raw_payload"),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-  },
-  (table) => [
-    uniqueIndex("idx_refunds_refund_id").on(table.stripeRefundId),
-    index("idx_refunds_payment_intent_id").on(table.stripePaymentIntentId),
-  ]
-);
-
-// ===== Dispute events =====
-
-export const stripeDisputes = pgTable(
-  "stripe_disputes",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    stripeDisputeId: text("stripe_dispute_id").notNull(),
-    stripePaymentIntentId: text("stripe_payment_intent_id"),
-    stripeChargeId: text("stripe_charge_id").notNull(),
-    amountInCents: integer("amount_in_cents").notNull(),
-    currency: text("currency").notNull(),
-    reason: text("reason"),
-    status: text("status").notNull(),
-    rawPayload: text("raw_payload"),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-  },
-  (table) => [
-    uniqueIndex("idx_disputes_dispute_id").on(table.stripeDisputeId),
-    index("idx_disputes_payment_intent_id").on(table.stripePaymentIntentId),
-  ]
-);
-
-// ===== Checkout session completed events =====
-
-export const stripeCheckoutSessions = pgTable(
-  "stripe_checkout_sessions",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    stripeSessionId: text("stripe_session_id").notNull(),
-    stripePaymentIntentId: text("stripe_payment_intent_id"),
-    stripeCustomerId: text("stripe_customer_id"),
-    amountTotalInCents: integer("amount_total_in_cents"),
-    currency: text("currency"),
-    paymentStatus: text("payment_status").notNull(),
-    status: text("status").notNull(),
-    rawPayload: text("raw_payload"),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-  },
-  (table) => [
-    uniqueIndex("idx_checkout_sessions_session_id").on(table.stripeSessionId),
-    index("idx_checkout_sessions_payment_intent_id").on(table.stripePaymentIntentId),
+    index("idx_api_call_log_org_id_created").on(table.orgId, table.createdAt),
+    index("idx_api_call_log_stripe_object_id").on(table.stripeObjectId),
   ]
 );

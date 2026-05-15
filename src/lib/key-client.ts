@@ -1,6 +1,5 @@
 /**
- * HTTP client for key-service
- * Resolves decrypted Stripe API keys for orgs
+ * HTTP client for key-service. Resolves decrypted Stripe API keys per org.
  */
 
 const KEY_SERVICE_URL =
@@ -17,13 +16,9 @@ interface CallerContext {
   path: string;
   campaignId?: string;
   brandId?: string;
-  workflowName?: string;
+  workflowSlug?: string;
 }
 
-/**
- * Fetches the decrypted Stripe secret key for a given org/user from key-service.
- * Calls GET /keys/stripe/decrypt?orgId=xxx&userId=xxx
- */
 export async function getDecryptedStripeKey(
   orgId: string,
   userId: string,
@@ -41,17 +36,12 @@ export async function getDecryptedStripeKey(
   };
   if (caller.campaignId) headers["x-campaign-id"] = caller.campaignId;
   if (caller.brandId) headers["x-brand-id"] = caller.brandId;
-  if (caller.workflowName) headers["x-workflow-name"] = caller.workflowName;
+  if (caller.workflowSlug) headers["x-workflow-slug"] = caller.workflowSlug;
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers,
-  });
+  const response = await fetch(url, { method: "GET", headers });
 
   if (response.status === 404) {
-    throw new Error(
-      `No Stripe key configured for org '${orgId}'`
-    );
+    throw new Error(`No Stripe key configured for org '${orgId}'`);
   }
 
   if (!response.ok) {
@@ -61,6 +51,5 @@ export async function getDecryptedStripeKey(
     );
   }
 
-  const data = (await response.json()) as DecryptKeyResponse;
-  return data;
+  return (await response.json()) as DecryptKeyResponse;
 }

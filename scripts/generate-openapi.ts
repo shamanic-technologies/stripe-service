@@ -9,19 +9,20 @@ const document = generator.generateDocument({
   info: {
     title: "Stripe Service API",
     description:
-      "Payment processing service built on Stripe. Handles checkout sessions, payment intents, webhook processing for payment events, and integrates with runs-service for cost tracking.",
-    version: "1.0.0",
+      "Thin Stripe wrapper service. Mirrors a subset of the Stripe API surface (customers, checkout sessions, payment intents, billing portal) with local DB-backed caching driven by webhooks + a 5-minute reconciliation poll.",
+    version: "2.0.0",
   },
   servers: [
     { url: "https://stripe.mcpfactory.org", description: "Production" },
     { url: "http://localhost:3011", description: "Local development" },
   ],
   tags: [
-    { name: "Health", description: "Health check endpoints" },
-    { name: "Payments", description: "Create payments via Stripe" },
-    { name: "Products", description: "Create and manage Stripe products and prices" },
-    { name: "Payment Status", description: "Query payment status and stats" },
-    { name: "Webhooks", description: "Stripe webhook handlers" },
+    { name: "Health", description: "Health check" },
+    { name: "Customers", description: "Stripe Customer mirror" },
+    { name: "Checkout", description: "Stripe Checkout Session mirror" },
+    { name: "PaymentIntents", description: "Stripe PaymentIntent mirror" },
+    { name: "BillingPortal", description: "Stripe Billing Portal sessions" },
+    { name: "Webhooks", description: "Stripe webhook ingestion" },
   ],
 });
 
