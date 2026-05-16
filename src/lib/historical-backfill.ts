@@ -1,17 +1,13 @@
-import type Stripe from "stripe";
 import { resolvePlatformKey } from "./key-client";
 import { makeStripeClient } from "./stripe-client";
 import {
   upsertCustomer,
   upsertCheckoutSession,
   upsertPaymentIntent,
+  extractOrgId,
+  extractString,
+  resolveOrgId,
 } from "./event-processor";
-
-function extractOrgId(metadata: Stripe.Metadata | null | undefined): string {
-  if (!metadata) return "unknown";
-  const v = metadata.org_id ?? metadata.orgId;
-  return typeof v === "string" ? v : "unknown";
-}
 
 /**
  * Boot-time back-fill of every locally mirrored Stripe object.
@@ -35,19 +31,27 @@ export async function backfillHistorical(): Promise<void> {
 
   let custCount = 0;
   for await (const cust of stripe.customers.list({ limit: 100 })) {
-    await upsertCustomer(cust, extractOrgId(cust.metadata));
+    await upsertCustomer(cust, extractOrgId(cust.metadata) ?? "unknown");
     custCount += 1;
   }
 
   let piCount = 0;
   for await (const pi of stripe.paymentIntents.list({ limit: 100 })) {
-    await upsertPaymentIntent(pi, extractOrgId(pi.metadata));
+    const orgId = await resolveOrgId(
+      extractOrgId(pi.metadata),
+      extractString(pi.customer)
+    );
+    await upsertPaymentIntent(pi, orgId);
     piCount += 1;
   }
 
   let csCount = 0;
   for await (const cs of stripe.checkout.sessions.list({ limit: 100 })) {
-    await upsertCheckoutSession(cs, extractOrgId(cs.metadata));
+    const orgId = await resolveOrgId(
+      extractOrgId(cs.metadata),
+      extractString(cs.customer)
+    );
+    await upsertCheckoutSession(cs, orgId);
     csCount += 1;
   }
 

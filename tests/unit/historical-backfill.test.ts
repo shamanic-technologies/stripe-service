@@ -16,6 +16,19 @@ vi.mock("../../src/lib/event-processor", () => ({
   upsertCustomer: vi.fn(async () => {}),
   upsertPaymentIntent: vi.fn(async () => {}),
   upsertCheckoutSession: vi.fn(async () => {}),
+  extractOrgId: vi.fn((metadata: Record<string, unknown> | null | undefined) => {
+    if (!metadata) return null;
+    const v = (metadata.org_id ?? metadata.orgId) as unknown;
+    return typeof v === "string" ? v : null;
+  }),
+  extractString: vi.fn((v: unknown) => {
+    if (!v) return null;
+    if (typeof v === "string") return v;
+    return (v as { id?: string }).id ?? null;
+  }),
+  resolveOrgId: vi.fn(async (metaOrgId: string | null, _customerId: string | null) => {
+    return metaOrgId ?? "unknown";
+  }),
 }));
 
 import { backfillHistorical } from "../../src/lib/historical-backfill";

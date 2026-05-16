@@ -6,7 +6,7 @@ import {
   checkoutSessions,
   paymentIntents,
 } from "../db/schema";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 type ProcessSource = "webhook" | "poll";
 
@@ -68,23 +68,55 @@ async function upsertObjectFromEvent(event: Stripe.Event): Promise<void> {
 
   if (event.type.startsWith("checkout.session.")) {
     const session = obj as Stripe.Checkout.Session;
-    const orgId = extractOrgId(session.metadata) ?? "unknown";
+    const orgId = await resolveOrgId(
+      extractOrgId(session.metadata),
+      extractString(session.customer)
+    );
     await upsertCheckoutSession(session, orgId);
     return;
   }
 
   if (event.type.startsWith("payment_intent.")) {
     const pi = obj as Stripe.PaymentIntent;
-    const orgId = extractOrgId(pi.metadata) ?? "unknown";
+    const orgId = await resolveOrgId(
+      extractOrgId(pi.metadata),
+      extractString(pi.customer)
+    );
     await upsertPaymentIntent(pi, orgId);
     return;
   }
 }
 
-function extractOrgId(metadata: Stripe.Metadata | null | undefined): string | null {
+export function extractOrgId(
+  metadata: Stripe.Metadata | null | undefined
+): string | null {
   if (!metadata) return null;
   const v = metadata.org_id ?? metadata.orgId;
   return typeof v === "string" ? v : null;
+}
+
+/**
+ * Resolve org_id with customer-mirror fallback.
+ *
+ * Historical PaymentIntents and CheckoutSessions created before stripe-service
+ * stamped `metadata.org_id` (or created server-side via Checkout where Stripe
+ * does not propagate PI metadata) have no usable org_id on the object itself.
+ * Their customer, however, does — so fall back to `customers.org_id` via the
+ * local mirror. Returns "unknown" only when both sources are empty.
+ */
+export async function resolveOrgId(
+  metadataOrgId: string | null,
+  customerId: string | null
+): Promise<string> {
+  if (metadataOrgId) return metadataOrgId;
+  if (!customerId) return "unknown";
+  const rows = await db
+    .select({ orgId: customers.orgId })
+    .from(customers)
+    .where(eq(customers.id, customerId))
+    .limit(1);
+  if (rows.length > 0 && rows[0].orgId) return rows[0].orgId;
+  return "unknown";
 }
 
 export async function upsertCustomer(customer: Stripe.Customer, orgId: string): Promise<void> {
@@ -224,7 +256,9 @@ export async function upsertPaymentIntent(
     });
 }
 
-function extractString(v: string | { id?: string } | null | undefined): string | null {
+export function extractString(
+  v: string | { id?: string } | null | undefined
+): string | null {
   if (!v) return null;
   if (typeof v === "string") return v;
   return v.id ?? null;
