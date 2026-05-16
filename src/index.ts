@@ -90,16 +90,20 @@ if (process.env.NODE_ENV !== "test") {
   migrate(db, { migrationsFolder: "./drizzle" })
     .then(() => {
       console.log("[stripe-service] Migrations complete");
-      return backfillHistorical();
-    })
-    .then(() => {
       app.listen(Number(PORT), "::", () => {
         console.log(`[stripe-service] Service running on port ${PORT}`);
         startEventPoller();
+        // Fire-and-forget historical back-fill. Runs after the port is bound
+        // so Railway never sees a long boot window during which callers get
+        // ECONNREFUSED. Idempotent via `ON CONFLICT DO UPDATE`, so failures
+        // are recovered on the next boot.
+        backfillHistorical().catch((err) => {
+          console.error("[stripe-service] Historical back-fill failed:", err);
+        });
       });
     })
     .catch((err) => {
-      console.error("[stripe-service] Boot failed:", err);
+      console.error("[stripe-service] Migration failed:", err);
       process.exit(1);
     });
 }
