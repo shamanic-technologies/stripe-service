@@ -90,30 +90,6 @@ export const paymentIntents = pgTable(
   ]
 );
 
-export const customerBalanceTransactions = pgTable(
-  "customer_balance_transactions",
-  {
-    id: text("id").primaryKey(), // cbtxn_...
-    orgId: text("org_id").notNull(),
-    customer: text("customer").notNull(),
-    amount: bigint("amount", { mode: "number" }).notNull(),
-    currency: text("currency").notNull(),
-    type: text("type").notNull(),
-    creditNote: text("credit_note"),
-    invoice: text("invoice"),
-    description: text("description"),
-    metadata: jsonb("metadata"),
-    livemode: text("livemode"),
-    createdStripe: bigint("created_stripe", { mode: "number" }),
-    rawJson: jsonb("raw_json"),
-    syncedAt: timestamp("synced_at").defaultNow().notNull(),
-  },
-  (table) => [
-    index("idx_cbt_org_id").on(table.orgId),
-    index("idx_cbt_customer").on(table.customer),
-  ]
-);
-
 // Append-only webhook event ledger. Idempotent: PK is Stripe event ID.
 export const events = pgTable(
   "events",

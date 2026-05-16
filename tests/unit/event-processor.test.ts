@@ -8,7 +8,7 @@ const { dbMock } = vi.hoisted(() => {
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
 
-import { processEvent } from "../../src/lib/event-processor";
+import { processEvent, upsertCustomer } from "../../src/lib/event-processor";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -68,67 +68,32 @@ describe("processEvent — idempotence", () => {
   });
 });
 
-describe("processEvent — customer_balance_transaction.*", () => {
-  it("upserts CBT row on customer_balance_transaction.created", async () => {
-    dbMock.queueInsert("events", [{ id: "evt_cbt_1" }]);
-    dbMock.queueSelect("customers", [{ orgId: TEST_ORG_ID }]);
+describe("upsertCustomer — balance stripped from raw_json", () => {
+  it("removes the polluted `balance` field before storing raw_json", async () => {
+    dbMock.clearCaptured();
 
-    const result = await processEvent(
+    await upsertCustomer(
       {
-        id: "evt_cbt_1",
-        type: "customer_balance_transaction.created",
-        api_version: "2024-12-18",
+        id: "cus_strip",
+        object: "customer",
+        balance: 198143,
+        email: "x@example.com",
+        name: null,
+        description: null,
+        phone: null,
+        metadata: { org_id: TEST_ORG_ID },
         livemode: false,
         created: 1700000000,
-        data: {
-          object: {
-            id: "cbtxn_1",
-            object: "customer_balance_transaction",
-            amount: -2500,
-            currency: "usd",
-            type: "adjustment",
-            customer: "cus_1",
-            credit_note: null,
-            invoice: null,
-            description: null,
-            metadata: {},
-            created: 1700000000,
-            livemode: false,
-          },
-        },
       } as never,
-      "webhook"
+      TEST_ORG_ID
     );
 
-    expect(result).toBe(true);
-  });
-
-  it("idempotent on replay", async () => {
-    dbMock.queueInsert("events", []);
-
-    const result = await processEvent(
-      {
-        id: "evt_cbt_1",
-        type: "customer_balance_transaction.created",
-        api_version: "2024-12-18",
-        livemode: false,
-        created: 1700000000,
-        data: {
-          object: {
-            id: "cbtxn_1",
-            object: "customer_balance_transaction",
-            amount: -2500,
-            currency: "usd",
-            type: "adjustment",
-            customer: "cus_1",
-            created: 1700000000,
-            livemode: false,
-          },
-        },
-      } as never,
-      "webhook"
-    );
-
-    expect(result).toBe(false);
+    const insertedRow = dbMock.lastInsertValues("customers") as {
+      rawJson: Record<string, unknown>;
+    };
+    expect(insertedRow).toBeDefined();
+    expect(insertedRow.rawJson).toBeDefined();
+    expect(insertedRow.rawJson.id).toBe("cus_strip");
+    expect("balance" in insertedRow.rawJson).toBe(false);
   });
 });

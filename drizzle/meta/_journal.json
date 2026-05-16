@@ -36,6 +36,13 @@
       "when": 1778837459899,
       "tag": "0004_yielding_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1778905781335,
+      "tag": "0005_furry_ghost_rider",
+      "breakpoints": true
     }
   ]
 }

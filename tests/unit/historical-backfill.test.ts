@@ -16,7 +16,6 @@ vi.mock("../../src/lib/event-processor", () => ({
   upsertCustomer: vi.fn(async () => {}),
   upsertPaymentIntent: vi.fn(async () => {}),
   upsertCheckoutSession: vi.fn(async () => {}),
-  upsertCustomerBalanceTransaction: vi.fn(async () => {}),
 }));
 
 import { backfillHistorical } from "../../src/lib/historical-backfill";
@@ -24,7 +23,6 @@ import {
   upsertCustomer,
   upsertPaymentIntent,
   upsertCheckoutSession,
-  upsertCustomerBalanceTransaction,
 } from "../../src/lib/event-processor";
 import { resolvePlatformKey } from "../../src/lib/key-client";
 
@@ -41,7 +39,7 @@ beforeEach(() => {
 });
 
 describe("backfillHistorical", () => {
-  it("paginates customers, PIs, CS and CBTs and upserts each with metadata.org_id", async () => {
+  it("paginates customers, PIs, and CS and upserts each with metadata.org_id", async () => {
     stripeMock.customers.list.mockReturnValue(
       asyncIter([
         { id: "cus_1", metadata: { org_id: "org-1" }, created: 1 },
@@ -59,25 +57,12 @@ describe("backfillHistorical", () => {
       ])
     );
 
-    dbMock.queueSelect("customers", [
-      { id: "cus_1", orgId: "org-1" },
-      { id: "cus_2", orgId: "org-2" },
-    ]);
-    stripeMock.customers.listBalanceTransactions.mockReturnValueOnce(
-      asyncIter([
-        { id: "cbtxn_1", customer: "cus_1", amount: -500, currency: "usd", type: "adjustment" },
-      ])
-    );
-    stripeMock.customers.listBalanceTransactions.mockReturnValueOnce(asyncIter([]));
-
     await backfillHistorical();
 
     expect(stripeMock.customers.list).toHaveBeenCalledWith({ limit: 100 });
     expect(stripeMock.paymentIntents.list).toHaveBeenCalledWith({ limit: 100 });
     expect(stripeMock.checkout.sessions.list).toHaveBeenCalledWith({ limit: 100 });
-    expect(stripeMock.customers.listBalanceTransactions).toHaveBeenCalledTimes(2);
-    expect(stripeMock.customers.listBalanceTransactions).toHaveBeenNthCalledWith(1, "cus_1", { limit: 100 });
-    expect(stripeMock.customers.listBalanceTransactions).toHaveBeenNthCalledWith(2, "cus_2", { limit: 100 });
+    expect(stripeMock.customers.listBalanceTransactions).not.toHaveBeenCalled();
 
     expect(upsertCustomer).toHaveBeenCalledTimes(2);
     expect(upsertCustomer).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "cus_1" }), "org-1");
@@ -88,12 +73,6 @@ describe("backfillHistorical", () => {
 
     expect(upsertCheckoutSession).toHaveBeenCalledTimes(1);
     expect(upsertCheckoutSession).toHaveBeenCalledWith(expect.objectContaining({ id: "cs_1" }), "org-1");
-
-    expect(upsertCustomerBalanceTransaction).toHaveBeenCalledTimes(1);
-    expect(upsertCustomerBalanceTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "cbtxn_1" }),
-      "org-1"
-    );
   });
 
   it("falls back to 'unknown' orgId when metadata is null or missing org_id", async () => {
@@ -105,7 +84,6 @@ describe("backfillHistorical", () => {
       ])
     );
     stripeMock.checkout.sessions.list.mockReturnValue(asyncIter([]));
-    dbMock.queueSelect("customers", []);
 
     await backfillHistorical();
 
@@ -113,7 +91,7 @@ describe("backfillHistorical", () => {
     expect(upsertPaymentIntent).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "pi_orphan_b" }), "unknown");
   });
 
-  it("propagates errors from resolvePlatformKey (fail-loud, no swallow)", async () => {
+  it("propagates errors from resolvePlatformKey", async () => {
     (resolvePlatformKey as unknown as { mockRejectedValueOnce: (err: Error) => void }).mockRejectedValueOnce(
       new Error("key-service unreachable")
     );
