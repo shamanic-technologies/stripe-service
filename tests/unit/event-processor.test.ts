@@ -8,7 +8,11 @@ const { dbMock } = vi.hoisted(() => {
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
 
-import { processEvent, upsertCustomer } from "../../src/lib/event-processor";
+import {
+  processEvent,
+  upsertCustomer,
+  resolveOrgId,
+} from "../../src/lib/event-processor";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -95,5 +99,32 @@ describe("upsertCustomer — balance stripped from raw_json", () => {
     expect(insertedRow.rawJson).toBeDefined();
     expect(insertedRow.rawJson.id).toBe("cus_strip");
     expect("balance" in insertedRow.rawJson).toBe(false);
+  });
+});
+
+describe("resolveOrgId — customer-mirror fallback", () => {
+  it("returns metadata org_id without hitting the DB when present", async () => {
+    const orgId = await resolveOrgId("org-from-meta", "cus_123");
+    expect(orgId).toBe("org-from-meta");
+    expect(dbMock.db.select).not.toHaveBeenCalled();
+  });
+
+  it("falls back to customers.org_id when metadata is empty", async () => {
+    dbMock.queueSelect("customers", [{ orgId: "org-from-customer" }]);
+    const orgId = await resolveOrgId(null, "cus_with_mirror");
+    expect(orgId).toBe("org-from-customer");
+    expect(dbMock.db.select).toHaveBeenCalled();
+  });
+
+  it("returns 'unknown' when metadata is empty and customer mirror is missing", async () => {
+    dbMock.queueSelect("customers", []);
+    const orgId = await resolveOrgId(null, "cus_orphan");
+    expect(orgId).toBe("unknown");
+  });
+
+  it("returns 'unknown' when customerId is null and metadata is empty", async () => {
+    const orgId = await resolveOrgId(null, null);
+    expect(orgId).toBe("unknown");
+    expect(dbMock.db.select).not.toHaveBeenCalled();
   });
 });
