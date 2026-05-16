@@ -1,13 +1,10 @@
 import type Stripe from "stripe";
-import { db } from "../db";
-import { customers } from "../db/schema";
 import { resolvePlatformKey } from "./key-client";
 import { makeStripeClient } from "./stripe-client";
 import {
   upsertCustomer,
   upsertCheckoutSession,
   upsertPaymentIntent,
-  upsertCustomerBalanceTransaction,
 } from "./event-processor";
 
 function extractOrgId(metadata: Stripe.Metadata | null | undefined): string {
@@ -21,8 +18,8 @@ function extractOrgId(metadata: Stripe.Metadata | null | undefined): string {
  *
  * Stripe events have a 30-day retention, so the event poller cannot recover
  * older history. This function uses the object-list APIs (no time bound) to
- * rebuild every row in `customers`, `payment_intents`, `checkout_sessions`,
- * and `customer_balance_transactions` from Stripe truth.
+ * rebuild every row in `customers`, `payment_intents`, and
+ * `checkout_sessions` from Stripe truth.
  *
  * All upserts use `ON CONFLICT DO UPDATE` so re-runs are idempotent and
  * refresh stale `raw_json` / status. Runs on every boot — no gate.
@@ -54,20 +51,7 @@ export async function backfillHistorical(): Promise<void> {
     csCount += 1;
   }
 
-  let cbtCount = 0;
-  const allCustomers = await db
-    .select({ id: customers.id, orgId: customers.orgId })
-    .from(customers);
-  for (const c of allCustomers) {
-    for await (const cbt of stripe.customers.listBalanceTransactions(c.id, {
-      limit: 100,
-    })) {
-      await upsertCustomerBalanceTransaction(cbt, c.orgId);
-      cbtCount += 1;
-    }
-  }
-
   console.log(
-    `[stripe-service] Historical back-fill complete: customers=${custCount}, pi=${piCount}, cs=${csCount}, cbt=${cbtCount}`
+    `[stripe-service] Historical back-fill complete: customers=${custCount}, pi=${piCount}, cs=${csCount}`
   );
 }

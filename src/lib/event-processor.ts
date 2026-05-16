@@ -5,9 +5,8 @@ import {
   customers,
   checkoutSessions,
   paymentIntents,
-  customerBalanceTransactions,
 } from "../db/schema";
-import { eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 
 type ProcessSource = "webhook" | "poll";
 
@@ -80,25 +79,6 @@ async function upsertObjectFromEvent(event: Stripe.Event): Promise<void> {
     await upsertPaymentIntent(pi, orgId);
     return;
   }
-
-  if (event.type.startsWith("customer_balance_transaction.")) {
-    const cbt = obj as unknown as Stripe.CustomerBalanceTransaction;
-    const customerId = extractString(cbt.customer);
-    const orgId = customerId
-      ? (await lookupOrgIdForCustomer(customerId)) ?? "unknown"
-      : "unknown";
-    await upsertCustomerBalanceTransaction(cbt, orgId);
-    return;
-  }
-}
-
-async function lookupOrgIdForCustomer(customerId: string): Promise<string | null> {
-  const rows = await db
-    .select({ orgId: customers.orgId })
-    .from(customers)
-    .where(eq(customers.id, customerId))
-    .limit(1);
-  return rows[0]?.orgId ?? null;
 }
 
 function extractOrgId(metadata: Stripe.Metadata | null | undefined): string | null {
@@ -108,6 +88,12 @@ function extractOrgId(metadata: Stripe.Metadata | null | undefined): string | nu
 }
 
 export async function upsertCustomer(customer: Stripe.Customer, orgId: string): Promise<void> {
+  // Stripe `customer.balance` is contaminated by legacy `usage_applied` CBTs
+  // written pre-#104; it no longer represents a pure prepaid credit balance.
+  // Strip it on write so no downstream consumer can read the polluted value.
+  const sanitizedRawJson = { ...(customer as unknown as Record<string, unknown>) };
+  delete sanitizedRawJson.balance;
+
   await db
     .insert(customers)
     .values({
@@ -120,7 +106,7 @@ export async function upsertCustomer(customer: Stripe.Customer, orgId: string): 
       metadata: (customer.metadata ?? null) as unknown as Record<string, unknown> | null,
       livemode: customer.livemode ? "true" : "false",
       createdStripe: customer.created,
-      rawJson: customer as unknown as Record<string, unknown>,
+      rawJson: sanitizedRawJson,
       syncedAt: new Date(),
     })
     .onConflictDoUpdate({
@@ -230,54 +216,6 @@ export async function upsertPaymentIntent(
         clientSecret: sql`EXCLUDED.client_secret`,
         metadata: sql`EXCLUDED.metadata`,
         lastPaymentError: sql`EXCLUDED.last_payment_error`,
-        livemode: sql`EXCLUDED.livemode`,
-        createdStripe: sql`EXCLUDED.created_stripe`,
-        rawJson: sql`EXCLUDED.raw_json`,
-        syncedAt: sql`now()`,
-      },
-    });
-}
-
-export async function upsertCustomerBalanceTransaction(
-  cbt: Stripe.CustomerBalanceTransaction,
-  orgId: string
-): Promise<void> {
-  const customerId = extractString(cbt.customer);
-  if (!customerId) {
-    throw new Error(
-      `[stripe-service] customer_balance_transaction ${cbt.id} has no customer reference`
-    );
-  }
-  await db
-    .insert(customerBalanceTransactions)
-    .values({
-      id: cbt.id,
-      orgId,
-      customer: customerId,
-      amount: cbt.amount,
-      currency: cbt.currency,
-      type: cbt.type,
-      creditNote: extractString(cbt.credit_note),
-      invoice: extractString(cbt.invoice),
-      description: cbt.description ?? null,
-      metadata: (cbt.metadata ?? null) as unknown as Record<string, unknown> | null,
-      livemode: cbt.livemode ? "true" : "false",
-      createdStripe: cbt.created,
-      rawJson: cbt as unknown as Record<string, unknown>,
-      syncedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: customerBalanceTransactions.id,
-      set: {
-        orgId: sql`EXCLUDED.org_id`,
-        customer: sql`EXCLUDED.customer`,
-        amount: sql`EXCLUDED.amount`,
-        currency: sql`EXCLUDED.currency`,
-        type: sql`EXCLUDED.type`,
-        creditNote: sql`EXCLUDED.credit_note`,
-        invoice: sql`EXCLUDED.invoice`,
-        description: sql`EXCLUDED.description`,
-        metadata: sql`EXCLUDED.metadata`,
         livemode: sql`EXCLUDED.livemode`,
         createdStripe: sql`EXCLUDED.created_stripe`,
         rawJson: sql`EXCLUDED.raw_json`,

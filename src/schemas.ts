@@ -160,16 +160,6 @@ export const ListPaymentIntentsQuerySchema = z
   })
   .openapi("ListPaymentIntentsQuery");
 
-// ===== Customer balance transactions =====
-
-export const ListCustomerBalanceTransactionsQuerySchema = z
-  .object({
-    limit: z.coerce.number().int().min(1).max(100).optional(),
-    starting_after: z.string().optional(),
-    ending_before: z.string().optional(),
-  })
-  .openapi("ListCustomerBalanceTransactionsQuery");
-
 // ===== Public stats =====
 
 const PublicStatsBucketSchema = z
@@ -391,32 +381,6 @@ registry.registerPath({
   },
   responses: {
     200: { description: "PaymentIntent list", content: { "application/json": { schema: StripeListSchema } } },
-  },
-});
-
-// --- Balance transactions (org-implicit) ---
-
-registry.registerPath({
-  method: "get",
-  path: "/v1/balance_transactions",
-  summary: "List balance transactions for the caller's org Stripe customer (DB-backed mirror)",
-  description:
-    "Org-implicit list. Resolves the org's Stripe customer server-side via x-org-id (assumes 1:1 org→customer). Returns Stripe-shape customer_balance_transaction list. Falls back to Stripe and upserts when DB has no rows. Returns 404 when the org has no Stripe customer.",
-  tags: ["BalanceTransactions"],
-  security: apiKeySec,
-  request: {
-    headers: IdentityHeadersSchema,
-    query: ListCustomerBalanceTransactionsQuerySchema,
-  },
-  responses: {
-    200: {
-      description: "Balance transaction list",
-      content: { "application/json": { schema: StripeListSchema } },
-    },
-    404: {
-      description: "Org has no Stripe customer",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
   },
 });
 
