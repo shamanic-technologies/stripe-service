@@ -19,6 +19,7 @@ import customerBalanceTransactionsRoutes from "./routes/customer-balance-transac
 import publicStatsRoutes from "./routes/public-stats";
 import webhooksRoutes from "./routes/webhooks";
 import { startEventPoller } from "./lib/event-poller";
+import { backfillHistorical } from "./lib/historical-backfill";
 
 const app = express();
 const PORT = process.env.PORT || 3011;
@@ -89,13 +90,16 @@ if (process.env.NODE_ENV !== "test") {
   migrate(db, { migrationsFolder: "./drizzle" })
     .then(() => {
       console.log("[stripe-service] Migrations complete");
+      return backfillHistorical();
+    })
+    .then(() => {
       app.listen(Number(PORT), "::", () => {
         console.log(`[stripe-service] Service running on port ${PORT}`);
         startEventPoller();
       });
     })
     .catch((err) => {
-      console.error("[stripe-service] Migration failed:", err);
+      console.error("[stripe-service] Boot failed:", err);
       process.exit(1);
     });
 }
