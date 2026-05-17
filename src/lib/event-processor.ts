@@ -7,8 +7,25 @@ import {
   paymentIntents,
 } from "../db/schema";
 import { eq, sql } from "drizzle-orm";
+import { resolvePlatformKey } from "./key-client";
+import { makeStripeClient } from "./stripe-client";
+import { promoteDefaultPaymentMethod } from "./promote-default-pm";
 
 type ProcessSource = "webhook" | "poll";
+
+// Lazy module-cached platform Stripe client for webhook-triggered side-effects.
+// Same pattern as the webhook secret cache in routes/webhooks.ts — the
+// platform key is static per environment.
+let cachedPlatformStripe: Stripe | null = null;
+async function getPlatformStripe(): Promise<Stripe> {
+  if (cachedPlatformStripe) return cachedPlatformStripe;
+  const { key } = await resolvePlatformKey("stripe", {
+    method: "INTERNAL",
+    path: "/lib/event-processor",
+  });
+  cachedPlatformStripe = makeStripeClient(key);
+  return cachedPlatformStripe;
+}
 
 /**
  * Insert event idempotently and upsert the referenced object table.
@@ -40,7 +57,18 @@ export async function processEvent(
   }
 
   await upsertObjectFromEvent(event);
+  await runSideEffects(event);
   return true;
+}
+
+async function runSideEffects(event: Stripe.Event): Promise<void> {
+  if (
+    event.type === "checkout.session.completed" ||
+    event.type === "setup_intent.succeeded"
+  ) {
+    const stripe = await getPlatformStripe();
+    await promoteDefaultPaymentMethod(event, stripe);
+  }
 }
 
 function extractObjectId(event: Stripe.Event): string | null {
