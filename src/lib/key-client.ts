@@ -17,6 +17,13 @@ export interface PlatformKeyResponse {
   key: string;
 }
 
+export interface KeySourceResponse {
+  provider: string;
+  orgId: string;
+  keySource: "platform" | "org";
+  isDefault: boolean;
+}
+
 interface CallerContext {
   method: string;
   path: string;
@@ -96,4 +103,34 @@ export async function resolvePlatformKey(
   }
 
   return (await response.json()) as PlatformKeyResponse;
+}
+
+/**
+ * Read an org's key-source preference for a provider without decrypting the
+ * key itself. Used by the webhook fee declaration path to determine whether
+ * a Stripe fee should be attributed to the platform or to the org. Returns
+ * `keySource: "platform"` with `isDefault: true` when no explicit preference
+ * is set for the org.
+ */
+export async function getKeySource(
+  orgId: string,
+  provider: string
+): Promise<KeySourceResponse> {
+  const url = `${KEY_SERVICE_URL}/keys/${encodeURIComponent(provider)}/source`;
+
+  const headers: Record<string, string> = {
+    "x-api-key": KEY_SERVICE_API_KEY,
+    "x-org-id": orgId,
+  };
+
+  const response = await fetch(url, { method: "GET", headers });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `key-service GET /keys/${provider}/source failed: ${response.status} - ${errorText}`
+    );
+  }
+
+  return (await response.json()) as KeySourceResponse;
 }
