@@ -7,8 +7,9 @@ const { dbMock, constructWebhookEventMock, platformStripeMock, makeStripeClientM
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { makeDbMock, makeStripeMock } = require("../helpers/mocks-factory.cjs");
     const stripe = makeStripeMock(vi);
-    // Augment with setupIntents — promote-default-pm uses it.
+    // Augment with setupIntents + paymentMethods — promote-default-pm uses both.
     stripe.setupIntents = { retrieve: vi.fn() };
+    stripe.paymentMethods = { retrieve: vi.fn(), attach: vi.fn() };
     return {
       dbMock: makeDbMock(vi),
       constructWebhookEventMock: vi.fn(),
@@ -45,6 +46,8 @@ beforeEach(() => {
   platformStripeMock.customers.update.mockReset();
   platformStripeMock.paymentIntents.retrieve.mockReset();
   platformStripeMock.setupIntents.retrieve.mockReset();
+  platformStripeMock.paymentMethods.retrieve.mockReset();
+  platformStripeMock.paymentMethods.attach.mockReset();
 });
 
 describe("POST /v1/webhooks", () => {
@@ -163,6 +166,10 @@ describe("POST /v1/webhooks", () => {
       deleted: false,
       invoice_settings: { default_payment_method: null },
       metadata: { org_id: TEST_ORG_ID },
+    });
+    platformStripeMock.paymentMethods.retrieve.mockResolvedValueOnce({
+      id: "pm_promote",
+      customer: "cus_promote",
     });
     platformStripeMock.customers.update.mockResolvedValueOnce({
       id: "cus_promote",

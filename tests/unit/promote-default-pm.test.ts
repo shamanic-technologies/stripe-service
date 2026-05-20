@@ -15,6 +15,7 @@ type StripeMock = {
   customers: { retrieve: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
   paymentIntents: { retrieve: ReturnType<typeof vi.fn> };
   setupIntents: { retrieve: ReturnType<typeof vi.fn> };
+  paymentMethods: { retrieve: ReturnType<typeof vi.fn>; attach: ReturnType<typeof vi.fn> };
 };
 
 function makeStripe(): StripeMock {
@@ -22,6 +23,7 @@ function makeStripe(): StripeMock {
     customers: { retrieve: vi.fn(), update: vi.fn() },
     paymentIntents: { retrieve: vi.fn() },
     setupIntents: { retrieve: vi.fn() },
+    paymentMethods: { retrieve: vi.fn(), attach: vi.fn() },
   };
 }
 
@@ -142,7 +144,7 @@ describe("promoteDefaultPaymentMethod — no-op when default already set", () =>
 });
 
 describe("promoteDefaultPaymentMethod — promotes when no default", () => {
-  it("checkout.session.completed mode=payment: retrieves PI, updates customer, re-mirrors", async () => {
+  it("checkout.session.completed mode=payment: PM already attached, no attach call, updates customer, re-mirrors", async () => {
     const stripe = makeStripe();
     stripe.paymentIntents.retrieve.mockResolvedValue({
       id: "pi_1",
@@ -154,6 +156,10 @@ describe("promoteDefaultPaymentMethod — promotes when no default", () => {
       deleted: false,
       invoice_settings: { default_payment_method: null },
       metadata: { org_id: TEST_ORG_ID },
+    });
+    stripe.paymentMethods.retrieve.mockResolvedValue({
+      id: "pm_new",
+      customer: "cus_1",
     });
     stripe.customers.update.mockResolvedValue({
       id: "cus_1",
@@ -188,13 +194,15 @@ describe("promoteDefaultPaymentMethod — promotes when no default", () => {
 
     expect(stripe.paymentIntents.retrieve).toHaveBeenCalledWith("pi_1");
     expect(stripe.customers.retrieve).toHaveBeenCalledWith("cus_1");
+    expect(stripe.paymentMethods.retrieve).toHaveBeenCalledWith("pm_new");
+    expect(stripe.paymentMethods.attach).not.toHaveBeenCalled();
     expect(stripe.customers.update).toHaveBeenCalledWith("cus_1", {
       invoice_settings: { default_payment_method: "pm_new" },
     });
     expect(dbMock.lastInsertValues("customers")).toBeDefined();
   });
 
-  it("checkout.session.completed mode=setup: retrieves SI, updates customer", async () => {
+  it("checkout.session.completed mode=setup: retrieves SI, attaches if needed, updates customer", async () => {
     const stripe = makeStripe();
     stripe.setupIntents.retrieve.mockResolvedValue({
       id: "si_1",
@@ -206,6 +214,10 @@ describe("promoteDefaultPaymentMethod — promotes when no default", () => {
       deleted: false,
       invoice_settings: { default_payment_method: null },
       metadata: { org_id: TEST_ORG_ID },
+    });
+    stripe.paymentMethods.retrieve.mockResolvedValue({
+      id: "pm_setup",
+      customer: "cus_setup",
     });
     stripe.customers.update.mockResolvedValue({
       id: "cus_setup",
@@ -239,6 +251,7 @@ describe("promoteDefaultPaymentMethod — promotes when no default", () => {
     );
 
     expect(stripe.setupIntents.retrieve).toHaveBeenCalledWith("si_1");
+    expect(stripe.paymentMethods.attach).not.toHaveBeenCalled();
     expect(stripe.customers.update).toHaveBeenCalledWith("cus_setup", {
       invoice_settings: { default_payment_method: "pm_setup" },
     });
@@ -252,6 +265,10 @@ describe("promoteDefaultPaymentMethod — promotes when no default", () => {
       deleted: false,
       invoice_settings: { default_payment_method: null },
       metadata: { org_id: TEST_ORG_ID },
+    });
+    stripe.paymentMethods.retrieve.mockResolvedValue({
+      id: "pm_si_direct",
+      customer: "cus_si",
     });
     stripe.customers.update.mockResolvedValue({
       id: "cus_si",
@@ -284,9 +301,117 @@ describe("promoteDefaultPaymentMethod — promotes when no default", () => {
     );
 
     expect(stripe.setupIntents.retrieve).not.toHaveBeenCalled();
+    expect(stripe.paymentMethods.attach).not.toHaveBeenCalled();
     expect(stripe.customers.update).toHaveBeenCalledWith("cus_si", {
       invoice_settings: { default_payment_method: "pm_si_direct" },
     });
+  });
+});
+
+describe("promoteDefaultPaymentMethod — PM precondition handling", () => {
+  it("auto-attaches PM when unattached, then sets default", async () => {
+    const stripe = makeStripe();
+    stripe.paymentIntents.retrieve.mockResolvedValue({
+      id: "pi_unattached",
+      payment_method: "pm_unattached",
+    });
+    stripe.customers.retrieve.mockResolvedValue({
+      id: "cus_target",
+      object: "customer",
+      deleted: false,
+      invoice_settings: { default_payment_method: null },
+      metadata: { org_id: TEST_ORG_ID },
+    });
+    stripe.paymentMethods.retrieve.mockResolvedValue({
+      id: "pm_unattached",
+      customer: null,
+    });
+    stripe.paymentMethods.attach.mockResolvedValue({
+      id: "pm_unattached",
+      customer: "cus_target",
+    });
+    stripe.customers.update.mockResolvedValue({
+      id: "cus_target",
+      object: "customer",
+      email: null,
+      name: null,
+      description: null,
+      phone: null,
+      metadata: { org_id: TEST_ORG_ID },
+      livemode: false,
+      created: 1700000000,
+      invoice_settings: { default_payment_method: "pm_unattached" },
+    });
+
+    await promoteDefaultPaymentMethod(
+      {
+        ...baseEvent,
+        id: "evt_attach",
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: "cs_attach",
+            object: "checkout.session",
+            mode: "payment",
+            customer: "cus_target",
+            payment_intent: "pi_unattached",
+          },
+        },
+      } as never,
+      stripe as never
+    );
+
+    expect(stripe.paymentMethods.attach).toHaveBeenCalledWith("pm_unattached", {
+      customer: "cus_target",
+    });
+    expect(stripe.customers.update).toHaveBeenCalledWith("cus_target", {
+      invoice_settings: { default_payment_method: "pm_unattached" },
+    });
+  });
+
+  it("skips + warns when PM is attached to a different customer", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const stripe = makeStripe();
+    stripe.paymentIntents.retrieve.mockResolvedValue({
+      id: "pi_other",
+      payment_method: "pm_other",
+    });
+    stripe.customers.retrieve.mockResolvedValue({
+      id: "cus_target",
+      object: "customer",
+      deleted: false,
+      invoice_settings: { default_payment_method: null },
+      metadata: { org_id: TEST_ORG_ID },
+    });
+    stripe.paymentMethods.retrieve.mockResolvedValue({
+      id: "pm_other",
+      customer: "cus_someone_else",
+    });
+
+    await promoteDefaultPaymentMethod(
+      {
+        ...baseEvent,
+        id: "evt_owned_elsewhere",
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: "cs_owned_elsewhere",
+            object: "checkout.session",
+            mode: "payment",
+            customer: "cus_target",
+            payment_intent: "pi_other",
+          },
+        },
+      } as never,
+      stripe as never
+    );
+
+    expect(stripe.paymentMethods.attach).not.toHaveBeenCalled();
+    expect(stripe.customers.update).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("attached to cus_someone_else")
+    );
+    warnSpy.mockRestore();
   });
 });
 
@@ -334,6 +459,10 @@ describe("promoteDefaultPaymentMethod — error propagation", () => {
       deleted: false,
       invoice_settings: { default_payment_method: null },
       metadata: { org_id: TEST_ORG_ID },
+    });
+    stripe.paymentMethods.retrieve.mockResolvedValue({
+      id: "pm_new",
+      customer: "cus_1",
     });
     stripe.customers.update.mockRejectedValue(new Error("stripe boom"));
 
