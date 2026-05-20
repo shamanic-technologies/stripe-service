@@ -90,6 +90,34 @@ async function maybePromote(
   if (isDeletedCustomer(customer)) return;
   if (customer.invoice_settings?.default_payment_method) return;
 
+  // Precondition: the PM must be attached to this customer before Stripe
+  // accepts it as `invoice_settings.default_payment_method`. Stripe Checkout
+  // sessions created with `saved_payment_method_options.payment_method_save:
+  // null` (the pre-2026-05-20 default) attach the PM to the PaymentIntent
+  // but NOT to the customer — `customers.update` then 400s with
+  // "payment method must be attached to the customer".
+  //
+  // Two cases short-circuit here, both fail-loud-clean (no try/catch swallow):
+  //   1. PM attached to a different customer — log warn + skip; safer than
+  //      forcibly re-attaching, which would steal the PM from its rightful
+  //      owner.
+  //   2. PM unattached — call `paymentMethods.attach` first, then set the
+  //      default. Heals legacy sessions whose Checkout config omitted
+  //      `payment_method_save`. Forward sessions (post-billing-service fix)
+  //      arrive already attached, so the attach call short-circuits via the
+  //      pm.customer === customerId branch.
+  const pm = await stripe.paymentMethods.retrieve(paymentMethodId);
+  const pmOwner = extractString(pm.customer as Stripe.PaymentMethod["customer"]);
+  if (pmOwner && pmOwner !== customerId) {
+    console.warn(
+      `[stripe-service] PM ${paymentMethodId} is attached to ${pmOwner}, not ${customerId}; skipping default-PM promotion`
+    );
+    return;
+  }
+  if (!pmOwner) {
+    await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId });
+  }
+
   const updated = await stripe.customers.update(customerId, {
     invoice_settings: { default_payment_method: paymentMethodId },
   });
