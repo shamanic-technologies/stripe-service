@@ -10,6 +10,7 @@ import { eq, sql } from "drizzle-orm";
 import { resolvePlatformKey } from "./key-client";
 import { makeStripeClient } from "./stripe-client";
 import { promoteDefaultPaymentMethod } from "./promote-default-pm";
+import { declareFeesForEvent, isFeeEvent } from "./declare-fees";
 
 type ProcessSource = "webhook" | "poll";
 
@@ -68,6 +69,11 @@ async function runSideEffects(event: Stripe.Event): Promise<void> {
   ) {
     const stripe = await getPlatformStripe();
     await promoteDefaultPaymentMethod(event, stripe);
+  }
+
+  if (isFeeEvent(event.type)) {
+    const stripe = await getPlatformStripe();
+    await declareFeesForEvent(event, stripe);
   }
 }
 
