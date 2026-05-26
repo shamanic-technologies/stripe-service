@@ -7,6 +7,7 @@ import healthRoutes from "../../src/routes/health";
 import customersRoutes from "../../src/routes/customers";
 import checkoutSessionsRoutes from "../../src/routes/checkout-sessions";
 import paymentIntentsRoutes from "../../src/routes/payment-intents";
+import paymentMethodsRoutes from "../../src/routes/payment-methods";
 import billingPortalSessionsRoutes from "../../src/routes/billing-portal-sessions";
 import publicStatsRoutes from "../../src/routes/public-stats";
 import webhooksRoutes from "../../src/routes/webhooks";
@@ -23,6 +24,7 @@ export function createTestApp() {
   app.use("/", customersRoutes);
   app.use("/", checkoutSessionsRoutes);
   app.use("/", paymentIntentsRoutes);
+  app.use("/", paymentMethodsRoutes);
   app.use("/", billingPortalSessionsRoutes);
   app.use("/", publicStatsRoutes);
   app.use("/", webhooksRoutes);

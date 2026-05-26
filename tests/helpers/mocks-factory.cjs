@@ -92,6 +92,7 @@ function makeStripeMock(vi) {
     },
     checkout: { sessions: { create: vi.fn(), retrieve: vi.fn(), list: vi.fn() } },
     paymentIntents: { create: vi.fn(), retrieve: vi.fn(), list: vi.fn() },
+    paymentMethods: { list: vi.fn() },
     billingPortal: { sessions: { create: vi.fn() } },
     events: { list: vi.fn() },
   };
