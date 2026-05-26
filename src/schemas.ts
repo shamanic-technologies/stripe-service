@@ -160,6 +160,21 @@ export const ListPaymentIntentsQuerySchema = z
   })
   .openapi("ListPaymentIntentsQuery");
 
+// ===== Payment methods =====
+
+export const ListPaymentMethodsQuerySchema = z
+  .object({
+    customer: z.string().openapi({
+      description:
+        "Required. Customer ID (cus_…) whose payment methods to list. Must belong to the caller's org or the request 404s.",
+    }),
+    type: z.string().optional().openapi({
+      description:
+        "Optional Stripe payment method type filter (e.g. 'card'). Forwarded verbatim to Stripe.",
+    }),
+  })
+  .openapi("ListPaymentMethodsQuery");
+
 // ===== Public stats =====
 
 const PublicStatsBucketSchema = z
@@ -381,6 +396,26 @@ registry.registerPath({
   },
   responses: {
     200: { description: "PaymentIntent list", content: { "application/json": { schema: StripeListSchema } } },
+  },
+});
+
+// --- Payment methods ---
+
+registry.registerPath({
+  method: "get",
+  path: "/v1/payment_methods",
+  summary: "List a customer's PaymentMethods (live Stripe)",
+  description:
+    "Live passthrough to Stripe `paymentMethods.list({ customer, type? })`. The customer must belong to the caller's org (looked up via the customers mirror) or the request 404s — prevents cross-org PM enumeration. Used by billing-service to pick an explicit `payment_method` for off_session reload PaymentIntents instead of relying on `customer.invoice_settings.default_payment_method` (which may be a Link / wallet PM that Stripe refuses to charge off_session).",
+  tags: ["PaymentMethods"],
+  security: apiKeySec,
+  request: {
+    headers: IdentityHeadersSchema,
+    query: ListPaymentMethodsQuerySchema,
+  },
+  responses: {
+    200: { description: "PaymentMethod list", content: { "application/json": { schema: StripeListSchema } } },
+    404: { description: "Customer not found in caller's org", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });
 

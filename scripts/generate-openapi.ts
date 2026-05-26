@@ -21,6 +21,7 @@ const document = generator.generateDocument({
     { name: "Customers", description: "Stripe Customer mirror" },
     { name: "Checkout", description: "Stripe Checkout Session mirror" },
     { name: "PaymentIntents", description: "Stripe PaymentIntent mirror" },
+    { name: "PaymentMethods", description: "Stripe PaymentMethod live passthrough" },
     { name: "BillingPortal", description: "Stripe Billing Portal sessions" },
     { name: "Webhooks", description: "Stripe webhook ingestion" },
   ],
