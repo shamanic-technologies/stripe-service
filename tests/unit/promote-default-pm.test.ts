@@ -9,7 +9,16 @@ const { dbMock } = vi.hoisted(() => {
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
 
+vi.mock("../../src/lib/event-processor", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/lib/event-processor")>();
+  return {
+    ...actual,
+    recordApiSnapshot: vi.fn(async () => {}),
+  };
+});
+
 import { promoteDefaultPaymentMethod } from "../../src/lib/promote-default-pm";
+import { recordApiSnapshot } from "../../src/lib/event-processor";
 
 type StripeMock = {
   customers: { retrieve: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
@@ -199,7 +208,11 @@ describe("promoteDefaultPaymentMethod — promotes when no default", () => {
     expect(stripe.customers.update).toHaveBeenCalledWith("cus_1", {
       invoice_settings: { default_payment_method: "pm_new" },
     });
-    expect(dbMock.lastInsertValues("customers")).toBeDefined();
+    expect(recordApiSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "cus_1" }),
+      "customer",
+      expect.any(String)
+    );
   });
 
   it("checkout.session.completed mode=setup: retrieves SI, attaches if needed, updates customer", async () => {
