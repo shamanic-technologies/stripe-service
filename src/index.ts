@@ -20,6 +20,7 @@ import publicStatsRoutes from "./routes/public-stats";
 import webhooksRoutes from "./routes/webhooks";
 import { startEventPoller } from "./lib/event-poller";
 import { backfillHistorical } from "./lib/historical-backfill";
+import { repairAllSilverFromBronze } from "./lib/event-processor";
 
 const app = express();
 const PORT = process.env.PORT || 3011;
@@ -93,6 +94,14 @@ if (process.env.NODE_ENV !== "test") {
       app.listen(Number(PORT), "::", () => {
         console.log(`[stripe-service] Service running on port ${PORT}`);
         startEventPoller();
+        // One-time silver repair from bronze. Bounded by COUNT(DISTINCT object_id)
+        // in the events table (~hundreds, not millions). Heals rows whose latest
+        // status was clobbered by out-of-order webhook arrivals before the
+        // bronze-projection refactor landed. Fire-and-forget after listen() so
+        // Railway never sees a long boot window.
+        repairAllSilverFromBronze().catch((err) => {
+          console.error("[stripe-service] Silver repair from bronze failed:", err);
+        });
         // Fire-and-forget historical back-fill. Runs after the port is bound
         // so Railway never sees a long boot window during which callers get
         // ECONNREFUSED. Idempotent via `ON CONFLICT DO UPDATE`, so failures

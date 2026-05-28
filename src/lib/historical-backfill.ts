@@ -1,9 +1,7 @@
 import { resolvePlatformKey } from "./key-client";
 import { makeStripeClient } from "./stripe-client";
 import {
-  upsertCustomer,
-  upsertCheckoutSession,
-  upsertPaymentIntent,
+  recordApiSnapshot,
   extractOrgId,
   extractString,
   resolveOrgId,
@@ -31,7 +29,7 @@ export async function backfillHistorical(): Promise<void> {
 
   let custCount = 0;
   for await (const cust of stripe.customers.list({ limit: 100 })) {
-    await upsertCustomer(cust, extractOrgId(cust.metadata) ?? "unknown");
+    await recordApiSnapshot(cust, "customer", extractOrgId(cust.metadata) ?? "unknown");
     custCount += 1;
   }
 
@@ -41,7 +39,7 @@ export async function backfillHistorical(): Promise<void> {
       extractOrgId(pi.metadata),
       extractString(pi.customer)
     );
-    await upsertPaymentIntent(pi, orgId);
+    await recordApiSnapshot(pi, "payment_intent", orgId);
     piCount += 1;
   }
 
@@ -51,7 +49,7 @@ export async function backfillHistorical(): Promise<void> {
       extractOrgId(cs.metadata),
       extractString(cs.customer)
     );
-    await upsertCheckoutSession(cs, orgId);
+    await recordApiSnapshot(cs, "checkout_session", orgId);
     csCount += 1;
   }
 

@@ -8,7 +8,7 @@ import {
   ListPaymentIntentsQuerySchema,
 } from "../schemas";
 import { buildContext, stripeRequestOptions } from "../lib/request-context";
-import { upsertPaymentIntent } from "../lib/event-processor";
+import { recordApiSnapshot } from "../lib/event-processor";
 import { isResourceMissing } from "../lib/stripe-client";
 
 const router = Router();
@@ -30,7 +30,7 @@ router.post("/v1/payment_intents", async (req: Request, res: Response, next: Nex
     );
 
     res.locals.stripeObjectId = pi.id;
-    await upsertPaymentIntent(pi, ctx.orgId);
+    await recordApiSnapshot(pi, "payment_intent", ctx.orgId);
     return res.json(pi);
   } catch (err) {
     return next(err);
@@ -58,7 +58,7 @@ router.get(
       const ctx = await buildContext(req, res);
       try {
         const pi = await ctx.stripe.paymentIntents.retrieve(id);
-        await upsertPaymentIntent(pi, orgId);
+        await recordApiSnapshot(pi, "payment_intent", orgId);
         return res.json(pi);
       } catch (err) {
         if (isResourceMissing(err)) {

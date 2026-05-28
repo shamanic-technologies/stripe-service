@@ -9,7 +9,7 @@ import {
   ListCustomersQuerySchema,
 } from "../schemas";
 import { buildContext, stripeRequestOptions } from "../lib/request-context";
-import { upsertCustomer } from "../lib/event-processor";
+import { recordApiSnapshot } from "../lib/event-processor";
 import { isResourceMissing } from "../lib/stripe-client";
 
 const router = Router();
@@ -33,7 +33,7 @@ router.post("/v1/customers", async (req: Request, res: Response, next: NextFunct
     );
 
     res.locals.stripeObjectId = customer.id;
-    await upsertCustomer(customer, ctx.orgId);
+    await recordApiSnapshot(customer, "customer", ctx.orgId);
     return res.json(customer);
   } catch (err) {
     return next(err);
@@ -62,7 +62,7 @@ router.get("/v1/customers/:id", async (req: Request, res: Response, next: NextFu
       if ((customer as Stripe.DeletedCustomer).deleted) {
         return res.status(404).json({ error: "Customer deleted" });
       }
-      await upsertCustomer(customer as Stripe.Customer, orgId);
+      await recordApiSnapshot(customer as Stripe.Customer, "customer", orgId);
       return res.json(customer);
     } catch (err) {
       if (isResourceMissing(err)) {
@@ -92,7 +92,7 @@ router.post("/v1/customers/:id", async (req: Request, res: Response, next: NextF
       stripeRequestOptions(ctx)
     );
 
-    await upsertCustomer(customer, ctx.orgId);
+    await recordApiSnapshot(customer, "customer", ctx.orgId);
     return res.json(customer);
   } catch (err) {
     if (isResourceMissing(err)) {

@@ -8,7 +8,7 @@ import {
   ListCheckoutSessionsQuerySchema,
 } from "../schemas";
 import { buildContext, stripeRequestOptions } from "../lib/request-context";
-import { upsertCheckoutSession } from "../lib/event-processor";
+import { recordApiSnapshot } from "../lib/event-processor";
 import { isResourceMissing } from "../lib/stripe-client";
 
 const router = Router();
@@ -30,7 +30,7 @@ router.post("/v1/checkout/sessions", async (req: Request, res: Response, next: N
     );
 
     res.locals.stripeObjectId = session.id;
-    await upsertCheckoutSession(session, ctx.orgId);
+    await recordApiSnapshot(session, "checkout_session", ctx.orgId);
     return res.json(session);
   } catch (err) {
     return next(err);
@@ -58,7 +58,7 @@ router.get(
       const ctx = await buildContext(req, res);
       try {
         const session = await ctx.stripe.checkout.sessions.retrieve(id);
-        await upsertCheckoutSession(session, orgId);
+        await recordApiSnapshot(session, "checkout_session", orgId);
         return res.json(session);
       } catch (err) {
         if (isResourceMissing(err)) {
