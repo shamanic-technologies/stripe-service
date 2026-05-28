@@ -13,9 +13,7 @@ vi.mock("../../src/lib/stripe-client", () => ({
   makeStripeClient: vi.fn(() => stripeMock),
 }));
 vi.mock("../../src/lib/event-processor", () => ({
-  upsertCustomer: vi.fn(async () => {}),
-  upsertPaymentIntent: vi.fn(async () => {}),
-  upsertCheckoutSession: vi.fn(async () => {}),
+  recordApiSnapshot: vi.fn(async () => {}),
   extractOrgId: vi.fn((metadata: Record<string, unknown> | null | undefined) => {
     if (!metadata) return null;
     const v = (metadata.org_id ?? metadata.orgId) as unknown;
@@ -32,11 +30,7 @@ vi.mock("../../src/lib/event-processor", () => ({
 }));
 
 import { backfillHistorical } from "../../src/lib/historical-backfill";
-import {
-  upsertCustomer,
-  upsertPaymentIntent,
-  upsertCheckoutSession,
-} from "../../src/lib/event-processor";
+import { recordApiSnapshot } from "../../src/lib/event-processor";
 import { resolvePlatformKey } from "../../src/lib/key-client";
 
 function asyncIter<T>(items: T[]): AsyncIterable<T> {
@@ -77,15 +71,11 @@ describe("backfillHistorical", () => {
     expect(stripeMock.checkout.sessions.list).toHaveBeenCalledWith({ limit: 100 });
     expect(stripeMock.customers.listBalanceTransactions).not.toHaveBeenCalled();
 
-    expect(upsertCustomer).toHaveBeenCalledTimes(2);
-    expect(upsertCustomer).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "cus_1" }), "org-1");
-    expect(upsertCustomer).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "cus_2" }), "org-2");
-
-    expect(upsertPaymentIntent).toHaveBeenCalledTimes(1);
-    expect(upsertPaymentIntent).toHaveBeenCalledWith(expect.objectContaining({ id: "pi_1" }), "org-1");
-
-    expect(upsertCheckoutSession).toHaveBeenCalledTimes(1);
-    expect(upsertCheckoutSession).toHaveBeenCalledWith(expect.objectContaining({ id: "cs_1" }), "org-1");
+    expect(recordApiSnapshot).toHaveBeenCalledTimes(4);
+    expect(recordApiSnapshot).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "cus_1" }), "customer", "org-1");
+    expect(recordApiSnapshot).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "cus_2" }), "customer", "org-2");
+    expect(recordApiSnapshot).toHaveBeenNthCalledWith(3, expect.objectContaining({ id: "pi_1" }), "payment_intent", "org-1");
+    expect(recordApiSnapshot).toHaveBeenNthCalledWith(4, expect.objectContaining({ id: "cs_1" }), "checkout_session", "org-1");
   });
 
   it("falls back to 'unknown' orgId when metadata is null or missing org_id", async () => {
@@ -100,8 +90,8 @@ describe("backfillHistorical", () => {
 
     await backfillHistorical();
 
-    expect(upsertPaymentIntent).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "pi_orphan_a" }), "unknown");
-    expect(upsertPaymentIntent).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "pi_orphan_b" }), "unknown");
+    expect(recordApiSnapshot).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "pi_orphan_a" }), "payment_intent", "unknown");
+    expect(recordApiSnapshot).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "pi_orphan_b" }), "payment_intent", "unknown");
   });
 
   it("propagates errors from resolvePlatformKey", async () => {

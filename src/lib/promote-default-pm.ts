@@ -1,6 +1,6 @@
 import type Stripe from "stripe";
 import {
-  upsertCustomer,
+  recordApiSnapshot,
   resolveOrgId,
   extractOrgId,
   extractString,
@@ -123,7 +123,7 @@ async function maybePromote(
   });
 
   const orgId = await resolveOrgId(extractOrgId(updated.metadata), customerId);
-  await upsertCustomer(updated, orgId);
+  await recordApiSnapshot(updated, "customer", orgId);
 
   console.log(
     `[stripe-service] Promoted default PM ${paymentMethodId} for customer ${customerId} (org=${orgId})`

@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import type Stripe from "stripe";
 import { db } from "../db";
 import {
@@ -6,13 +7,15 @@ import {
   checkoutSessions,
   paymentIntents,
 } from "../db/schema";
-import { eq, sql } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import { resolvePlatformKey } from "./key-client";
 import { makeStripeClient } from "./stripe-client";
 import { promoteDefaultPaymentMethod } from "./promote-default-pm";
 import { declareFeesForEvent, isFeeEvent } from "./declare-fees";
 
 type ProcessSource = "webhook" | "poll";
+type EventSource = ProcessSource | "api";
+export type ObjectKind = "customer" | "payment_intent" | "checkout_session";
 
 // Lazy module-cached platform Stripe client for webhook-triggered side-effects.
 // Same pattern as the webhook secret cache in routes/webhooks.ts — the
@@ -29,8 +32,13 @@ async function getPlatformStripe(): Promise<Stripe> {
 }
 
 /**
- * Insert event idempotently and upsert the referenced object table.
- * Returns true if the event was processed (newly inserted), false if it was already known.
+ * Insert event idempotently. After insert, project the referenced object's
+ * silver row from the latest bronze event (race-safe). Side-effects run only
+ * for real Stripe events (`source ∈ {webhook, poll}`), never for synthetic
+ * api_snapshot events.
+ *
+ * Returns true if the event was processed (newly inserted), false if it was
+ * already known.
  */
 export async function processEvent(
   event: Stripe.Event,
@@ -57,7 +65,10 @@ export async function processEvent(
     return false;
   }
 
-  await upsertObjectFromEvent(event);
+  if (objectId) {
+    const orgId = await resolveOrgIdForEvent(event, objectId);
+    await projectSilverFromBronze(objectId, orgId);
+  }
   await runSideEffects(event);
   return true;
 }
@@ -83,42 +94,210 @@ function extractObjectId(event: Stripe.Event): string | null {
   return null;
 }
 
-async function upsertObjectFromEvent(event: Stripe.Event): Promise<void> {
-  const obj = event.data?.object;
+function detectObjectKind(objectId: string): ObjectKind | null {
+  if (objectId.startsWith("cus_")) return "customer";
+  if (objectId.startsWith("pi_")) return "payment_intent";
+  if (objectId.startsWith("cs_")) return "checkout_session";
+  return null;
+}
+
+/**
+ * Synthesize a bronze "api_snapshot" event from a Stripe API response and
+ * insert it into the events ledger. Mirrors the Stripe event shape:
+ * `{ id, type, created, data: { object } }`. Used by API-response paths
+ * (POST create, GET fallback, backfill, customer.update side-effects).
+ *
+ * `created_stripe` is set to current server time in seconds. A real webhook
+ * arriving later with a higher `event.created` will dominate via the
+ * projection's `ORDER BY created_stripe DESC` ordering. Side-effects do NOT
+ * fire for `api_snapshot.*` types — those are caller-initiated observations,
+ * not external state transitions.
+ */
+export async function insertSyntheticEvent(
+  stripeObject: { id: string; livemode?: boolean },
+  kind: ObjectKind
+): Promise<void> {
+  const id = `api_${crypto.randomUUID()}`;
+  const createdSeconds = Math.floor(Date.now() / 1000);
+  const type = `api_snapshot.${kind}`;
+  const livemode = stripeObject.livemode === true;
+  const payload = {
+    id,
+    type,
+    api_version: null,
+    livemode,
+    created: createdSeconds,
+    data: { object: stripeObject as unknown as Record<string, unknown> },
+  };
+  await db.insert(events).values({
+    id,
+    type,
+    apiVersion: null,
+    livemode: livemode ? "true" : "false",
+    createdStripe: createdSeconds,
+    objectId: stripeObject.id,
+    payload: payload as unknown as Record<string, unknown>,
+    source: "api" satisfies EventSource,
+  });
+}
+
+/**
+ * Insert a synthetic event for a Stripe API response AND immediately project
+ * silver. Default entry point for API-response code paths.
+ */
+export async function recordApiSnapshot(
+  stripeObject: { id: string; livemode?: boolean },
+  kind: ObjectKind,
+  orgId: string
+): Promise<void> {
+  await insertSyntheticEvent(stripeObject, kind);
+  await projectSilverFromBronze(stripeObject.id, orgId);
+}
+
+/**
+ * Project silver from the latest bronze event for an object_id. Ordered by
+ * `events.created_stripe DESC, received_at DESC` so the freshest snapshot
+ * wins regardless of webhook arrival order.
+ *
+ * Race-safe by construction: Stripe `event.created` is strictly monotonic per
+ * object across state transitions (`payment_intent.created` < `succeeded`).
+ * Out-of-order delivery can no longer clobber silver.
+ */
+export async function projectSilverFromBronze(
+  objectId: string,
+  orgId: string
+): Promise<void> {
+  const kind = detectObjectKind(objectId);
+  if (!kind) return;
+
+  const rows = await db
+    .select({ payload: events.payload })
+    .from(events)
+    .where(eq(events.objectId, objectId))
+    .orderBy(desc(events.createdStripe), desc(events.receivedAt))
+    .limit(1);
+
+  if (rows.length === 0) return;
+  const payload = rows[0].payload as { data?: { object?: unknown } } | null;
+  const obj = payload?.data?.object;
   if (!obj || typeof obj !== "object") return;
 
-  if (event.type.startsWith("customer.")) {
-    const customer = obj as Stripe.Customer;
-    const orgId = extractOrgId(customer.metadata) ?? "unknown";
-    if (event.type === "customer.deleted") {
-      await db
-        .delete(customers)
-        .where(sql`${customers.id} = ${customer.id}`);
+  if (kind === "customer") {
+    const customer = obj as Stripe.Customer | Stripe.DeletedCustomer;
+    if ((customer as Stripe.DeletedCustomer).deleted) {
+      await db.delete(customers).where(eq(customers.id, customer.id!));
       return;
     }
-    await upsertCustomer(customer, orgId);
-    return;
+    await upsertCustomer(customer as Stripe.Customer, orgId);
+  } else if (kind === "payment_intent") {
+    await upsertPaymentIntent(obj as Stripe.PaymentIntent, orgId);
+  } else if (kind === "checkout_session") {
+    await upsertCheckoutSession(obj as Stripe.Checkout.Session, orgId);
+  }
+}
+
+/**
+ * One-time repair: re-project every distinct object_id's silver row from
+ * the latest bronze event. Bounded by `COUNT(DISTINCT object_id) FROM events`.
+ * Idempotent. Runs at boot to heal any rows clobbered by out-of-order webhook
+ * arrivals before the projection refactor landed.
+ */
+export async function repairAllSilverFromBronze(): Promise<void> {
+  const startedAt = Date.now();
+  const rows = await db
+    .selectDistinct({ objectId: events.objectId })
+    .from(events)
+    .where(sql`${events.objectId} IS NOT NULL`);
+
+  let repaired = 0;
+  let skipped = 0;
+  for (const row of rows) {
+    const objectId = row.objectId;
+    if (!objectId) {
+      skipped += 1;
+      continue;
+    }
+    const kind = detectObjectKind(objectId);
+    if (!kind) {
+      skipped += 1;
+      continue;
+    }
+    const orgId = await resolveOrgIdForRepair(objectId, kind);
+    await projectSilverFromBronze(objectId, orgId);
+    repaired += 1;
   }
 
-  if (event.type.startsWith("checkout.session.")) {
-    const session = obj as Stripe.Checkout.Session;
-    const orgId = await resolveOrgId(
-      extractOrgId(session.metadata),
-      extractString(session.customer)
-    );
-    await upsertCheckoutSession(session, orgId);
-    return;
+  const durMs = Date.now() - startedAt;
+  console.log(
+    `[stripe-service] Silver repair from bronze complete: repaired=${repaired}, skipped=${skipped}, duration_ms=${durMs}`
+  );
+}
+
+async function resolveOrgIdForRepair(
+  objectId: string,
+  kind: ObjectKind
+): Promise<string> {
+  if (kind === "customer") {
+    const r = await db
+      .select({ orgId: customers.orgId })
+      .from(customers)
+      .where(eq(customers.id, objectId))
+      .limit(1);
+    if (r.length > 0 && r[0].orgId) return r[0].orgId;
+  } else if (kind === "payment_intent") {
+    const r = await db
+      .select({ orgId: paymentIntents.orgId })
+      .from(paymentIntents)
+      .where(eq(paymentIntents.id, objectId))
+      .limit(1);
+    if (r.length > 0 && r[0].orgId) return r[0].orgId;
+  } else if (kind === "checkout_session") {
+    const r = await db
+      .select({ orgId: checkoutSessions.orgId })
+      .from(checkoutSessions)
+      .where(eq(checkoutSessions.id, objectId))
+      .limit(1);
+    if (r.length > 0 && r[0].orgId) return r[0].orgId;
   }
 
-  if (event.type.startsWith("payment_intent.")) {
-    const pi = obj as Stripe.PaymentIntent;
-    const orgId = await resolveOrgId(
-      extractOrgId(pi.metadata),
-      extractString(pi.customer)
-    );
-    await upsertPaymentIntent(pi, orgId);
-    return;
+  // Fallback: derive from latest event payload metadata / customer mirror.
+  const eventRow = await db
+    .select({ payload: events.payload })
+    .from(events)
+    .where(eq(events.objectId, objectId))
+    .orderBy(desc(events.createdStripe), desc(events.receivedAt))
+    .limit(1);
+  if (eventRow.length === 0) return "unknown";
+  const obj = (
+    eventRow[0].payload as
+      | { data?: { object?: { metadata?: Stripe.Metadata; customer?: unknown } } }
+      | null
+  )?.data?.object;
+  const metadataOrgId = extractOrgId(obj?.metadata);
+  const customerId = extractString(
+    (obj as { customer?: string | { id: string } } | undefined)?.customer
+  );
+  return resolveOrgId(metadataOrgId, customerId);
+}
+
+async function resolveOrgIdForEvent(
+  event: Stripe.Event,
+  objectId: string
+): Promise<string> {
+  const obj = event.data?.object as
+    | { metadata?: Stripe.Metadata; customer?: unknown }
+    | undefined;
+  const metadataOrgId = extractOrgId(obj?.metadata);
+  if (metadataOrgId) return metadataOrgId;
+
+  if (event.type.startsWith("customer.")) {
+    // For customer.* events the object_id IS the customer id.
+    return resolveOrgId(null, objectId);
   }
+  const customerId = extractString(
+    (obj as { customer?: string | { id: string } } | undefined)?.customer
+  );
+  return resolveOrgId(metadataOrgId, customerId);
 }
 
 export function extractOrgId(
@@ -153,7 +332,14 @@ export async function resolveOrgId(
   return "unknown";
 }
 
-export async function upsertCustomer(customer: Stripe.Customer, orgId: string): Promise<void> {
+// Silver upsert helpers. Exported for tests only — production callers MUST go
+// through `projectSilverFromBronze` (which reads the latest bronze event) or
+// `recordApiSnapshot` (which writes bronze then projects). Direct calls bypass
+// the race guarantee.
+export async function upsertCustomer(
+  customer: Stripe.Customer,
+  orgId: string
+): Promise<void> {
   // Stripe `customer.balance` is contaminated by legacy `usage_applied` CBTs
   // written pre-#104; it no longer represents a pure prepaid credit balance.
   // Strip it on write so no downstream consumer can read the polluted value.
