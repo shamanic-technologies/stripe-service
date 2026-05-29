@@ -5,6 +5,7 @@ import { requireIdentityHeaders } from "../../src/middleware/identityHeaders";
 import { callLog } from "../../src/middleware/callLog";
 import healthRoutes from "../../src/routes/health";
 import customersRoutes from "../../src/routes/customers";
+import internalCustomersRoutes from "../../src/routes/internal-customers";
 import checkoutSessionsRoutes from "../../src/routes/checkout-sessions";
 import paymentIntentsRoutes from "../../src/routes/payment-intents";
 import paymentMethodsRoutes from "../../src/routes/payment-methods";
@@ -22,6 +23,7 @@ export function createTestApp() {
   app.use(callLog);
   app.use("/", healthRoutes);
   app.use("/", customersRoutes);
+  app.use("/", internalCustomersRoutes);
   app.use("/", checkoutSessionsRoutes);
   app.use("/", paymentIntentsRoutes);
   app.use("/", paymentMethodsRoutes);

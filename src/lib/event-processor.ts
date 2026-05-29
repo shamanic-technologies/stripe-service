@@ -21,7 +21,7 @@ export type ObjectKind = "customer" | "payment_intent" | "checkout_session";
 // Same pattern as the webhook secret cache in routes/webhooks.ts — the
 // platform key is static per environment.
 let cachedPlatformStripe: Stripe | null = null;
-async function getPlatformStripe(): Promise<Stripe> {
+export async function getPlatformStripe(): Promise<Stripe> {
   if (cachedPlatformStripe) return cachedPlatformStripe;
   const { key } = await resolvePlatformKey("stripe", {
     method: "INTERNAL",

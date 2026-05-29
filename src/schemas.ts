@@ -301,6 +301,34 @@ registry.registerPath({
   },
 });
 
+// --- Internal: org teardown ---
+
+const DeleteCustomersByOrgResponseSchema = z
+  .object({
+    deleted: z.number().openapi({ description: "Number of Stripe customers deleted for the org" }),
+    customer_ids: z.array(z.string()).openapi({ description: "IDs of the deleted Stripe customers" }),
+  })
+  .openapi("DeleteCustomersByOrgResponse");
+
+registry.registerPath({
+  method: "delete",
+  path: "/internal/customers/by-org/{orgId}",
+  summary: "Delete an org's Stripe customer (org teardown)",
+  description:
+    "Server-to-server. Resolves the org's Stripe customer, deletes it online at Stripe (platform key), and tombstones the local mirror. Idempotent: absent customer = 200, nothing deleted. Stripe-side deletion error propagates (fail loud). X-API-Key only — no identity headers (orgId is in the path).",
+  tags: ["Customers"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Customer deleted, or nothing to delete (idempotent)",
+      content: { "application/json": { schema: DeleteCustomersByOrgResponseSchema } },
+    },
+  },
+});
+
 // --- Checkout sessions ---
 
 registry.registerPath({
