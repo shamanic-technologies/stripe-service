@@ -216,6 +216,26 @@
           "url"
         ]
       },
+      "DeleteCustomersByOrgResponse": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "number",
+            "description": "Number of Stripe customers deleted for the org"
+          },
+          "customer_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IDs of the deleted Stripe customers"
+          }
+        },
+        "required": [
+          "deleted",
+          "customer_ids"
+        ]
+      },
       "CreateCheckoutSessionRequest": {
         "type": "object",
         "properties": {
@@ -917,6 +937,42 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StripeObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/customers/by-org/{orgId}": {
+      "delete": {
+        "summary": "Delete an org's Stripe customer (org teardown)",
+        "description": "Server-to-server. Resolves the org's Stripe customer, deletes it online at Stripe (platform key), and tombstones the local mirror. Idempotent: absent customer = 200, nothing deleted. Stripe-side deletion error propagates (fail loud). X-API-Key only — no identity headers (orgId is in the path).",
+        "tags": [
+          "Customers"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Customer deleted, or nothing to delete (idempotent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteCustomersByOrgResponse"
                 }
               }
             }

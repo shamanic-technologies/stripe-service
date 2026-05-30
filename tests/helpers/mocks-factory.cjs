@@ -87,6 +87,7 @@ function makeStripeMock(vi) {
       create: vi.fn(),
       retrieve: vi.fn(),
       update: vi.fn(),
+      del: vi.fn(),
       list: vi.fn(),
       listBalanceTransactions: vi.fn(),
     },

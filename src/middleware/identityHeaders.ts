@@ -10,11 +10,15 @@ const PUBLIC_PATHS = new Set(["/", "/health", "/openapi.json"]);
  * to api_call_log when present.
  *
  * Webhooks and public paths skip this check.
+ *
+ * `/internal/*` routes are server-to-server (X-API-Key still required via
+ * serviceAuth) and key the org off the path, so they skip identity headers.
  */
 export function requireIdentityHeaders(req: Request, res: Response, next: NextFunction) {
   if (PUBLIC_PATHS.has(req.path)) return next();
   if (req.path.startsWith("/v1/webhooks")) return next();
   if (req.path.startsWith("/public/")) return next();
+  if (req.path.startsWith("/internal/")) return next();
 
   const orgId = req.headers["x-org-id"];
   const userId = req.headers["x-user-id"];

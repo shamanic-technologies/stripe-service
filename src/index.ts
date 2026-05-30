@@ -12,6 +12,7 @@ import { callLog } from "./middleware/callLog";
 import { db } from "./db";
 import healthRoutes from "./routes/health";
 import customersRoutes from "./routes/customers";
+import internalCustomersRoutes from "./routes/internal-customers";
 import checkoutSessionsRoutes from "./routes/checkout-sessions";
 import paymentIntentsRoutes from "./routes/payment-intents";
 import paymentMethodsRoutes from "./routes/payment-methods";
@@ -80,6 +81,7 @@ app.get("/openapi.json", (_req, res) => {
 
 app.use("/", healthRoutes);
 app.use("/", customersRoutes);
+app.use("/", internalCustomersRoutes);
 app.use("/", checkoutSessionsRoutes);
 app.use("/", paymentIntentsRoutes);
 app.use("/", paymentMethodsRoutes);
