@@ -13,6 +13,7 @@ knowledge of its callers — all reload/dedupe logic lives in clients.
 - `npm run test:unit` — Unit tests only
 - `npm run test:integration` — Integration tests only
 - `npm run db:generate` — Generate Drizzle migrations
+- **Merge flow:** GitHub auto-merge is DISABLED on this repo (`gh pr merge --auto` errors `Auto merge is not allowed`). Wait for the `test` CI check to go green (`gh pr checks <PR> --watch`), then merge manually (`gh pr merge <PR> --squash --delete-branch`). Bugfix/feature PRs base `staging`; promote to `main` is a separate step.
 - `npm run db:push` — Push schema to database
 
 ## Architecture
