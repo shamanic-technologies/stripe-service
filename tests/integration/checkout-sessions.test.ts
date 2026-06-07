@@ -69,6 +69,72 @@ describe("POST /v1/checkout/sessions", () => {
       undefined
     );
   });
+
+  it("creates a setup-mode session with no line_items (card capture)", async () => {
+    stripeMock.checkout.sessions.create.mockResolvedValueOnce({
+      id: "cs_setup_1",
+      object: "checkout.session",
+      mode: "setup",
+      url: "https://checkout.stripe.com/setup",
+      customer: "cus_x",
+      setup_intent: "seti_123",
+      payment_intent: null,
+      metadata: { org_id: TEST_ORG_ID },
+      created: 1700000000,
+      livemode: false,
+    });
+
+    const res = await request(app)
+      .post("/v1/checkout/sessions")
+      .set(authHeaders())
+      .send({
+        mode: "setup",
+        success_url: "https://example.com/success",
+        cancel_url: "https://example.com/cancel",
+        customer: "cus_x",
+        metadata: { purpose: "auto_topup_card_capture" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe("cs_setup_1");
+    expect(res.body.setup_intent).toBe("seti_123");
+
+    const [params] = stripeMock.checkout.sessions.create.mock.calls[0];
+    expect(params.mode).toBe("setup");
+    expect(params).not.toHaveProperty("line_items");
+    expect(params.metadata).toEqual(
+      expect.objectContaining({ org_id: TEST_ORG_ID, purpose: "auto_topup_card_capture" })
+    );
+  });
+
+  it("rejects payment mode without line_items (unchanged)", async () => {
+    const res = await request(app)
+      .post("/v1/checkout/sessions")
+      .set(authHeaders())
+      .send({
+        mode: "payment",
+        success_url: "https://example.com/success",
+        customer: "cus_x",
+      });
+
+    expect(res.status).toBe(400);
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects setup mode with line_items (Stripe forbids it)", async () => {
+    const res = await request(app)
+      .post("/v1/checkout/sessions")
+      .set(authHeaders())
+      .send({
+        mode: "setup",
+        success_url: "https://example.com/success",
+        customer: "cus_x",
+        line_items: [{ price: "price_1", quantity: 1 }],
+      });
+
+    expect(res.status).toBe(400);
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("GET /v1/checkout/sessions/:id", () => {

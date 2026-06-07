@@ -106,7 +106,9 @@ const LineItemSchema = z
 export const CreateCheckoutSessionRequestSchema = z
   .object({
     mode: z.enum(["payment", "subscription", "setup"]),
-    line_items: z.array(LineItemSchema).min(1),
+    // Required for "payment"/"subscription"; forbidden for "setup" (Stripe rejects
+    // line_items in setup mode). Enforced by the cross-field refinement below.
+    line_items: z.array(LineItemSchema).min(1).optional(),
     success_url: z.string().url(),
     cancel_url: z.string().url().optional(),
     customer: z.string().optional(),
@@ -119,6 +121,23 @@ export const CreateCheckoutSessionRequestSchema = z
     expires_at: z.number().int().optional(),
   })
   .passthrough()
+  .superRefine((data, ctx) => {
+    if (data.mode === "setup") {
+      if (data.line_items !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["line_items"],
+          message: "line_items is not allowed when mode is 'setup'",
+        });
+      }
+    } else if (data.line_items === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["line_items"],
+        message: "line_items is required when mode is 'payment' or 'subscription'",
+      });
+    }
+  })
   .openapi("CreateCheckoutSessionRequest");
 
 export const ListCheckoutSessionsQuerySchema = z

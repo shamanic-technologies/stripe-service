@@ -45,7 +45,7 @@ GET    /v1/customers/:id                   — retrieve (DB-first, Stripe fallba
 POST   /v1/customers/:id                   — update
 GET    /v1/customers                       — list (DB-only)
 DELETE /internal/customers/by-org/:orgId   — org teardown: delete Stripe customer online + tombstone mirror (idempotent)
-POST  /v1/checkout/sessions               — create
+POST  /v1/checkout/sessions               — create (line_items required for mode payment/subscription; forbidden for mode setup)
 GET   /v1/checkout/sessions/:id           — retrieve (DB-first, Stripe fallback)
 GET   /v1/checkout/sessions               — list (DB-only)
 POST  /v1/payment_intents                 — create
