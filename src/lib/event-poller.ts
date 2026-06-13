@@ -34,6 +34,46 @@ export function stopEventPoller(): void {
   }
 }
 
+type StripeClient = ReturnType<typeof makeStripeClient>;
+type StripeEventList = Awaited<ReturnType<StripeClient["events"]["list"]>>;
+
+/**
+ * List events from the stored cursor, self-healing when the cursor event has
+ * aged out of Stripe's retention window.
+ *
+ * Stripe retains events ~30 days. If the service is idle (or the poller is
+ * wedged) longer than that, the stored `last_event_id` no longer resolves and
+ * `events.list({ starting_after })` 400s with `code: resource_missing`,
+ * `param: starting_after`. That cursor is unrecoverable — the event is gone —
+ * and re-using it deadlocks the poller forever (only a successful poll advances
+ * the cursor). On that specific error we drop the cursor and re-list the newest
+ * page; the gap between the aged-out cursor and now is unrecoverable via
+ * events.list regardless (retention limit) and is covered by historical-backfill
+ * via the object-list APIs. processEvent is idempotent, so re-listing is safe.
+ */
+async function listEventsResilient(
+  stripe: StripeClient,
+  startingAfter: string | undefined
+): Promise<StripeEventList> {
+  try {
+    return await stripe.events.list({ limit: 100, starting_after: startingAfter });
+  } catch (err) {
+    if (
+      startingAfter !== undefined &&
+      typeof err === "object" &&
+      err !== null &&
+      (err as { code?: string }).code === "resource_missing" &&
+      (err as { param?: string }).param === "starting_after"
+    ) {
+      console.warn(
+        `[stripe-service] Event poll cursor '${startingAfter}' aged out of Stripe retention; resetting to newest events.`
+      );
+      return await stripe.events.list({ limit: 100 });
+    }
+    throw err;
+  }
+}
+
 export async function pollOnce(): Promise<number> {
   try {
     const { key } = await resolvePlatformKey("stripe", {
@@ -49,10 +89,7 @@ export async function pollOnce(): Promise<number> {
       .limit(1);
     const startingAfter = cursor[0]?.lastEventId ?? undefined;
 
-    const events = await stripe.events.list({
-      limit: 100,
-      starting_after: startingAfter,
-    });
+    const events = await listEventsResilient(stripe, startingAfter);
 
     if (events.data.length === 0) {
       return 0;
