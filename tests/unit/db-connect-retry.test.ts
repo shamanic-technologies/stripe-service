@@ -23,6 +23,12 @@ describe("isTransientConnectError", () => {
     expect(isTransientConnectError(new Error("timeout expired"))).toBe(true);
   });
 
+  it("returns true for the pg Pool acquire-timeout message (no .code)", () => {
+    expect(
+      isTransientConnectError(new Error("timeout exceeded when trying to connect")),
+    ).toBe(true);
+  });
+
   it("returns false for a real SQL error (undefined_table 42P01)", () => {
     expect(isTransientConnectError({ code: "42P01" })).toBe(false);
   });
