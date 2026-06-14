@@ -47,6 +47,94 @@ describe("DELETE /internal/customers/by-org/:orgId", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     stripeMock.customers.del.mockReset();
+    stripeMock.paymentMethods.list.mockReset();
+  });
+
+  it("lists customers for an org with X-API-Key only", async () => {
+    dbMock.queueSelect("customers", [
+      {
+        id: "cus_x",
+        rawJson: { id: "cus_x", object: "customer", metadata: { org_id: TEST_ORG_ID } },
+      },
+    ]);
+
+    const res = await request(app)
+      .get(`/internal/customers/by-org/${TEST_ORG_ID}?limit=1`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      object: "list",
+      data: [{ id: "cus_x", object: "customer", metadata: { org_id: TEST_ORG_ID } }],
+      has_more: false,
+      url: `/internal/customers/by-org/${TEST_ORG_ID}`,
+    });
+  });
+
+  it("lists succeeded payment intents for balance callers with X-API-Key only", async () => {
+    dbMock.queueSelect("payment_intents", [
+      {
+        id: "pi_topup",
+        rawJson: {
+          id: "pi_topup",
+          object: "payment_intent",
+          customer: "cus_x",
+          amount_received: 5000,
+          status: "succeeded",
+        },
+      },
+    ]);
+
+    const res = await request(app)
+      .get(
+        `/internal/payment_intents/by-org/${TEST_ORG_ID}?customer=cus_x&status=succeeded&limit=25`
+      )
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body.object).toBe("list");
+    expect(res.body.data).toEqual([
+      {
+        id: "pi_topup",
+        object: "payment_intent",
+        customer: "cus_x",
+        amount_received: 5000,
+        status: "succeeded",
+      },
+    ]);
+    expect(res.body.url).toBe(`/internal/payment_intents/by-org/${TEST_ORG_ID}`);
+  });
+
+  it("lists payment methods for a mirrored customer with X-API-Key only", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x", orgId: TEST_ORG_ID }]);
+    stripeMock.paymentMethods.list.mockResolvedValueOnce({
+      object: "list",
+      data: [{ id: "pm_card", type: "card", customer: "cus_x" }],
+      has_more: false,
+      url: "/v1/payment_methods",
+    });
+
+    const res = await request(app)
+      .get(`/internal/payment_methods/by-org/${TEST_ORG_ID}?customer=cus_x&type=card`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data[0].id).toBe("pm_card");
+    expect(stripeMock.paymentMethods.list).toHaveBeenCalledWith({
+      customer: "cus_x",
+      type: "card",
+    });
+  });
+
+  it("does not enumerate payment methods for a customer outside the org mirror", async () => {
+    dbMock.queueSelect("customers", []);
+
+    const res = await request(app)
+      .get(`/internal/payment_methods/by-org/${TEST_ORG_ID}?customer=cus_other&type=card`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(404);
+    expect(stripeMock.paymentMethods.list).not.toHaveBeenCalled();
   });
 
   it("deletes the org's Stripe customer online and tombstones the mirror", async () => {
