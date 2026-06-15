@@ -977,6 +977,142 @@
             }
           }
         }
+      },
+      "get": {
+        "summary": "Get an org's Stripe customer (user-less)",
+        "description": "Server-to-server. Returns the org's mirrored Stripe customer (verbatim raw_json), 404 when absent. DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service getCustomerByOrg.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Customer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StripeObject"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No customer for org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/payment_intents/by-org/{orgId}": {
+      "get": {
+        "summary": "List an org's PaymentIntents (user-less)",
+        "description": "Server-to-server. Returns every PaymentIntent mirrored for the org as a Stripe list (no limit — caller sums succeeded top-ups across the full set). DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service sumSucceededTopupsForCustomer (org<->customer is 1:1).",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PaymentIntent list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StripeList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/payment_methods/by-org/{orgId}": {
+      "get": {
+        "summary": "List an org customer's PaymentMethods (user-less)",
+        "description": "Server-to-server. Live Stripe paymentMethods.list for the org's customer via the platform key (single-account model). Customer resolved from the mirror; 404 when the org has none. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service hasAttachedCardPm.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Optional Stripe payment method type filter (e.g. 'card'). Forwarded verbatim to Stripe."
+            },
+            "required": false,
+            "description": "Optional Stripe payment method type filter (e.g. 'card'). Forwarded verbatim to Stripe.",
+            "name": "type",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PaymentMethod list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StripeList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No customer for org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/checkout/sessions": {
