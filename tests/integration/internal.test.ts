@@ -131,3 +131,124 @@ describe("DELETE /internal/customers/by-org/:orgId", () => {
     expect(stripeMock.customers.del).not.toHaveBeenCalled();
   });
 });
+
+describe("GET /internal/customers/by-org/:orgId (user-less)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns the org's customer raw_json with only X-API-Key", async () => {
+    dbMock.queueSelect("customers", [
+      { id: "cus_x", rawJson: { id: "cus_x", object: "customer", email: "a@b.co" } },
+    ]);
+
+    const res = await request(app)
+      .get(`/internal/customers/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: "cus_x", object: "customer", email: "a@b.co" });
+  });
+
+  it("returns 404 when the org has no customer", async () => {
+    dbMock.queueSelect("customers", []);
+
+    const res = await request(app)
+      .get(`/internal/customers/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects with 401 when X-API-Key is missing", async () => {
+    const res = await request(app).get(`/internal/customers/by-org/${TEST_ORG_ID}`);
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("GET /internal/payment_intents/by-org/:orgId (user-less)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns the org's PaymentIntents as a Stripe list with only X-API-Key", async () => {
+    dbMock.queueSelect("payment_intents", [
+      { id: "pi_1", rawJson: { id: "pi_1", object: "payment_intent", status: "succeeded", amount_received: 5000 } },
+      { id: "pi_2", rawJson: { id: "pi_2", object: "payment_intent", status: "requires_payment_method" } },
+    ]);
+
+    const res = await request(app)
+      .get(`/internal/payment_intents/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body.object).toBe("list");
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.data[0].id).toBe("pi_1");
+    expect(res.body.has_more).toBe(false);
+  });
+
+  it("returns an empty list when the org has no PaymentIntents", async () => {
+    dbMock.queueSelect("payment_intents", []);
+
+    const res = await request(app)
+      .get(`/internal/payment_intents/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      object: "list",
+      data: [],
+      has_more: false,
+      url: `/internal/payment_intents/by-org/${TEST_ORG_ID}`,
+    });
+  });
+});
+
+describe("GET /internal/payment_methods/by-org/:orgId (user-less)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stripeMock.paymentMethods.list.mockReset();
+  });
+
+  it("lists the org customer's PaymentMethods via the platform key, X-API-Key only", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    stripeMock.paymentMethods.list.mockResolvedValueOnce({
+      object: "list",
+      data: [{ id: "pm_card", type: "card", customer: "cus_x" }],
+      has_more: false,
+      url: "/v1/payment_methods",
+    });
+
+    const res = await request(app)
+      .get(`/internal/payment_methods/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data[0].id).toBe("pm_card");
+    expect(stripeMock.paymentMethods.list).toHaveBeenCalledWith({ customer: "cus_x" });
+  });
+
+  it("forwards type=card to the Stripe SDK", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    stripeMock.paymentMethods.list.mockResolvedValueOnce({
+      object: "list",
+      data: [],
+      has_more: false,
+      url: "/v1/payment_methods",
+    });
+
+    await request(app)
+      .get(`/internal/payment_methods/by-org/${TEST_ORG_ID}?type=card`)
+      .set(apiKeyOnly());
+
+    expect(stripeMock.paymentMethods.list).toHaveBeenCalledWith({ customer: "cus_x", type: "card" });
+  });
+
+  it("returns 404 when the org has no customer (no Stripe call)", async () => {
+    dbMock.queueSelect("customers", []);
+
+    const res = await request(app)
+      .get(`/internal/payment_methods/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(404);
+    expect(stripeMock.paymentMethods.list).not.toHaveBeenCalled();
+  });
+});

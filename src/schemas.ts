@@ -348,6 +348,67 @@ registry.registerPath({
   },
 });
 
+// --- Internal: user-less org-scoped balance reads ---
+//
+// X-API-Key only, org keyed off the path, platform Stripe key. Back
+// billing-service's machine-triggered balance composition (affordability +
+// dunning schedulers) with no end-user and no x-user-id.
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/customers/by-org/{orgId}",
+  summary: "Get an org's Stripe customer (user-less)",
+  description:
+    "Server-to-server. Returns the org's mirrored Stripe customer (verbatim raw_json), 404 when absent. DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service getCustomerByOrg.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+  },
+  responses: {
+    200: { description: "Customer", content: { "application/json": { schema: StripeObjectSchema } } },
+    404: { description: "No customer for org", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/payment_intents/by-org/{orgId}",
+  summary: "List an org's PaymentIntents (user-less)",
+  description:
+    "Server-to-server. Returns every PaymentIntent mirrored for the org as a Stripe list (no limit — caller sums succeeded top-ups across the full set). DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service sumSucceededTopupsForCustomer (org<->customer is 1:1).",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+  },
+  responses: {
+    200: { description: "PaymentIntent list", content: { "application/json": { schema: StripeListSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/payment_methods/by-org/{orgId}",
+  summary: "List an org customer's PaymentMethods (user-less)",
+  description:
+    "Server-to-server. Live Stripe paymentMethods.list for the org's customer via the platform key (single-account model). Customer resolved from the mirror; 404 when the org has none. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service hasAttachedCardPm.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+    query: z.object({
+      type: z.string().optional().openapi({
+        description: "Optional Stripe payment method type filter (e.g. 'card'). Forwarded verbatim to Stripe.",
+      }),
+    }),
+  },
+  responses: {
+    200: { description: "PaymentMethod list", content: { "application/json": { schema: StripeListSchema } } },
+    404: { description: "No customer for org", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
 // --- Checkout sessions ---
 
 registry.registerPath({
