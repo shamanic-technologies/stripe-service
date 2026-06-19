@@ -2,12 +2,22 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
 import { authHeaders, TEST_ORG_ID } from "../helpers/mocks";
 
-const { dbMock, stripeMock } = vi.hoisted(() => {
+const { dbMock, stripeMock, getUserByIdMock } = vi.hoisted(() => {
   const { makeDbMock, makeStripeMock } = require("../helpers/mocks-factory.cjs");
-  return { dbMock: makeDbMock(vi), stripeMock: makeStripeMock(vi) };
+  return {
+    dbMock: makeDbMock(vi),
+    stripeMock: makeStripeMock(vi),
+    getUserByIdMock: vi.fn(),
+  };
 });
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
+vi.mock("../../src/lib/client-service-client", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../src/lib/client-service-client")
+  >("../../src/lib/client-service-client");
+  return { getUserById: getUserByIdMock, joinName: actual.joinName };
+});
 vi.mock("../../src/lib/stripe-client", () => ({
   makeStripeClient: () => stripeMock,
   getWebhookClient: vi.fn(),
@@ -30,6 +40,13 @@ describe("POST /v1/customers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     stripeMock.customers.create.mockReset();
+    stripeMock.customers.update.mockReset();
+    // Default: client-service resolves an email + name for the authed user.
+    getUserByIdMock.mockResolvedValue({
+      email: "resolved@example.com",
+      firstName: "Re",
+      lastName: "Solved",
+    });
   });
 
   it("creates a customer and forwards Stripe-shape body", async () => {
@@ -88,6 +105,134 @@ describe("POST /v1/customers", () => {
       .send({ email: "not-an-email" });
 
     expect(res.status).toBe(400);
+  });
+
+  it("attaches resolved email + name when the caller sends an empty body", async () => {
+    stripeMock.customers.create.mockResolvedValueOnce({
+      id: "cus_resolved_1",
+      object: "customer",
+      email: "resolved@example.com",
+      name: "Re Solved",
+      metadata: { org_id: TEST_ORG_ID },
+      created: 1700000000,
+      livemode: false,
+    });
+
+    const res = await request(app).post("/v1/customers").set(authHeaders()).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.email).toBe("resolved@example.com");
+    expect(getUserByIdMock).toHaveBeenCalledWith("user_test_uuid");
+    expect(stripeMock.customers.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: "resolved@example.com",
+        name: "Re Solved",
+        metadata: expect.objectContaining({ org_id: TEST_ORG_ID }),
+      }),
+      undefined
+    );
+  });
+
+  it("does not call client-service when the caller supplies email + name", async () => {
+    stripeMock.customers.create.mockResolvedValueOnce({
+      id: "cus_caller_wins",
+      object: "customer",
+      email: "caller@example.com",
+      name: "Caller",
+      metadata: { org_id: TEST_ORG_ID },
+      created: 1700000000,
+      livemode: false,
+    });
+
+    await request(app)
+      .post("/v1/customers")
+      .set(authHeaders())
+      .send({ email: "caller@example.com", name: "Caller" });
+
+    expect(getUserByIdMock).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent per org — returns the existing customer, no Stripe create", async () => {
+    dbMock.queueSelect("customers", [
+      {
+        id: "cus_existing",
+        orgId: TEST_ORG_ID,
+        rawJson: {
+          id: "cus_existing",
+          object: "customer",
+          email: "already@example.com",
+          metadata: { org_id: TEST_ORG_ID },
+        },
+      },
+    ]);
+
+    const res = await request(app).post("/v1/customers").set(authHeaders()).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe("cus_existing");
+    expect(stripeMock.customers.create).not.toHaveBeenCalled();
+    expect(stripeMock.customers.update).not.toHaveBeenCalled();
+  });
+
+  it("backfills email on an existing customer that has none", async () => {
+    dbMock.queueSelect("customers", [
+      {
+        id: "cus_no_email",
+        orgId: TEST_ORG_ID,
+        rawJson: {
+          id: "cus_no_email",
+          object: "customer",
+          email: null,
+          metadata: { org_id: TEST_ORG_ID },
+        },
+      },
+    ]);
+    stripeMock.customers.update.mockResolvedValueOnce({
+      id: "cus_no_email",
+      object: "customer",
+      email: "resolved@example.com",
+      name: "Re Solved",
+      metadata: { org_id: TEST_ORG_ID },
+      created: 1700000000,
+      livemode: false,
+    });
+
+    const res = await request(app).post("/v1/customers").set(authHeaders()).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.email).toBe("resolved@example.com");
+    expect(stripeMock.customers.create).not.toHaveBeenCalled();
+    expect(stripeMock.customers.update).toHaveBeenCalledWith(
+      "cus_no_email",
+      expect.objectContaining({ email: "resolved@example.com" }),
+      undefined
+    );
+  });
+
+  it("creates without email when client-service has no record (404 -> null)", async () => {
+    getUserByIdMock.mockResolvedValueOnce(null);
+    stripeMock.customers.create.mockResolvedValueOnce({
+      id: "cus_no_identity",
+      object: "customer",
+      metadata: { org_id: TEST_ORG_ID },
+      created: 1700000000,
+      livemode: false,
+    });
+
+    const res = await request(app).post("/v1/customers").set(authHeaders()).send({});
+
+    expect(res.status).toBe(200);
+    const callArg = stripeMock.customers.create.mock.calls[0][0];
+    expect(callArg.email).toBeUndefined();
+  });
+
+  it("fails loud (5xx) when client-service errors on resolve", async () => {
+    getUserByIdMock.mockRejectedValueOnce(new Error("client-service 503"));
+
+    const res = await request(app).post("/v1/customers").set(authHeaders()).send({});
+
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(stripeMock.customers.create).not.toHaveBeenCalled();
   });
 });
 
