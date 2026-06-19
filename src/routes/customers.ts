@@ -11,8 +11,27 @@ import {
 import { buildContext, stripeRequestOptions } from "../lib/request-context";
 import { recordApiSnapshot } from "../lib/event-processor";
 import { isResourceMissing } from "../lib/stripe-client";
+import { getUserById, joinName } from "../lib/client-service-client";
 
 const router = Router();
+
+/**
+ * Resolve the authenticated user's email + name from client-service so the
+ * Stripe customer is born with an email. Returns `{}` when none is available
+ * (user not on record, or no email/name set) — not a failure, see
+ * client-service-client. Infra failures propagate (fail loud).
+ */
+async function resolveIdentityFields(
+  userId: string
+): Promise<{ email?: string; name?: string }> {
+  const identity = await getUserById(userId);
+  if (!identity) return {};
+  const out: { email?: string; name?: string } = {};
+  if (identity.email) out.email = identity.email;
+  const name = joinName(identity);
+  if (name) out.name = name;
+  return out;
+}
 
 router.post("/v1/customers", async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -24,11 +43,58 @@ router.post("/v1/customers", async (req: Request, res: Response, next: NextFunct
     const ctx = await buildContext(req, res);
     const body = parsed.data as Stripe.CustomerCreateParams;
 
+    // Idempotent per org: 1:1 org<->customer is the invariant. If the org
+    // already has a mirrored customer, return it instead of creating a duplicate
+    // Stripe customer (callers re-issue create on retries / parallel setup paths).
+    const existingRows = await db
+      .select()
+      .from(customers)
+      .where(eq(customers.orgId, ctx.orgId))
+      .orderBy(desc(customers.syncedAt))
+      .limit(1);
+
+    if (existingRows.length > 0 && existingRows[0].rawJson) {
+      const existing = existingRows[0].rawJson as Stripe.Customer;
+      res.locals.stripeObjectId = existing.id;
+
+      // Backfill: most existing customers were created with no email (callers
+      // POSTed an empty body). If the mirrored customer lacks one, resolve it
+      // now and patch the Stripe customer so the email is attached going forward.
+      if (!existing.email) {
+        const fields = await resolveIdentityFields(ctx.userId);
+        const patch: Stripe.CustomerUpdateParams = {};
+        if (fields.email) patch.email = fields.email;
+        if (fields.name && !existing.name) patch.name = fields.name;
+        if (patch.email || patch.name) {
+          const updated = await ctx.stripe.customers.update(
+            existing.id,
+            patch,
+            stripeRequestOptions(ctx)
+          );
+          await recordApiSnapshot(updated, "customer", ctx.orgId);
+          return res.json(updated);
+        }
+      }
+
+      return res.json(existing);
+    }
+
     // Stamp org_id into Stripe customer metadata so webhooks can route back.
     const metadata = { ...(body.metadata ?? {}), org_id: ctx.orgId };
 
+    // Attach the authenticated user's email (+ name) when the caller didn't
+    // supply an email — the common case (billing-service POSTs an empty body).
+    // Caller-supplied values always win (passthrough preserved). Gated on a
+    // missing email so callers that already have one skip the client-service hop.
+    const createParams: Stripe.CustomerCreateParams = { ...body, metadata };
+    if (!createParams.email) {
+      const fields = await resolveIdentityFields(ctx.userId);
+      if (fields.email) createParams.email = fields.email;
+      if (!createParams.name && fields.name) createParams.name = fields.name;
+    }
+
     const customer = await ctx.stripe.customers.create(
-      { ...body, metadata },
+      createParams,
       stripeRequestOptions(ctx)
     );
 
