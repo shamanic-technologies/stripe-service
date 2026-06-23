@@ -107,6 +107,65 @@ describe("POST /v1/checkout/sessions", () => {
     );
   });
 
+  it("creates an embedded session without success_url and returns client_secret", async () => {
+    stripeMock.checkout.sessions.create.mockResolvedValueOnce({
+      id: "cs_embedded_1",
+      object: "checkout.session",
+      mode: "payment",
+      ui_mode: "embedded",
+      url: null,
+      client_secret: "cs_embedded_1_secret_abc",
+      customer: "cus_x",
+      payment_intent: "pi_123",
+      metadata: { org_id: TEST_ORG_ID },
+      created: 1700000000,
+      livemode: false,
+    });
+
+    const res = await request(app)
+      .post("/v1/checkout/sessions")
+      .set(authHeaders())
+      .send({
+        mode: "payment",
+        ui_mode: "embedded",
+        redirect_on_completion: "never",
+        payment_intent_data: { setup_future_usage: "off_session" },
+        customer: "cus_x",
+        line_items: [{ price: "price_1", quantity: 1 }],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe("cs_embedded_1");
+    expect(res.body.client_secret).toBe("cs_embedded_1_secret_abc");
+    expect(stripeMock.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "payment",
+        ui_mode: "embedded",
+        redirect_on_completion: "never",
+        payment_intent_data: { setup_future_usage: "off_session" },
+        customer: "cus_x",
+        metadata: expect.objectContaining({ org_id: TEST_ORG_ID }),
+      }),
+      undefined
+    );
+    const [params] = stripeMock.checkout.sessions.create.mock.calls[0];
+    expect(params).not.toHaveProperty("success_url");
+  });
+
+  it("rejects hosted (non-embedded) mode without success_url", async () => {
+    const res = await request(app)
+      .post("/v1/checkout/sessions")
+      .set(authHeaders())
+      .send({
+        mode: "payment",
+        customer: "cus_x",
+        line_items: [{ price: "price_1", quantity: 1 }],
+      });
+
+    expect(res.status).toBe(400);
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
   it("rejects payment mode without line_items (unchanged)", async () => {
     const res = await request(app)
       .post("/v1/checkout/sessions")
