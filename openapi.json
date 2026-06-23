@@ -279,6 +279,21 @@
             },
             "minItems": 1
           },
+          "ui_mode": {
+            "type": "string",
+            "enum": [
+              "hosted",
+              "embedded"
+            ]
+          },
+          "redirect_on_completion": {
+            "type": "string",
+            "enum": [
+              "always",
+              "if_required",
+              "never"
+            ]
+          },
           "success_url": {
             "type": "string",
             "format": "uri"
@@ -332,8 +347,7 @@
           }
         },
         "required": [
-          "mode",
-          "success_url"
+          "mode"
         ],
         "additionalProperties": {
           "nullable": true
