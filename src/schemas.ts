@@ -109,7 +109,14 @@ export const CreateCheckoutSessionRequestSchema = z
     // Required for "payment"/"subscription"; forbidden for "setup" (Stripe rejects
     // line_items in setup mode). Enforced by the cross-field refinement below.
     line_items: z.array(LineItemSchema).min(1).optional(),
-    success_url: z.string().url(),
+    // Hosted (default) Checkout redirects the browser to a Stripe-hosted page and
+    // requires success_url. Embedded Checkout renders in-page (iframe) and is created
+    // WITHOUT success_url, returning a client_secret the front-end mounts. Stripe
+    // rejects success_url alongside redirect_on_completion:"never", so success_url is
+    // required only for the hosted case — enforced by the cross-field refinement below.
+    ui_mode: z.enum(["hosted", "embedded"]).optional(),
+    redirect_on_completion: z.enum(["always", "if_required", "never"]).optional(),
+    success_url: z.string().url().optional(),
     cancel_url: z.string().url().optional(),
     customer: z.string().optional(),
     customer_email: z.string().email().optional(),
@@ -135,6 +142,16 @@ export const CreateCheckoutSessionRequestSchema = z
         code: "custom",
         path: ["line_items"],
         message: "line_items is required when mode is 'payment' or 'subscription'",
+      });
+    }
+    // success_url is required for hosted Checkout (the browser is redirected there
+    // on completion). Embedded Checkout never redirects the parent page, so Stripe
+    // forbids success_url and instead returns a client_secret.
+    if (data.ui_mode !== "embedded" && data.success_url === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["success_url"],
+        message: "success_url is required unless ui_mode is 'embedded'",
       });
     }
   })
