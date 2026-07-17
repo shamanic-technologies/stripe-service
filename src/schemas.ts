@@ -92,6 +92,35 @@ export const ListCustomersQuerySchema = z
   })
   .openapi("ListCustomersQuery");
 
+// ===== Internal: off-session invoiced charge =====
+
+export const CreateInvoiceByOrgRequestSchema = z
+  .object({
+    amount: z
+      .number()
+      .int()
+      .positive()
+      .openapi({ description: "Amount to charge, in the currency's smallest unit (e.g. cents)" }),
+    currency: z
+      .string()
+      .min(3)
+      .openapi({ description: "3-letter ISO currency code (e.g. 'usd')" }),
+    description: z
+      .string()
+      .min(1)
+      .openapi({ description: "Human-readable description — used for both the invoice line item and the invoice." }),
+    payment_method: z
+      .string()
+      .optional()
+      .openapi({
+        description:
+          "Explicit PaymentMethod (pm_…) to charge off-session. Omit to use the customer's default PM. Prefer an explicit card PM — the customer default may be a Link / wallet PM that Stripe refuses to charge off_session.",
+      }),
+    metadata: z.record(z.string(), z.string()).optional(),
+  })
+  .passthrough()
+  .openapi("CreateInvoiceByOrgRequest");
+
 // ===== Checkout sessions =====
 
 const LineItemSchema = z
@@ -422,6 +451,39 @@ registry.registerPath({
   },
   responses: {
     200: { description: "PaymentMethod list", content: { "application/json": { schema: StripeListSchema } } },
+    404: { description: "No customer for org", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+// --- Internal: off-session invoiced charge ---
+//
+// X-API-Key only, org keyed off the path, platform Stripe key. Lets
+// billing-service charge an org's customer OFF-SESSION for a top-up in a way
+// that produces a FINALIZED, PAID Stripe invoice (hosted invoice + PDF, shows
+// up in the customer's billing-portal invoice list). Idempotent per the
+// mandatory Idempotency-Key header (derived per Stripe step — no double charge
+// on retry).
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/invoices/by-org/{orgId}",
+  summary: "Create + pay an off-session invoice for an org's customer",
+  description:
+    "Server-to-server. Creates a one-line Stripe invoice for the org's customer, finalizes it, and pays it OFF-SESSION against the customer's stored card (explicit `payment_method` or the customer default). The result is a finalized, paid Stripe invoice (hosted invoice + PDF, visible in the customer's billing portal). Requires the `Idempotency-Key` header — it is derived per Stripe step (invoice / item / finalize / pay) so a retry never double-charges or creates a duplicate invoice. Uses the platform Stripe key (single-account model). X-API-Key only — no identity headers (orgId is in the path). Returns the paid Stripe Invoice object verbatim.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+    headers: z.object({
+      "idempotency-key": z
+        .string()
+        .openapi({ description: "Required. Stable per-logical-top-up key. Derived per Stripe step to guarantee no double-charge on retry." }),
+    }),
+    body: { content: { "application/json": { schema: CreateInvoiceByOrgRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Finalized, paid Stripe Invoice", content: { "application/json": { schema: StripeObjectSchema } } },
+    400: { description: "Invalid request or missing Idempotency-Key header", content: { "application/json": { schema: ErrorResponseSchema } } },
     404: { description: "No customer for org", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });

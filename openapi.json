@@ -236,6 +236,45 @@
           "customer_ids"
         ]
       },
+      "CreateInvoiceByOrgRequest": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Amount to charge, in the currency's smallest unit (e.g. cents)"
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3,
+            "description": "3-letter ISO currency code (e.g. 'usd')"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Human-readable description — used for both the invoice line item and the invoice."
+          },
+          "payment_method": {
+            "type": "string",
+            "description": "Explicit PaymentMethod (pm_…) to charge off-session. Omit to use the customer's default PM. Prefer an explicit card PM — the customer default may be a Link / wallet PM that Stripe refuses to charge off_session."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "description"
+        ],
+        "additionalProperties": {
+          "nullable": true
+        }
+      },
       "CreateCheckoutSessionRequest": {
         "type": "object",
         "properties": {
@@ -1112,6 +1151,81 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StripeList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No customer for org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/invoices/by-org/{orgId}": {
+      "post": {
+        "summary": "Create + pay an off-session invoice for an org's customer",
+        "description": "Server-to-server. Creates a one-line Stripe invoice for the org's customer, finalizes it, and pays it OFF-SESSION against the customer's stored card (explicit `payment_method` or the customer default). The result is a finalized, paid Stripe invoice (hosted invoice + PDF, visible in the customer's billing portal). Requires the `Idempotency-Key` header — it is derived per Stripe step (invoice / item / finalize / pay) so a retry never double-charges or creates a duplicate invoice. Uses the platform Stripe key (single-account model). X-API-Key only — no identity headers (orgId is in the path). Returns the paid Stripe Invoice object verbatim.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Required. Stable per-logical-top-up key. Derived per Stripe step to guarantee no double-charge on retry."
+            },
+            "required": true,
+            "description": "Required. Stable per-logical-top-up key. Derived per Stripe step to guarantee no double-charge on retry.",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInvoiceByOrgRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Finalized, paid Stripe Invoice",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StripeObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or missing Idempotency-Key header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
