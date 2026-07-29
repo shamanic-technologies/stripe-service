@@ -236,6 +236,75 @@
           "customer_ids"
         ]
       },
+      "OrgPaymentSummary": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "payment_summary"
+            ]
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "customer": {
+            "type": "string",
+            "nullable": true,
+            "description": "The org's mirrored Stripe customer id, or null when it has none."
+          },
+          "totals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CurrencyTotals"
+            },
+            "description": "One entry per currency with activity. Empty when the org has no mirrored payments — never a fabricated zero row."
+          }
+        },
+        "required": [
+          "object",
+          "org_id",
+          "customer",
+          "totals"
+        ]
+      },
+      "CurrencyTotals": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "description": "Stripe currency code, e.g. 'usd'."
+          },
+          "amount_received": {
+            "type": "integer",
+            "description": "Gross paid in, minor units: SUM(amount_received) over the org's `succeeded` PaymentIntents."
+          },
+          "amount_refunded": {
+            "type": "integer",
+            "description": "Minor units returned via Refunds in status `succeeded`. A refund that later fails or is canceled stops counting."
+          },
+          "amount_disputed_lost": {
+            "type": "integer",
+            "description": "Minor units lost to Disputes in status `lost`. Open and won disputes are not counted."
+          },
+          "amount_returned": {
+            "type": "integer",
+            "description": "amount_refunded + amount_disputed_lost — total money given back."
+          },
+          "amount_net": {
+            "type": "integer",
+            "description": "amount_received − amount_returned — money we actually still hold."
+          }
+        },
+        "required": [
+          "currency",
+          "amount_received",
+          "amount_refunded",
+          "amount_disputed_lost",
+          "amount_returned",
+          "amount_net"
+        ]
+      },
       "CreateInvoiceByOrgRequest": {
         "type": "object",
         "properties": {
@@ -1079,7 +1148,7 @@
     "/internal/payment_intents/by-org/{orgId}": {
       "get": {
         "summary": "List an org's PaymentIntents (user-less)",
-        "description": "Server-to-server. Returns every PaymentIntent mirrored for the org as a Stripe list (no limit — caller sums succeeded top-ups across the full set). DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service sumSucceededTopupsForCustomer (org<->customer is 1:1).",
+        "description": "Server-to-server. Returns every PaymentIntent mirrored for the org as a Stripe list (no limit — caller sums succeeded top-ups across the full set). DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service sumSucceededTopupsForCustomer (org<->customer is 1:1) and, via api-service GET /v1/billing/payments, the dashboard payment history. Each entry is the verbatim Stripe PaymentIntent PLUS derived `amount_refunded`, `amount_disputed_lost` and `amount_returned` (minor units): Stripe leaves a refunded payment `succeeded` at full `amount_received`, so these fields are the only way to tell a live top-up from a returned one.",
         "tags": [
           "Internal"
         ],
@@ -1105,6 +1174,42 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StripeList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/payment_summary/by-org/{orgId}": {
+      "get": {
+        "summary": "Org payment summary: paid in, given back, net (user-less)",
+        "description": "Server-to-server. Per-currency Stripe money movement for one org: `amount_received` (gross paid in — SUM(amount_received) over succeeded PaymentIntents, the same predicate billing already uses), `amount_refunded` (succeeded Refunds), `amount_disputed_lost` (Disputes we LOST), `amount_returned` (refunded + disputed_lost) and `amount_net` (received − returned). Stripe never mutates a payment when money goes back out — the PaymentIntent stays succeeded at full amount and the return lives on a separate Refund/Dispute object — so summing payments alone over-reports what the org still holds. Computed live from the DB mirrors, so partial refunds, refunds that later fail/cancel, and dispute outcomes are all correct with no reconciliation step. This is Stripe money movement ONLY, NOT a credit balance: promo grants and usage remain billing-service's business. DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). An org with no mirrored payments returns `totals: []` and `customer: null`.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Org payment summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgPaymentSummary"
                 }
               }
             }

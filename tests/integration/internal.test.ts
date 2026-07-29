@@ -199,6 +199,159 @@ describe("GET /internal/payment_intents/by-org/:orgId (user-less)", () => {
       url: `/internal/payment_intents/by-org/${TEST_ORG_ID}`,
     });
   });
+
+  it("conveys per payment how much was returned, leaving the Stripe object intact", async () => {
+    dbMock.queueSelect("payment_intents", [
+      {
+        id: "pi_refunded",
+        latestCharge: "ch_1",
+        rawJson: { id: "pi_refunded", object: "payment_intent", status: "succeeded", amount_received: 1000 },
+      },
+      {
+        id: "pi_clean",
+        latestCharge: "ch_2",
+        rawJson: { id: "pi_clean", object: "payment_intent", status: "succeeded", amount_received: 2000 },
+      },
+    ]);
+    dbMock.queueSelect("refunds", [
+      { id: "re_1", paymentIntent: "pi_refunded", charge: "ch_1", amount: 1000, status: "succeeded" },
+    ]);
+    dbMock.queueSelect("disputes", []);
+
+    const res = await request(app)
+      .get(`/internal/payment_intents/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    const [refunded, clean] = res.body.data;
+    // The original payment is untouched — Stripe's model is append-only.
+    expect(refunded).toMatchObject({
+      id: "pi_refunded",
+      status: "succeeded",
+      amount_received: 1000,
+      amount_refunded: 1000,
+      amount_disputed_lost: 0,
+      amount_returned: 1000,
+    });
+    expect(clean).toMatchObject({ id: "pi_clean", amount_returned: 0 });
+  });
+});
+
+describe("GET /internal/payment_summary/by-org/:orgId (user-less)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("reports gross, returned and net for an org with a fully refunded payment", async () => {
+    dbMock.queueSelect("payment_intents", [
+      { id: "pi_1", currency: "usd", status: "succeeded", amountReceived: 1000, latestCharge: "ch_1" },
+    ]);
+    dbMock.queueSelect("customers", [{ id: "cus_1" }]);
+    dbMock.queueSelect("refunds", [
+      { id: "re_1", paymentIntent: "pi_1", charge: "ch_1", amount: 1000, status: "succeeded" },
+    ]);
+    dbMock.queueSelect("disputes", []);
+
+    const res = await request(app)
+      .get(`/internal/payment_summary/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      object: "payment_summary",
+      org_id: TEST_ORG_ID,
+      customer: "cus_1",
+      totals: [
+        {
+          currency: "usd",
+          amount_received: 1000,
+          amount_refunded: 1000,
+          amount_disputed_lost: 0,
+          amount_returned: 1000,
+          amount_net: 0,
+        },
+      ],
+    });
+  });
+
+  it("reports zero returned and net == gross for an org with no refunds", async () => {
+    dbMock.queueSelect("payment_intents", [
+      { id: "pi_1", currency: "usd", status: "succeeded", amountReceived: 4200, latestCharge: null },
+    ]);
+    dbMock.queueSelect("customers", [{ id: "cus_1" }]);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", []);
+
+    const res = await request(app)
+      .get(`/internal/payment_summary/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body.totals).toEqual([
+      {
+        currency: "usd",
+        amount_received: 4200,
+        amount_refunded: 0,
+        amount_disputed_lost: 0,
+        amount_returned: 0,
+        amount_net: 4200,
+      },
+    ]);
+  });
+
+  it("counts a lost dispute as returned money", async () => {
+    dbMock.queueSelect("payment_intents", [
+      { id: "pi_1", currency: "usd", status: "succeeded", amountReceived: 5000, latestCharge: "ch_1" },
+    ]);
+    dbMock.queueSelect("customers", [{ id: "cus_1" }]);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", [
+      { id: "dp_1", paymentIntent: "pi_1", charge: "ch_1", amount: 5000, status: "lost" },
+    ]);
+
+    const res = await request(app)
+      .get(`/internal/payment_summary/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.body.totals[0]).toMatchObject({
+      amount_disputed_lost: 5000,
+      amount_returned: 5000,
+      amount_net: 0,
+    });
+  });
+
+  it("returns empty totals and a null customer for an org with nothing mirrored", async () => {
+    dbMock.queueSelect("payment_intents", []);
+    dbMock.queueSelect("customers", []);
+
+    const res = await request(app)
+      .get(`/internal/payment_summary/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      object: "payment_summary",
+      org_id: TEST_ORG_ID,
+      customer: null,
+      totals: [],
+    });
+  });
+
+  it("requires no end-user identity — X-API-Key and the org in the path are enough", async () => {
+    dbMock.queueSelect("payment_intents", []);
+    dbMock.queueSelect("customers", []);
+
+    const res = await request(app)
+      .get(`/internal/payment_summary/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects with 401 when X-API-Key is missing", async () => {
+    const res = await request(app).get(
+      `/internal/payment_summary/by-org/${TEST_ORG_ID}`
+    );
+    expect(res.status).toBe(401);
+  });
 });
 
 describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", () => {

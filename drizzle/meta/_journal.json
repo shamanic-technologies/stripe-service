@@ -43,6 +43,13 @@
       "when": 1778905781335,
       "tag": "0005_furry_ghost_rider",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785308660308,
+      "tag": "0006_dark_living_tribunal",
+      "breakpoints": true
     }
   ]
 }

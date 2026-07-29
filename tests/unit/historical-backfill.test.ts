@@ -43,6 +43,9 @@ function asyncIter<T>(items: T[]): AsyncIterable<T> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default the money-returned legs to empty; tests that care override them.
+  stripeMock.refunds.list.mockReturnValue(asyncIter([]));
+  stripeMock.disputes.list.mockReturnValue(asyncIter([]));
 });
 
 describe("backfillHistorical", () => {
@@ -76,6 +79,37 @@ describe("backfillHistorical", () => {
     expect(recordApiSnapshot).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "cus_2" }), "customer", "org-2");
     expect(recordApiSnapshot).toHaveBeenNthCalledWith(3, expect.objectContaining({ id: "pi_1" }), "payment_intent", "org-1");
     expect(recordApiSnapshot).toHaveBeenNthCalledWith(4, expect.objectContaining({ id: "cs_1" }), "checkout_session", "org-1");
+  });
+
+  it("reconciles refunds and disputes last, org-less, so historical returns land without a webhook", async () => {
+    stripeMock.customers.list.mockReturnValue(asyncIter([]));
+    stripeMock.paymentIntents.list.mockReturnValue(
+      asyncIter([
+        { id: "pi_1", metadata: { org_id: "org-1" }, amount: 1000, currency: "usd", status: "succeeded" },
+      ])
+    );
+    stripeMock.checkout.sessions.list.mockReturnValue(asyncIter([]));
+    stripeMock.refunds.list.mockReturnValue(
+      asyncIter([
+        { id: "re_1", payment_intent: "pi_1", amount: 1000, currency: "usd", status: "succeeded", created: 9 },
+      ])
+    );
+    stripeMock.disputes.list.mockReturnValue(
+      asyncIter([
+        { id: "dp_1", payment_intent: "pi_1", amount: 500, currency: "usd", status: "lost", created: 10 },
+      ])
+    );
+
+    await backfillHistorical();
+
+    expect(stripeMock.refunds.list).toHaveBeenCalledWith({ limit: 100 });
+    expect(stripeMock.disputes.list).toHaveBeenCalledWith({ limit: 100 });
+
+    // PaymentIntents are mirrored BEFORE the objects that attribute through them.
+    expect(recordApiSnapshot).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "pi_1" }), "payment_intent", "org-1");
+    // Refunds/disputes carry no org of their own -> null, resolved via the PI.
+    expect(recordApiSnapshot).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "re_1" }), "refund", null);
+    expect(recordApiSnapshot).toHaveBeenNthCalledWith(3, expect.objectContaining({ id: "dp_1" }), "dispute", null);
   });
 
   it("falls back to 'unknown' orgId when metadata is null or missing org_id", async () => {
