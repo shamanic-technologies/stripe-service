@@ -6,6 +6,8 @@ import {
   customers,
   checkoutSessions,
   paymentIntents,
+  refunds,
+  disputes,
 } from "../db/schema";
 import { eq, desc, sql } from "drizzle-orm";
 import { resolvePlatformKey } from "./key-client";
@@ -15,7 +17,19 @@ import { declareFeesForEvent, isFeeEvent } from "./declare-fees";
 
 type ProcessSource = "webhook" | "poll";
 type EventSource = ProcessSource | "api";
-export type ObjectKind = "customer" | "payment_intent" | "checkout_session";
+export type ObjectKind =
+  | "customer"
+  | "payment_intent"
+  | "checkout_session"
+  | "refund"
+  | "dispute";
+
+// Kinds whose silver row carries no `org_id` of its own — the org is resolved
+// by joining through the referenced PaymentIntent. `orgId` is ignored for them.
+const ORGLESS_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
+  "refund",
+  "dispute",
+]);
 
 // Lazy module-cached platform Stripe client for webhook-triggered side-effects.
 // Same pattern as the webhook secret cache in routes/webhooks.ts — the
@@ -98,6 +112,8 @@ function detectObjectKind(objectId: string): ObjectKind | null {
   if (objectId.startsWith("cus_")) return "customer";
   if (objectId.startsWith("pi_")) return "payment_intent";
   if (objectId.startsWith("cs_")) return "checkout_session";
+  if (objectId.startsWith("re_")) return "refund";
+  if (objectId.startsWith("dp_")) return "dispute";
   return null;
 }
 
@@ -120,7 +136,10 @@ export async function insertSyntheticEvent(
   const id = `api_${crypto.randomUUID()}`;
   const createdSeconds = Math.floor(Date.now() / 1000);
   const type = `api_snapshot.${kind}`;
-  const livemode = stripeObject.livemode === true;
+  // Not every Stripe object carries `livemode` (a Refund does not). Record null
+  // rather than defaulting a live object to "false".
+  const livemode =
+    typeof stripeObject.livemode === "boolean" ? stripeObject.livemode : null;
   const payload = {
     id,
     type,
@@ -133,7 +152,7 @@ export async function insertSyntheticEvent(
     id,
     type,
     apiVersion: null,
-    livemode: livemode ? "true" : "false",
+    livemode: livemode === null ? null : livemode ? "true" : "false",
     createdStripe: createdSeconds,
     objectId: stripeObject.id,
     payload: payload as unknown as Record<string, unknown>,
@@ -148,7 +167,7 @@ export async function insertSyntheticEvent(
 export async function recordApiSnapshot(
   stripeObject: { id: string; livemode?: boolean },
   kind: ObjectKind,
-  orgId: string
+  orgId: string | null
 ): Promise<void> {
   await insertSyntheticEvent(stripeObject, kind);
   await projectSilverFromBronze(stripeObject.id, orgId);
@@ -165,10 +184,18 @@ export async function recordApiSnapshot(
  */
 export async function projectSilverFromBronze(
   objectId: string,
-  orgId: string
+  orgId: string | null
 ): Promise<void> {
   const kind = detectObjectKind(objectId);
   if (!kind) return;
+
+  // Only refund/dispute silver is org-less (it joins through the PaymentIntent).
+  // For every other kind an absent org would silently mis-tenant the row.
+  if (orgId === null && !ORGLESS_KINDS.has(kind)) {
+    throw new Error(
+      `[stripe-service] projectSilverFromBronze: orgId is required for kind '${kind}' (${objectId})`
+    );
+  }
 
   const rows = await db
     .select({ payload: events.payload })
@@ -182,17 +209,29 @@ export async function projectSilverFromBronze(
   const obj = payload?.data?.object;
   if (!obj || typeof obj !== "object") return;
 
+  if (kind === "refund") {
+    await upsertRefund(obj as Stripe.Refund);
+    return;
+  }
+  if (kind === "dispute") {
+    await upsertDispute(obj as Stripe.Dispute);
+    return;
+  }
+
+  // Every remaining kind is org-tenanted; the guard at the top proved orgId is set.
+  const tenantOrgId = orgId as string;
+
   if (kind === "customer") {
     const customer = obj as Stripe.Customer | Stripe.DeletedCustomer;
     if ((customer as Stripe.DeletedCustomer).deleted) {
       await db.delete(customers).where(eq(customers.id, customer.id!));
       return;
     }
-    await upsertCustomer(customer as Stripe.Customer, orgId);
+    await upsertCustomer(customer as Stripe.Customer, tenantOrgId);
   } else if (kind === "payment_intent") {
-    await upsertPaymentIntent(obj as Stripe.PaymentIntent, orgId);
+    await upsertPaymentIntent(obj as Stripe.PaymentIntent, tenantOrgId);
   } else if (kind === "checkout_session") {
-    await upsertCheckoutSession(obj as Stripe.Checkout.Session, orgId);
+    await upsertCheckoutSession(obj as Stripe.Checkout.Session, tenantOrgId);
   }
 }
 
@@ -236,7 +275,10 @@ export async function repairAllSilverFromBronze(): Promise<void> {
 async function resolveOrgIdForRepair(
   objectId: string,
   kind: ObjectKind
-): Promise<string> {
+): Promise<string | null> {
+  // Refund/dispute silver has no org column — nothing to resolve.
+  if (ORGLESS_KINDS.has(kind)) return null;
+
   if (kind === "customer") {
     const r = await db
       .select({ orgId: customers.orgId })
@@ -468,6 +510,82 @@ export async function upsertPaymentIntent(
         clientSecret: sql`EXCLUDED.client_secret`,
         metadata: sql`EXCLUDED.metadata`,
         lastPaymentError: sql`EXCLUDED.last_payment_error`,
+        livemode: sql`EXCLUDED.livemode`,
+        createdStripe: sql`EXCLUDED.created_stripe`,
+        rawJson: sql`EXCLUDED.raw_json`,
+        syncedAt: sql`now()`,
+      },
+    });
+}
+
+/**
+ * Silver upsert for a Stripe Refund. Org-less by design: the tenant is resolved
+ * by joining `payment_intent` (or `charge`) back to the PaymentIntent mirror.
+ * `status` is stored verbatim so a refund that later fails/cancels stops
+ * counting as returned money on the very next projection — no accumulator to
+ * unwind.
+ */
+export async function upsertRefund(refund: Stripe.Refund): Promise<void> {
+  await db
+    .insert(refunds)
+    .values({
+      id: refund.id,
+      paymentIntent: extractString(refund.payment_intent),
+      charge: extractString(refund.charge),
+      amount: refund.amount,
+      currency: refund.currency,
+      status: refund.status ?? null,
+      reason: refund.reason ?? null,
+      createdStripe: refund.created,
+      rawJson: refund as unknown as Record<string, unknown>,
+      syncedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: refunds.id,
+      set: {
+        paymentIntent: sql`EXCLUDED.payment_intent`,
+        charge: sql`EXCLUDED.charge`,
+        amount: sql`EXCLUDED.amount`,
+        currency: sql`EXCLUDED.currency`,
+        status: sql`EXCLUDED.status`,
+        reason: sql`EXCLUDED.reason`,
+        createdStripe: sql`EXCLUDED.created_stripe`,
+        rawJson: sql`EXCLUDED.raw_json`,
+        syncedAt: sql`now()`,
+      },
+    });
+}
+
+/**
+ * Silver upsert for a Stripe Dispute. Org-less for the same reason as refunds.
+ * Only `status = 'lost'` is money gone; storing the live status means a dispute
+ * that flips won<->lost re-prices itself with no manual reconciliation.
+ */
+export async function upsertDispute(dispute: Stripe.Dispute): Promise<void> {
+  await db
+    .insert(disputes)
+    .values({
+      id: dispute.id,
+      paymentIntent: extractString(dispute.payment_intent),
+      charge: extractString(dispute.charge),
+      amount: dispute.amount,
+      currency: dispute.currency,
+      status: dispute.status ?? null,
+      reason: dispute.reason ?? null,
+      livemode: dispute.livemode ? "true" : "false",
+      createdStripe: dispute.created,
+      rawJson: dispute as unknown as Record<string, unknown>,
+      syncedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: disputes.id,
+      set: {
+        paymentIntent: sql`EXCLUDED.payment_intent`,
+        charge: sql`EXCLUDED.charge`,
+        amount: sql`EXCLUDED.amount`,
+        currency: sql`EXCLUDED.currency`,
+        status: sql`EXCLUDED.status`,
+        reason: sql`EXCLUDED.reason`,
         livemode: sql`EXCLUDED.livemode`,
         createdStripe: sql`EXCLUDED.created_stripe`,
         rawJson: sql`EXCLUDED.raw_json`,

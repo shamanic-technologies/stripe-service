@@ -46,6 +46,46 @@ export const StripeListSchema = z
   })
   .openapi("StripeList");
 
+// ===== Org payment summary (money in vs money given back) =====
+
+export const CurrencyTotalsSchema = z
+  .object({
+    currency: z.string().openapi({ description: "Stripe currency code, e.g. 'usd'." }),
+    amount_received: z.number().int().openapi({
+      description:
+        "Gross paid in, minor units: SUM(amount_received) over the org's `succeeded` PaymentIntents.",
+    }),
+    amount_refunded: z.number().int().openapi({
+      description:
+        "Minor units returned via Refunds in status `succeeded`. A refund that later fails or is canceled stops counting.",
+    }),
+    amount_disputed_lost: z.number().int().openapi({
+      description:
+        "Minor units lost to Disputes in status `lost`. Open and won disputes are not counted.",
+    }),
+    amount_returned: z.number().int().openapi({
+      description: "amount_refunded + amount_disputed_lost — total money given back.",
+    }),
+    amount_net: z.number().int().openapi({
+      description: "amount_received − amount_returned — money we actually still hold.",
+    }),
+  })
+  .openapi("CurrencyTotals");
+
+export const OrgPaymentSummarySchema = z
+  .object({
+    object: z.literal("payment_summary"),
+    org_id: z.string(),
+    customer: z.string().nullable().openapi({
+      description: "The org's mirrored Stripe customer id, or null when it has none.",
+    }),
+    totals: z.array(CurrencyTotalsSchema).openapi({
+      description:
+        "One entry per currency with activity. Empty when the org has no mirrored payments — never a fabricated zero row.",
+    }),
+  })
+  .openapi("OrgPaymentSummary");
+
 // ===== Customers =====
 
 export const CreateCustomerRequestSchema = z
@@ -422,7 +462,7 @@ registry.registerPath({
   path: "/internal/payment_intents/by-org/{orgId}",
   summary: "List an org's PaymentIntents (user-less)",
   description:
-    "Server-to-server. Returns every PaymentIntent mirrored for the org as a Stripe list (no limit — caller sums succeeded top-ups across the full set). DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service sumSucceededTopupsForCustomer (org<->customer is 1:1).",
+    "Server-to-server. Returns every PaymentIntent mirrored for the org as a Stripe list (no limit — caller sums succeeded top-ups across the full set). DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service sumSucceededTopupsForCustomer (org<->customer is 1:1) and, via api-service GET /v1/billing/payments, the dashboard payment history. Each entry is the verbatim Stripe PaymentIntent PLUS derived `amount_refunded`, `amount_disputed_lost` and `amount_returned` (minor units): Stripe leaves a refunded payment `succeeded` at full `amount_received`, so these fields are the only way to tell a live top-up from a returned one.",
   tags: ["Internal"],
   security: apiKeySec,
   request: {
@@ -430,6 +470,25 @@ registry.registerPath({
   },
   responses: {
     200: { description: "PaymentIntent list", content: { "application/json": { schema: StripeListSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/payment_summary/by-org/{orgId}",
+  summary: "Org payment summary: paid in, given back, net (user-less)",
+  description:
+    "Server-to-server. Per-currency Stripe money movement for one org: `amount_received` (gross paid in — SUM(amount_received) over succeeded PaymentIntents, the same predicate billing already uses), `amount_refunded` (succeeded Refunds), `amount_disputed_lost` (Disputes we LOST), `amount_returned` (refunded + disputed_lost) and `amount_net` (received − returned). Stripe never mutates a payment when money goes back out — the PaymentIntent stays succeeded at full amount and the return lives on a separate Refund/Dispute object — so summing payments alone over-reports what the org still holds. Computed live from the DB mirrors, so partial refunds, refunds that later fail/cancel, and dispute outcomes are all correct with no reconciliation step. This is Stripe money movement ONLY, NOT a credit balance: promo grants and usage remain billing-service's business. DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). An org with no mirrored payments returns `totals: []` and `customer: null`.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Org payment summary",
+      content: { "application/json": { schema: OrgPaymentSummarySchema } },
+    },
   },
 });
 

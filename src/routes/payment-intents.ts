@@ -8,8 +8,12 @@ import {
   ListPaymentIntentsQuerySchema,
 } from "../schemas";
 import { buildContext, stripeRequestOptions } from "../lib/request-context";
-import { recordApiSnapshot } from "../lib/event-processor";
+import { recordApiSnapshot, extractString } from "../lib/event-processor";
 import { isResourceMissing } from "../lib/stripe-client";
+import {
+  returnedByPaymentIntent,
+  withReturnedAmounts,
+} from "../lib/returned-amounts";
 
 const router = Router();
 
@@ -51,15 +55,25 @@ router.get(
         .where(and(eq(paymentIntents.id, id), eq(paymentIntents.orgId, orgId)))
         .limit(1);
 
+      // Same derived returned-money fields as the by-org read, so a payment
+      // never reads "plain succeeded" on one surface and "refunded" on another.
       if (row.length > 0 && row[0].rawJson) {
-        return res.json(row[0].rawJson);
+        const returned = await returnedByPaymentIntent([
+          { id: row[0].id, latestCharge: row[0].latestCharge },
+        ]);
+        return res.json(
+          withReturnedAmounts(row[0].rawJson, returned.get(row[0].id))
+        );
       }
 
       const ctx = await buildContext(req, res);
       try {
         const pi = await ctx.stripe.paymentIntents.retrieve(id);
         await recordApiSnapshot(pi, "payment_intent", orgId);
-        return res.json(pi);
+        const returned = await returnedByPaymentIntent([
+          { id: pi.id, latestCharge: extractString(pi.latest_charge) },
+        ]);
+        return res.json(withReturnedAmounts(pi, returned.get(pi.id)));
       } catch (err) {
         if (isResourceMissing(err)) {
           return res.status(404).json({ error: "PaymentIntent not found" });
@@ -103,7 +117,13 @@ router.get("/v1/payment_intents", async (req: Request, res: Response, next: Next
       .limit(effectiveLimit + 1);
 
     const hasMore = rows.length > effectiveLimit;
-    const data = rows.slice(0, effectiveLimit).map((r) => r.rawJson);
+    const page = rows.slice(0, effectiveLimit);
+    const returned = await returnedByPaymentIntent(
+      page.map((r) => ({ id: r.id, latestCharge: r.latestCharge }))
+    );
+    const data = page.map((r) =>
+      withReturnedAmounts(r.rawJson, returned.get(r.id))
+    );
 
     return res.json({
       object: "list",

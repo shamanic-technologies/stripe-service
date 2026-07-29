@@ -87,6 +87,78 @@ export const paymentIntents = pgTable(
     index("idx_payment_intents_org_id").on(table.orgId),
     index("idx_payment_intents_customer").on(table.customer),
     index("idx_payment_intents_status").on(table.status),
+    // Refunds/disputes reference the charge when Stripe leaves their
+    // `payment_intent` null; this index backs that fallback attribution.
+    index("idx_payment_intents_latest_charge").on(table.latestCharge),
+  ]
+);
+
+// ===== Money-returned mirrors =====
+// Stripe never mutates the original payment when money goes back out: the
+// PaymentIntent stays `succeeded` for its full `amount_received` forever, and
+// the return lives on a SEPARATE object (a Refund, or a lost Dispute). These
+// two tables mirror those objects so "how much of this payment came back" is a
+// QUERY over current object state, never a hand-maintained accumulator.
+//
+// Deliberately NO `org_id` column: the org lives on the referenced
+// PaymentIntent row and is resolved by joining through it. One home for the
+// mapping means these rows can never drift out of sync with it, and a refund
+// whose PaymentIntent is mirrored later starts attributing automatically.
+
+// Stripe Refund (re_...). Money returned to the customer on our initiative.
+// `status` is the source of truth for whether the money actually left:
+// only `succeeded` counts. A refund that later fails or is canceled flips its
+// own status, so it drops out of every sum by construction.
+export const refunds = pgTable(
+  "refunds",
+  {
+    id: text("id").primaryKey(), // re_...
+    paymentIntent: text("payment_intent"),
+    charge: text("charge"),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    currency: text("currency").notNull(),
+    // pending | requires_action | succeeded | failed | canceled
+    status: text("status"),
+    reason: text("reason"),
+    // NB: no `livemode` — the Stripe Refund object does not carry one, and
+    // inventing a value would be a lie. Use the referenced PaymentIntent's.
+    createdStripe: bigint("created_stripe", { mode: "number" }),
+    rawJson: jsonb("raw_json"),
+    syncedAt: timestamp("synced_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_refunds_payment_intent").on(table.paymentIntent),
+    index("idx_refunds_charge").on(table.charge),
+    index("idx_refunds_status").on(table.status),
+  ]
+);
+
+// Stripe Dispute (dp_...). Money pulled back by the cardholder's bank. Only a
+// dispute we ultimately LOSE is money gone (same as a refund); `won` and the
+// `*_closed` outcomes leave the funds with us. Again the object's own `status`
+// decides, so a dispute that flips won->lost (or the reverse) re-projects and
+// every sum follows automatically.
+export const disputes = pgTable(
+  "disputes",
+  {
+    id: text("id").primaryKey(), // dp_...
+    paymentIntent: text("payment_intent"),
+    charge: text("charge"),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    currency: text("currency").notNull(),
+    // warning_needs_response | warning_under_review | warning_closed |
+    // needs_response | under_review | won | lost
+    status: text("status"),
+    reason: text("reason"),
+    livemode: text("livemode"),
+    createdStripe: bigint("created_stripe", { mode: "number" }),
+    rawJson: jsonb("raw_json"),
+    syncedAt: timestamp("synced_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_disputes_payment_intent").on(table.paymentIntent),
+    index("idx_disputes_charge").on(table.charge),
+    index("idx_disputes_status").on(table.status),
   ]
 );
 
