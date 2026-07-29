@@ -9,6 +9,12 @@ import {
   extractString,
 } from "../lib/event-processor";
 import { isResourceMissing } from "../lib/stripe-client";
+import {
+  returnedByPaymentIntent,
+  summarizeByCurrency,
+  withReturnedAmounts,
+  type SummaryPayment,
+} from "../lib/returned-amounts";
 import { CreateInvoiceByOrgRequestSchema } from "../schemas";
 
 const router = Router();
@@ -141,7 +147,15 @@ router.get(
  * no Stripe call, no limit (the caller sums succeeded top-ups across the full
  * set). Mirrors `GET /v1/payment_intents` but org-keyed off the path and
  * user-less. Backs billing-service `sumSucceededTopupsForCustomer` (org<->
- * customer is 1:1, so the org filter is the customer filter).
+ * customer is 1:1, so the org filter is the customer filter) AND, via
+ * api-service `GET /v1/billing/payments`, the dashboard's payment history.
+ *
+ * Each entry carries the verbatim Stripe PaymentIntent PLUS the derived
+ * `amount_refunded` / `amount_disputed_lost` / `amount_returned` fields, so the
+ * same read that shows a payment also says how much of it came back. Stripe
+ * leaves the PaymentIntent untouched on a refund (it stays `succeeded` at full
+ * `amount_received`), so without these a fully refunded top-up is
+ * indistinguishable from a live one.
  */
 router.get(
   "/internal/payment_intents/by-org/:orgId",
@@ -156,11 +170,84 @@ router.get(
         .where(eq(paymentIntents.orgId, orgId))
         .orderBy(desc(paymentIntents.syncedAt));
 
+      const returned = await returnedByPaymentIntent(
+        rows.map((r) => ({ id: r.id, latestCharge: r.latestCharge }))
+      );
+
       return res.json({
         object: "list",
-        data: rows.map((r) => r.rawJson),
+        data: rows.map((r) => withReturnedAmounts(r.rawJson, returned.get(r.id))),
         has_more: false,
         url: `/internal/payment_intents/by-org/${orgId}`,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+/**
+ * GET /internal/payment_summary/by-org/:orgId
+ *
+ * What the org paid us, what we gave back, and what is therefore still real
+ * money — per currency, from the DB mirrors only (no Stripe call, no end-user
+ * identity). Backs billing-service's balance path, where the caller is a
+ * machine (affordability gate, dunning scheduler) with no end user.
+ *
+ * Stripe never mutates a payment when money is returned: the PaymentIntent
+ * stays `succeeded` for its full `amount_received` and the return lives on a
+ * separate Refund or Dispute object. Summing payments alone therefore
+ * over-reports what an org actually holds by exactly the amount refunded.
+ *
+ * `amount_received` uses the same predicate billing already applies to sum
+ * top-ups, so an org with no refunds reports `amount_net === amount_received`.
+ * `amount_returned` = succeeded Refunds + LOST Disputes, both read live from
+ * the mirrors, so partial refunds, reverted refunds and dispute outcomes are
+ * correct without any reconciliation step.
+ *
+ * This is Stripe money movement ONLY — it is NOT a credit balance. Promo
+ * grants and usage stay billing-service's business; this endpoint has no
+ * knowledge of them.
+ *
+ * An org with no mirrored payments returns `totals: []` (and `customer: null`
+ * when it has no Stripe customer) rather than a fabricated zero row.
+ */
+router.get(
+  "/internal/payment_summary/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+
+      const [piRows, customerRow] = await Promise.all([
+        db
+          .select({
+            id: paymentIntents.id,
+            currency: paymentIntents.currency,
+            status: paymentIntents.status,
+            amountReceived: paymentIntents.amountReceived,
+            latestCharge: paymentIntents.latestCharge,
+          })
+          .from(paymentIntents)
+          .where(eq(paymentIntents.orgId, orgId)),
+        db
+          .select({ id: customers.id })
+          .from(customers)
+          .where(eq(customers.orgId, orgId))
+          .orderBy(desc(customers.syncedAt))
+          .limit(1),
+      ]);
+
+      const payments: SummaryPayment[] = piRows;
+      const returned = await returnedByPaymentIntent(payments);
+      const customer = customerRow.length > 0 ? customerRow[0].id : null;
+      if (customer) res.locals.stripeObjectId = customer;
+
+      return res.json({
+        object: "payment_summary",
+        org_id: orgId,
+        customer,
+        totals: summarizeByCurrency(payments, returned),
       });
     } catch (err) {
       return next(err);

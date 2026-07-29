@@ -173,3 +173,104 @@ describe("projectSilverFromBronze", () => {
     expect(silverRow).toBeUndefined();
   });
 });
+
+describe("projection — refund / dispute silver", () => {
+  function bronze(object: Record<string, unknown>) {
+    return [{ payload: { data: { object } } }];
+  }
+
+  it("projects a Refund into refunds silver with its live status", async () => {
+    dbMock.queueSelect(
+      "events",
+      bronze({
+        id: "re_1",
+        object: "refund",
+        payment_intent: "pi_1",
+        charge: "ch_1",
+        amount: 1000,
+        currency: "usd",
+        status: "succeeded",
+        reason: "requested_by_customer",
+        created: 1779927900,
+      })
+    );
+
+    // Refund silver is org-less on purpose — the org is joined via the PI.
+    await projectSilverFromBronze("re_1", null);
+
+    const row = dbMock.lastInsertValues("refunds") as Record<string, unknown>;
+    expect(row).toMatchObject({
+      id: "re_1",
+      paymentIntent: "pi_1",
+      charge: "ch_1",
+      amount: 1000,
+      currency: "usd",
+      status: "succeeded",
+    });
+  });
+
+  it("re-projects a reverted refund to its new status so it stops counting", async () => {
+    dbMock.queueSelect(
+      "events",
+      bronze({
+        id: "re_1",
+        object: "refund",
+        payment_intent: "pi_1",
+        charge: "ch_1",
+        amount: 1000,
+        currency: "usd",
+        status: "failed",
+        created: 1779928000,
+      })
+    );
+
+    await projectSilverFromBronze("re_1", null);
+
+    const row = dbMock.lastInsertValues("refunds") as Record<string, unknown>;
+    expect(row.status).toBe("failed");
+  });
+
+  it("projects a Dispute into disputes silver", async () => {
+    dbMock.queueSelect(
+      "events",
+      bronze({
+        id: "dp_1",
+        object: "dispute",
+        payment_intent: "pi_1",
+        charge: "ch_1",
+        amount: 1000,
+        currency: "usd",
+        status: "lost",
+        reason: "fraudulent",
+        livemode: true,
+        created: 1779927900,
+      })
+    );
+
+    await projectSilverFromBronze("dp_1", null);
+
+    const row = dbMock.lastInsertValues("disputes") as Record<string, unknown>;
+    expect(row).toMatchObject({
+      id: "dp_1",
+      paymentIntent: "pi_1",
+      amount: 1000,
+      status: "lost",
+      livemode: "true",
+    });
+  });
+
+  it("never writes an org-tenanted silver row without an org (fails loud)", async () => {
+    await expect(projectSilverFromBronze("pi_1", null)).rejects.toThrow(
+      /orgId is required/
+    );
+  });
+
+  it("records a Refund's api_snapshot livemode as null instead of inventing 'false'", async () => {
+    // Stripe's Refund object carries no `livemode`; defaulting it would lie
+    // about a live refund.
+    await insertSyntheticEvent({ id: "re_1" }, "refund");
+
+    const row = dbMock.lastInsertValues("events") as Record<string, unknown>;
+    expect(row.livemode).toBeNull();
+  });
+});
