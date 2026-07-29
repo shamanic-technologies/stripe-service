@@ -285,13 +285,47 @@ export const ListPaymentMethodsQuerySchema = z
 const PublicStatsBucketSchema = z
   .object({
     period: z.string().openapi({ description: "ISO date (YYYY-MM-DD) at start of bucket" }),
-    paid_cents: z.string(),
+    paid_cents: z.string().openapi({
+      description:
+        "GROSS charged in this period, minor units. Unchanged meaning — report this as revenue.",
+    }),
+    refunded_cents: z.string().openapi({
+      description:
+        "Refunds in status `succeeded` that HAPPENED in this period. A refund that later fails or is canceled stops counting.",
+    }),
+    disputed_lost_cents: z.string().openapi({
+      description:
+        "Disputes in status `lost` that HAPPENED in this period. Open and won disputes are not counted.",
+    }),
+    returned_cents: z.string().openapi({
+      description: "refunded_cents + disputed_lost_cents — money given back in this period.",
+    }),
+    net_cents: z.string().openapi({
+      description:
+        "paid_cents − returned_cents — report this as credited. NEGATIVE when a period's refunds exceed its payments: a return is attributed to the period it happened in, never back-dated to the payment it reverses, so an already-reported bucket is never rewritten.",
+    }),
   })
   .openapi("PublicStatsBucket");
 
 export const PublicStatsBillingResponseSchema = z
   .object({
-    total_paid_cents: z.string(),
+    total_paid_cents: z.string().openapi({
+      description:
+        "GROSS paid in across all orgs, minor units: SUM(amount_received) over `succeeded` PaymentIntents. Unchanged meaning — report this as revenue.",
+    }),
+    total_refunded_cents: z.string().openapi({
+      description: "Minor units returned via Refunds in status `succeeded`, across all orgs.",
+    }),
+    total_disputed_lost_cents: z.string().openapi({
+      description: "Minor units lost to Disputes in status `lost`, across all orgs.",
+    }),
+    total_returned_cents: z.string().openapi({
+      description: "total_refunded_cents + total_disputed_lost_cents — total money given back.",
+    }),
+    total_net_cents: z.string().openapi({
+      description:
+        "total_paid_cents − total_returned_cents — report this as credited. Equals the sum of every org's `amount_net` from GET /internal/payment_summary/by-org/{orgId}: both count only settled Refunds and LOST Disputes attributed to a mirrored PaymentIntent.",
+    }),
     accounts_with_payment_method: z.number().int().nonnegative(),
     monthly_growth: z.array(PublicStatsBucketSchema),
     weekly_growth: z.array(PublicStatsBucketSchema),
@@ -672,7 +706,7 @@ registry.registerPath({
   path: "/public/stats/billing",
   summary: "Public aggregate billing stats (no auth, cross-org)",
   description:
-    "Aggregate Stripe-side payment stats across all orgs. Public endpoint — no X-API-Key, no identity headers.",
+    "Aggregate Stripe-side money movement across all orgs. Public endpoint — no X-API-Key, no identity headers. GROSS (`*paid_cents`) and NET (`*net_cents`) are both published and must not be conflated: report gross as revenue and net as credited. Net subtracts settled Refunds and LOST Disputes, the same rule the per-payment and per-org reads apply, so this total equals the sum of the per-org `amount_net`. Buckets carry the same distinction; a return is attributed to the period it happened in.",
   tags: ["Public"],
   responses: {
     200: {
