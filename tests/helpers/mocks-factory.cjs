@@ -2,7 +2,7 @@
 
 function makeDbMock(vi) {
   const queues = new Map();
-  const captured = { values: new Map() };
+  const captured = { values: new Map(), wheres: new Map() };
   const key = (op, t) => `${op}:${t ?? "*"}`;
 
   function nextResult(op, t) {
@@ -43,7 +43,13 @@ function makeDbMock(vi) {
       from: (table) => makeChain(op, tableName(table) ?? t),
       innerJoin: () => chain,
       leftJoin: () => chain,
-      where: () => chain,
+      where: (cond) => {
+        const k = key(op, t);
+        const arr = captured.wheres.get(k) ?? [];
+        arr.push(cond);
+        captured.wheres.set(k, arr);
+        return chain;
+      },
       groupBy: () => chain,
       orderBy: () => chain,
       limit: () => chain,
@@ -77,8 +83,13 @@ function makeDbMock(vi) {
       const arr = captured.values.get(key("insert", table)) ?? [];
       return arr[arr.length - 1];
     },
+    lastSelectWhere: (table) => {
+      const arr = captured.wheres.get(key("select", table)) ?? [];
+      return arr[arr.length - 1];
+    },
     clearCaptured: () => {
       captured.values.clear();
+      captured.wheres.clear();
     },
   };
 }
