@@ -433,11 +433,35 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
       expect.objectContaining({ idempotencyKey: "topup_123:pay" })
     );
     // Provenance carried onto the PaymentIntent consumers actually read, then
-    // mirrored — Stripe copies neither the metadata nor the invoice link.
+    // mirrored — Stripe copies neither the metadata nor the invoice link, and
+    // labels the PaymentIntent "Payment for Invoice" unless we describe it.
     expect(stripeMock.paymentIntents.update).toHaveBeenCalledWith(
       "pi_inv",
-      { metadata: { org_id: TEST_ORG_ID, invoice_id: "in_1" } },
-      expect.objectContaining({ idempotencyKey: "topup_123:pi-metadata" })
+      {
+        metadata: { org_id: TEST_ORG_ID, invoice_id: "in_1" },
+        description: "Auto top-up",
+      },
+      expect.objectContaining({ idempotencyKey: "topup_123:pi-provenance" })
+    );
+  });
+
+  it("describes the PaymentIntent in the caller's words, not Stripe's 'Payment for Invoice'", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    queueHappyStripe();
+
+    const res = await request(app)
+      .post(`/internal/invoices/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_desc" })
+      .send({ amount: 5000, currency: "usd", description: "Distribute credit top-up" });
+
+    expect(res.status).toBe(200);
+    // The customer-facing billing history renders PaymentIntents, so the
+    // description has to reach the PAYMENT — describing only the invoice
+    // leaves Stripe's generic fallback on the object consumers read.
+    expect(stripeMock.paymentIntents.update).toHaveBeenCalledWith(
+      "pi_inv",
+      expect.objectContaining({ description: "Distribute credit top-up" }),
+      expect.anything()
     );
   });
 
@@ -473,8 +497,9 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
           org_id: TEST_ORG_ID,
           invoice_id: "in_1",
         },
+        description: "Month-end settlement",
       },
-      expect.objectContaining({ idempotencyKey: "topup_prov:pi-metadata" })
+      expect.objectContaining({ idempotencyKey: "topup_prov:pi-provenance" })
     );
   });
 
@@ -494,6 +519,7 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
       object: "payment_intent",
       status: "succeeded",
       amount_received: 5000,
+      description: "Auto top-up",
       metadata: { type: "auto_reload", org_id: TEST_ORG_ID, invoice_id: "in_1" },
     });
 
@@ -518,6 +544,9 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
       org_id: TEST_ORG_ID,
       invoice_id: "in_1",
     });
+    // Same for the description: consumers render the MIRROR, so a description
+    // that only existed on the live Stripe object would never be read.
+    expect(event.payload.data.object.description).toBe("Auto top-up");
   });
 
   it("forwards an explicit payment_method to the invoice default + the pay call", async () => {

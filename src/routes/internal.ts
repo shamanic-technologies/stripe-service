@@ -323,6 +323,9 @@ router.get(
  * Provenance: caller `metadata` is stamped on the invoice AND, after payment,
  * on the resulting PaymentIntent (plus `invoice_id`). Stripe copies neither
  * direction itself, and consumers read payments — see `lib/invoice-provenance`.
+ * The caller's `description` rides along on that same PaymentIntent update, so
+ * the payment reads as the caller wrote it instead of Stripe's generic
+ * "Payment for Invoice" fallback in a customer-facing billing history.
  *
  * Fail loud: a customer-less org -> 404 (no Stripe call); any Stripe error
  * (e.g. card declined off_session) propagates -> non-2xx -> caller retries.
@@ -450,10 +453,24 @@ router.post(
           `[stripe-service] Paid invoice ${paid.id} references no PaymentIntent — cannot attach provenance`
         );
       }
+      //    The SAME update also carries the caller's `description` onto the
+      //    PaymentIntent. Stripe does not copy that either: it stamps its own
+      //    generic fallback ("Payment for Invoice") on the PaymentIntent an
+      //    invoice creates, and that string — not the invoice's description —
+      //    is what a customer reads in a billing history rendered from
+      //    payments. The caller already wrote a human description for the
+      //    invoice + its line item; this is the same string, on the object
+      //    consumers actually read.
       const pi = await stripe.paymentIntents.update(
         piId,
-        { metadata: paymentIntentProvenance(invoiceMetadata, invoiceId) },
-        { idempotencyKey: `${idempotencyKey}:pi-metadata` }
+        {
+          metadata: paymentIntentProvenance(invoiceMetadata, invoiceId),
+          description,
+        },
+        // Distinct from the historical `:pi-metadata` key on purpose — Stripe
+        // rejects a replayed idempotency key whose params changed, and this
+        // call's params now include `description`.
+        { idempotencyKey: `${idempotencyKey}:pi-provenance` }
       );
       await recordApiSnapshot(pi, "payment_intent", orgId);
 
