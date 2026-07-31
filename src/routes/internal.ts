@@ -3,11 +3,7 @@ import { eq, desc } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "../db";
 import { customers, paymentIntents } from "../db/schema";
-import {
-  getPlatformStripe,
-  recordApiSnapshot,
-  extractString,
-} from "../lib/event-processor";
+import { getPlatformStripe, recordApiSnapshot } from "../lib/event-processor";
 import { isResourceMissing } from "../lib/stripe-client";
 import {
   returnedByPaymentIntent,
@@ -15,6 +11,10 @@ import {
   withReturnedAmounts,
   type SummaryPayment,
 } from "../lib/returned-amounts";
+import {
+  paymentIntentIdFromInvoice,
+  paymentIntentProvenance,
+} from "../lib/invoice-provenance";
 import { CreateInvoiceByOrgRequestSchema } from "../schemas";
 
 const router = Router();
@@ -320,9 +320,13 @@ router.get(
  * attempt crashed. Missing header -> 400 (we cannot promise no-double-charge
  * without a stable caller key).
  *
+ * Provenance: caller `metadata` is stamped on the invoice AND, after payment,
+ * on the resulting PaymentIntent (plus `invoice_id`). Stripe copies neither
+ * direction itself, and consumers read payments — see `lib/invoice-provenance`.
+ *
  * Fail loud: a customer-less org -> 404 (no Stripe call); any Stripe error
  * (e.g. card declined off_session) propagates -> non-2xx -> caller retries.
- * Returns the paid Stripe Invoice object verbatim.
+ * Returns the paid Stripe Invoice object verbatim (with `payments` expanded).
  */
 router.post(
   "/internal/invoices/by-org/:orgId",
@@ -407,37 +411,51 @@ router.post(
         { idempotencyKey: `${idempotencyKey}:finalize` }
       );
 
-      // 4. Pay off-session against the customer's stored card.
+      // 4. Pay off-session against the customer's stored card. `expand:
+      //    ["payments"]` because the paid invoice's `payments` list is the ONLY
+      //    reference to the PaymentIntent Stripe creates for it — on this API
+      //    version the PaymentIntent has no `invoice` field at all.
       const paid = await stripe.invoices.pay(
         invoiceId,
-        { off_session: true, ...(payment_method ? { payment_method } : {}) },
+        {
+          off_session: true,
+          expand: ["payments"],
+          ...(payment_method ? { payment_method } : {}),
+        },
         { idempotencyKey: `${idempotencyKey}:pay` }
       );
 
       res.locals.stripeObjectId = paid.id;
 
-      // Best-effort mirror freshness: snapshot the invoice's PaymentIntent into
-      // silver NOW so billing-service's payment_intents sum reflects this top-up
-      // immediately (otherwise it may re-trigger another auto-topup before the
-      // webhook lands). The charge already SUCCEEDED — a snapshot failure must
-      // NOT fail the response (that would misreport a real charge as failed).
-      // The webhook path independently mirrors the PI, and the idempotency key
-      // above prevents any double-charge on a caller retry regardless.
-      try {
-        const piId = extractString(
-          (paid as unknown as { payment_intent?: string | { id: string } })
-            .payment_intent
-        );
-        if (piId) {
-          const pi = await stripe.paymentIntents.retrieve(piId);
-          await recordApiSnapshot(pi, "payment_intent", orgId);
-        }
-      } catch (snapErr) {
-        console.warn(
-          `[stripe-service] Post-charge PI snapshot failed for invoice ${paid.id} (webhook will reconcile):`,
-          snapErr
+      // 5. Carry the caller's provenance onto the PaymentIntent, then mirror it.
+      //
+      //    Stripe does not copy invoice metadata to the PaymentIntent, so
+      //    without this the charge lands as an anonymous `succeeded` payment and
+      //    a consumer summing PaymentIntents (billing-service) cannot tell an
+      //    automatic platform-initiated charge from a customer-initiated
+      //    top-up — the property the pre-invoice bare-PaymentIntent path had.
+      //
+      //    Fail loud on both steps. The metadata update is the caller's own
+      //    data, and the snapshot is the ONLY path that carries it into silver:
+      //    Stripe emits no event for a metadata update, so a swallowed failure
+      //    here would silently drop the provenance for good (the
+      //    `payment_intent.succeeded` webhook already landed, carrying the empty
+      //    metadata the PI was born with). Failing is safe precisely because
+      //    every Stripe step above is idempotency-keyed: the caller retries the
+      //    same logical top-up, each Stripe call replays from its idempotency
+      //    record, and we reach this step again with no double charge.
+      const piId = paymentIntentIdFromInvoice(paid);
+      if (!piId) {
+        throw new Error(
+          `[stripe-service] Paid invoice ${paid.id} references no PaymentIntent — cannot attach provenance`
         );
       }
+      const pi = await stripe.paymentIntents.update(
+        piId,
+        { metadata: paymentIntentProvenance(invoiceMetadata, invoiceId) },
+        { idempotencyKey: `${idempotencyKey}:pi-metadata` }
+      );
+      await recordApiSnapshot(pi, "payment_intent", orgId);
 
       return res.json(paid);
     } catch (err) {
