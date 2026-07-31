@@ -322,7 +322,7 @@
           "description": {
             "type": "string",
             "minLength": 1,
-            "description": "Human-readable description — used for both the invoice line item and the invoice."
+            "description": "Human-readable description — used for the invoice, its line item, AND the resulting PaymentIntent (which Stripe would otherwise label with its generic 'Payment for Invoice' fallback)."
           },
           "payment_method": {
             "type": "string",

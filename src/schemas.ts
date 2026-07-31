@@ -148,7 +148,7 @@ export const CreateInvoiceByOrgRequestSchema = z
     description: z
       .string()
       .min(1)
-      .openapi({ description: "Human-readable description — used for both the invoice line item and the invoice." }),
+      .openapi({ description: "Human-readable description — used for the invoice, its line item, AND the resulting PaymentIntent (which Stripe would otherwise label with its generic 'Payment for Invoice' fallback)." }),
     payment_method: z
       .string()
       .optional()
