@@ -1,13 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TEST_ORG_ID } from "../helpers/mocks";
 
-const { dbMock } = vi.hoisted(() => {
+const { dbMock, stripeMock } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { makeDbMock } = require("../helpers/mocks-factory.cjs");
-  return { dbMock: makeDbMock(vi) };
+  const { makeDbMock, makeStripeMock } = require("../helpers/mocks-factory.cjs");
+  return { dbMock: makeDbMock(vi), stripeMock: makeStripeMock(vi) };
 });
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
+vi.mock("../../src/lib/key-client", () => ({
+  resolvePlatformKey: vi.fn(async () => ({ provider: "stripe", key: "sk_test_fake" })),
+}));
+vi.mock("../../src/lib/stripe-client", () => ({
+  makeStripeClient: vi.fn(() => stripeMock),
+}));
 
 import {
   processEvent,
@@ -15,9 +21,20 @@ import {
   projectSilverFromBronze,
 } from "../../src/lib/event-processor";
 
+function asyncIter<T>(items: T[]): AsyncIterable<T> {
+  return {
+    [Symbol.asyncIterator]: async function* () {
+      for (const it of items) yield it;
+    },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   dbMock.clearCaptured();
+  // The charge-refund side-effect lists refunds off Stripe; default it empty so
+  // only the tests that care about it exercise it.
+  stripeMock.refunds.list.mockReturnValue(asyncIter([]));
 });
 
 describe("projection — out-of-order webhook race regression", () => {
@@ -209,6 +226,122 @@ describe("projection — refund / dispute silver", () => {
     });
   });
 
+  // #100: a refund of a Link (or any non-card) payment carries a `pyr_` id, not
+  // `re_`. Routing on the id prefix dropped every one of them on the floor while
+  // card refunds mirrored fine, so `amount_returned` read 0 for money we had
+  // already given back. The payload's own `object` field is the routing key.
+  it("projects a Link refund (pyr_ id) exactly like a card refund", async () => {
+    dbMock.queueSelect(
+      "events",
+      bronze({
+        id: "pyr_1Tz5CKEnlXMXdaZa0y7zRILl",
+        object: "refund",
+        payment_intent: "pi_3Tz4VSEnlXMXdaZa08Ya69pF",
+        charge: "py_3Tz4VSEnlXMXdaZa0mIweqHE",
+        amount: 4039,
+        currency: "usd",
+        status: "succeeded",
+        reason: "requested_by_customer",
+        created: 1785461126,
+      })
+    );
+
+    await projectSilverFromBronze("pyr_1Tz5CKEnlXMXdaZa0y7zRILl", null);
+
+    const row = dbMock.lastInsertValues("refunds") as Record<string, unknown>;
+    expect(row).toMatchObject({
+      id: "pyr_1Tz5CKEnlXMXdaZa0y7zRILl",
+      paymentIntent: "pi_3Tz4VSEnlXMXdaZa08Ya69pF",
+      charge: "py_3Tz4VSEnlXMXdaZa0mIweqHE",
+      amount: 4039,
+      currency: "usd",
+      status: "succeeded",
+    });
+  });
+
+  it("projects a Link refund arriving as a full charge.refund.updated webhook", async () => {
+    dbMock.queueInsert("events", [{ id: "evt_1Tz5CUEnlXMXdaZaId9H4BRL" }]);
+    const refund = {
+      id: "pyr_1Tz5CKEnlXMXdaZa0y7zRILl",
+      object: "refund",
+      payment_intent: "pi_3Tz4VSEnlXMXdaZa08Ya69pF",
+      charge: "py_3Tz4VSEnlXMXdaZa0mIweqHE",
+      amount: 4039,
+      currency: "usd",
+      status: "succeeded",
+      created: 1785461126,
+    };
+    dbMock.queueSelect("events", bronze(refund));
+
+    await processEvent(
+      {
+        id: "evt_1Tz5CUEnlXMXdaZaId9H4BRL",
+        type: "charge.refund.updated",
+        api_version: "2024-12-18",
+        livemode: true,
+        created: 1785461126,
+        data: { object: refund },
+      } as never,
+      "webhook"
+    );
+
+    const row = dbMock.lastInsertValues("refunds") as Record<string, unknown>;
+    expect(row).toMatchObject({ id: "pyr_1Tz5CKEnlXMXdaZa0y7zRILl", amount: 4039 });
+  });
+
+  it("routes on the payload's `object` field, not the id prefix", async () => {
+    // Same object, an id prefix no branch has ever heard of. Stripe telling us
+    // it is a refund has to be enough — a new payment rail must not be able to
+    // reintroduce #100.
+    dbMock.queueSelect(
+      "events",
+      bronze({
+        id: "somenewprefix_9",
+        object: "refund",
+        payment_intent: "pi_1",
+        charge: "ch_1",
+        amount: 250,
+        currency: "usd",
+        status: "succeeded",
+        created: 1785461126,
+      })
+    );
+
+    await projectSilverFromBronze("somenewprefix_9", null);
+
+    const row = dbMock.lastInsertValues("refunds") as Record<string, unknown>;
+    expect(row).toMatchObject({ id: "somenewprefix_9", amount: 250 });
+  });
+
+  it("logs loudly instead of silently dropping an object type it cannot route", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    dbMock.queueSelect(
+      "events",
+      bronze({ id: "wat_1", object: "totally_new_object", created: 1785461126 })
+    );
+
+    await projectSilverFromBronze("wat_1", null);
+
+    expect(dbMock.lastInsertValues("refunds")).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("totally_new_object")
+    );
+    warn.mockRestore();
+  });
+
+  it("stays quiet for object types we deliberately do not mirror", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    dbMock.queueSelect(
+      "events",
+      bronze({ id: "ch_1", object: "charge", created: 1785461126 })
+    );
+
+    await projectSilverFromBronze("ch_1", null);
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it("re-projects a reverted refund to its new status so it stops counting", async () => {
     dbMock.queueSelect(
       "events",
@@ -260,6 +393,18 @@ describe("projection — refund / dispute silver", () => {
   });
 
   it("never writes an org-tenanted silver row without an org (fails loud)", async () => {
+    dbMock.queueSelect(
+      "events",
+      bronze({
+        id: "pi_1",
+        object: "payment_intent",
+        amount: 1000,
+        currency: "usd",
+        status: "succeeded",
+        created: 1779927900,
+      })
+    );
+
     await expect(projectSilverFromBronze("pi_1", null)).rejects.toThrow(
       /orgId is required/
     );
