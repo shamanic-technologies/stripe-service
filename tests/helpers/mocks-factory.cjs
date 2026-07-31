@@ -105,7 +105,12 @@ function makeStripeMock(vi) {
       listBalanceTransactions: vi.fn(),
     },
     checkout: { sessions: { create: vi.fn(), retrieve: vi.fn(), list: vi.fn() } },
-    paymentIntents: { create: vi.fn(), retrieve: vi.fn(), list: vi.fn() },
+    paymentIntents: {
+      create: vi.fn(),
+      retrieve: vi.fn(),
+      update: vi.fn(),
+      list: vi.fn(),
+    },
     refunds: { list: vi.fn() },
     disputes: { list: vi.fn() },
     invoices: {

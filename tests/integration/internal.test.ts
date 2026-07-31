@@ -362,6 +362,7 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
     stripeMock.invoices.pay.mockReset();
     stripeMock.invoiceItems.create.mockReset();
     stripeMock.paymentIntents.retrieve.mockReset();
+    stripeMock.paymentIntents.update.mockReset();
   });
 
   function queueHappyStripe() {
@@ -374,11 +375,15 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
       status: "paid",
       amount_paid: 5000,
       currency: "usd",
-      payment_intent: "pi_inv",
+      // The ONLY PaymentIntent reference Stripe exposes on this API version.
+      payments: {
+        object: "list",
+        data: [{ id: "inpay_1", payment: { type: "payment_intent", payment_intent: "pi_inv" } }],
+      },
       hosted_invoice_url: "https://pay.stripe.com/i/in_1",
       invoice_pdf: "https://pay.stripe.com/i/in_1.pdf",
     });
-    stripeMock.paymentIntents.retrieve.mockResolvedValueOnce({
+    stripeMock.paymentIntents.update.mockResolvedValueOnce({
       id: "pi_inv",
       object: "payment_intent",
       status: "succeeded",
@@ -424,11 +429,95 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
     );
     expect(stripeMock.invoices.pay).toHaveBeenCalledWith(
       "in_1",
-      { off_session: true },
+      { off_session: true, expand: ["payments"] },
       expect.objectContaining({ idempotencyKey: "topup_123:pay" })
     );
-    // Mirror-freshness snapshot of the invoice's PaymentIntent.
-    expect(stripeMock.paymentIntents.retrieve).toHaveBeenCalledWith("pi_inv");
+    // Provenance carried onto the PaymentIntent consumers actually read, then
+    // mirrored — Stripe copies neither the metadata nor the invoice link.
+    expect(stripeMock.paymentIntents.update).toHaveBeenCalledWith(
+      "pi_inv",
+      { metadata: { org_id: TEST_ORG_ID, invoice_id: "in_1" } },
+      expect.objectContaining({ idempotencyKey: "topup_123:pi-metadata" })
+    );
+  });
+
+  it("stamps the caller's own metadata onto the PaymentIntent, not just the invoice", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    queueHappyStripe();
+
+    const res = await request(app)
+      .post(`/internal/invoices/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_prov" })
+      .send({
+        amount: 5000,
+        currency: "usd",
+        description: "Month-end settlement",
+        metadata: { reason: "month_end_sweep", month: "2026-07" },
+      });
+
+    expect(res.status).toBe(200);
+    // Invoice keeps carrying it (unchanged behaviour)...
+    expect(stripeMock.invoices.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: { reason: "month_end_sweep", month: "2026-07", org_id: TEST_ORG_ID },
+      }),
+      expect.anything()
+    );
+    // ...and it now reaches the PaymentIntent too, with the invoice back-reference.
+    expect(stripeMock.paymentIntents.update).toHaveBeenCalledWith(
+      "pi_inv",
+      {
+        metadata: {
+          reason: "month_end_sweep",
+          month: "2026-07",
+          org_id: TEST_ORG_ID,
+          invoice_id: "in_1",
+        },
+      },
+      expect.objectContaining({ idempotencyKey: "topup_prov:pi-metadata" })
+    );
+  });
+
+  it("mirrors the stamped PaymentIntent (provenance reaches silver, not just Stripe)", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_1", status: "draft" });
+    stripeMock.invoiceItems.create.mockResolvedValueOnce({ id: "ii_1" });
+    stripeMock.invoices.finalizeInvoice.mockResolvedValueOnce({ id: "in_1", status: "open" });
+    stripeMock.invoices.pay.mockResolvedValueOnce({
+      id: "in_1",
+      object: "invoice",
+      status: "paid",
+      payments: { object: "list", data: [{ payment: { payment_intent: "pi_inv" } }] },
+    });
+    stripeMock.paymentIntents.update.mockResolvedValueOnce({
+      id: "pi_inv",
+      object: "payment_intent",
+      status: "succeeded",
+      amount_received: 5000,
+      metadata: { type: "auto_reload", org_id: TEST_ORG_ID, invoice_id: "in_1" },
+    });
+
+    const res = await request(app)
+      .post(`/internal/invoices/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_mirror" })
+      .send({
+        amount: 5000,
+        currency: "usd",
+        description: "Auto top-up",
+        metadata: { type: "auto_reload" },
+      });
+
+    expect(res.status).toBe(200);
+    // Bronze api_snapshot event carries the STAMPED PaymentIntent — that event
+    // is what silver projects from, so the mirror shows the provenance.
+    const event = dbMock.lastInsertValues("events");
+    expect(event.type).toBe("api_snapshot.payment_intent");
+    expect(event.objectId).toBe("pi_inv");
+    expect(event.payload.data.object.metadata).toEqual({
+      type: "auto_reload",
+      org_id: TEST_ORG_ID,
+      invoice_id: "in_1",
+    });
   });
 
   it("forwards an explicit payment_method to the invoice default + the pay call", async () => {
@@ -446,7 +535,7 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
     );
     expect(stripeMock.invoices.pay).toHaveBeenCalledWith(
       "in_1",
-      { off_session: true, payment_method: "pm_card_1" },
+      { off_session: true, expand: ["payments"], payment_method: "pm_card_1" },
       expect.anything()
     );
   });
@@ -516,7 +605,7 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
     expect(stripeMock.invoices.pay).toHaveBeenCalled();
   });
 
-  it("still returns 200 when the post-charge PI snapshot fails (webhook reconciles)", async () => {
+  it("fails loud when the provenance stamp fails — never silently drops it", async () => {
     dbMock.queueSelect("customers", [{ id: "cus_x" }]);
     stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_1", status: "draft" });
     stripeMock.invoiceItems.create.mockResolvedValueOnce({ id: "ii_1" });
@@ -525,17 +614,40 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
       id: "in_1",
       object: "invoice",
       status: "paid",
-      payment_intent: "pi_inv",
+      payments: { object: "list", data: [{ payment: { payment_intent: "pi_inv" } }] },
     });
-    stripeMock.paymentIntents.retrieve.mockRejectedValueOnce(new Error("Stripe transient"));
+    stripeMock.paymentIntents.update.mockRejectedValueOnce(new Error("Stripe transient"));
 
     const res = await request(app)
       .post(`/internal/invoices/by-org/${TEST_ORG_ID}`)
-      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_snapfail" })
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_stampfail" })
+      .send({ amount: 5000, currency: "usd", description: "Top-up", metadata: { type: "auto_reload" } });
+
+    // Stripe emits no event for a metadata update, so a swallowed failure here
+    // would drop the caller's provenance permanently. Failing is safe: every
+    // Stripe step is idempotency-keyed, so the caller's retry replays them.
+    expect(res.status).toBeGreaterThanOrEqual(500);
+  });
+
+  it("fails loud when the paid invoice references no PaymentIntent", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_1", status: "draft" });
+    stripeMock.invoiceItems.create.mockResolvedValueOnce({ id: "ii_1" });
+    stripeMock.invoices.finalizeInvoice.mockResolvedValueOnce({ id: "in_1", status: "open" });
+    stripeMock.invoices.pay.mockResolvedValueOnce({
+      id: "in_1",
+      object: "invoice",
+      status: "paid",
+      payments: { object: "list", data: [] },
+    });
+
+    const res = await request(app)
+      .post(`/internal/invoices/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_nopi" })
       .send({ amount: 5000, currency: "usd", description: "Top-up" });
 
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("paid");
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(stripeMock.paymentIntents.update).not.toHaveBeenCalled();
   });
 });
 

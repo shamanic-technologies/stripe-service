@@ -17,7 +17,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "cleanup:dup-customers": "tsx scripts/cleanup-duplicate-customers.ts"
+    "cleanup:dup-customers": "tsx scripts/cleanup-duplicate-customers.ts",
+    "backfill:invoice-provenance": "tsx scripts/backfill-invoice-provenance.ts"
   },
   "keywords": [],
   "author": "",
