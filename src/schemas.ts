@@ -156,7 +156,13 @@ export const CreateInvoiceByOrgRequestSchema = z
         description:
           "Explicit PaymentMethod (pm_…) to charge off-session. Omit to use the customer's default PM. Prefer an explicit card PM — the customer default may be a Link / wallet PM that Stripe refuses to charge off_session.",
       }),
-    metadata: z.record(z.string(), z.string()).optional(),
+    metadata: z
+      .record(z.string(), z.string())
+      .optional()
+      .openapi({
+        description:
+          "Caller provenance (e.g. {\"type\":\"auto_reload\"} / {\"reason\":\"month_end_sweep\"}). Stamped on the invoice AND on the resulting PaymentIntent, so a consumer summing payments can tell why the charge happened.",
+      }),
   })
   .passthrough()
   .openapi("CreateInvoiceByOrgRequest");
@@ -562,7 +568,7 @@ registry.registerPath({
   path: "/internal/invoices/by-org/{orgId}",
   summary: "Create + pay an off-session invoice for an org's customer",
   description:
-    "Server-to-server. Creates a one-line Stripe invoice for the org's customer, finalizes it, and pays it OFF-SESSION against the customer's stored card (explicit `payment_method` or the customer default). The result is a finalized, paid Stripe invoice (hosted invoice + PDF, visible in the customer's billing portal). Requires the `Idempotency-Key` header — it is derived per Stripe step (invoice / item / finalize / pay) so a retry never double-charges or creates a duplicate invoice. Uses the platform Stripe key (single-account model). X-API-Key only — no identity headers (orgId is in the path). Returns the paid Stripe Invoice object verbatim.",
+    "Server-to-server. Creates a one-line Stripe invoice for the org's customer, finalizes it, and pays it OFF-SESSION against the customer's stored card (explicit `payment_method` or the customer default). The result is a finalized, paid Stripe invoice (hosted invoice + PDF, visible in the customer's billing portal). Requires the `Idempotency-Key` header — it is derived per Stripe step (invoice / item / finalize / pay) so a retry never double-charges or creates a duplicate invoice. Uses the platform Stripe key (single-account model). X-API-Key only — no identity headers (orgId is in the path). Returns the paid Stripe Invoice object verbatim (with `payments` expanded). Provenance: the `metadata` you send is stamped on the invoice AND, after payment, on the resulting PaymentIntent together with `org_id` and `invoice_id` — Stripe copies neither, and a consumer summing PaymentIntents (billing) needs it there to tell an automatic platform-initiated charge from a customer-initiated top-up. It is readable on the PaymentIntent reads (`GET /internal/payment_intents/by-org/{orgId}`, `GET /v1/payment_intents`).",
   tags: ["Internal"],
   security: apiKeySec,
   request: {
