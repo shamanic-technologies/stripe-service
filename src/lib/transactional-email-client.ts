@@ -24,6 +24,24 @@ export const PAYMENT_METHOD_REMOVED_EVENT_TYPE = "payment_method_removed";
 
 const REQUEST_TIMEOUT_MS = 8_000;
 
+/**
+ * `PUT /templates` hard-requires `x-org-id`, `x-user-id` and `x-run-id`, and
+ * boot-time template registration is a platform operation with none of the
+ * three: no organisation, no acting user, no run. Every service in the fleet
+ * that registers templates therefore sends the zero uuid on all three, and that
+ * is the contract that is actually deployed (verified in prod 2026-08-01: our
+ * first registration came back `400 Missing required headers: x-org-id,
+ * x-user-id, and x-run-id`).
+ *
+ * This is scoped to the REGISTRATION call and must never spread to `/send`. A
+ * send has a real organisation, and inventing a user id there is the exact
+ * anti-pattern this service removed in #77 — transactional-email-service
+ * exposes a user-less path for it instead. Follow-up filed to drop the identity
+ * requirement from `/templates`, which is `x-api-key`-authed platform setup and
+ * has no tenant to speak of.
+ */
+const PLATFORM_SETUP_SENTINEL = "00000000-0000-0000-0000-000000000000";
+
 export interface EmailTemplate {
   name: string;
   subject: string;
@@ -109,15 +127,19 @@ export async function sendStaffEmail(input: SendStaffEmailInput): Promise<void> 
     );
   }
 
-  const response = await fetch(`${config.url}/send`, {
+  // `/platform-send`, NOT `/send`. The customer-facing `/send` is guarded by
+  // `requireIdentityHeaders` and 400s when `x-user-id` is absent, and we have no
+  // end user to give it: the customer removed the card inside Stripe's own
+  // billing portal. Never invent a sentinel user id to satisfy that guard
+  // (stripe-service#77) — `/platform-send` is the user-less path that exists for
+  // exactly this case. Because the send is fire-and-forget, targeting the wrong
+  // one fails SILENTLY: no mail, no alert, and the feature reads as shipped.
+  const response = await fetch(`${config.url}/platform-send`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-api-key": config.apiKey,
       "x-org-id": input.orgId,
-      // A machine caller with an organisation and no end user. Never invent a
-      // sentinel user id here (stripe-service#77) — the receiving service
-      // exposes a user-less path for exactly this case.
       "x-run-id": crypto.randomUUID(),
     },
     body: JSON.stringify({
@@ -130,7 +152,7 @@ export async function sendStaffEmail(input: SendStaffEmailInput): Promise<void> 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
     throw new Error(
-      `transactional-email-service POST /send failed: ${response.status} - ${errorText}`
+      `transactional-email-service POST /platform-send failed: ${response.status} - ${errorText}`
     );
   }
 }
@@ -154,12 +176,16 @@ export async function deployEmailTemplates(): Promise<void> {
   }
 
   try {
-    const response = await fetch(`${config.url}/templates`, {
+    // `/platform-templates`, NOT `/templates` — same reason as the send above:
+    // `/templates` requires a full identity and boot has no end user at all.
+    const response = await fetch(`${config.url}/platform-templates`, {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
         "x-api-key": config.apiKey,
-        "x-run-id": crypto.randomUUID(),
+        "x-org-id": PLATFORM_SETUP_SENTINEL,
+        "x-user-id": PLATFORM_SETUP_SENTINEL,
+        "x-run-id": PLATFORM_SETUP_SENTINEL,
       },
       body: JSON.stringify({ templates: [PAYMENT_METHOD_REMOVED_TEMPLATE] }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
