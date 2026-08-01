@@ -188,6 +188,36 @@ describe("deployEmailTemplates", () => {
     });
   });
 
+  // Prod rejected the first registration with
+  // `400 Missing required headers: x-org-id, x-user-id, and x-run-id`.
+  // Boot registration is platform setup with no org, no user and no run, so it
+  // sends the zero uuid the whole fleet uses on this endpoint.
+  it("satisfies the identity headers /templates requires, with no tenant to name", async () => {
+    await deployEmailTemplates();
+
+    const headers = headersOfLastRequest();
+    const zero = "00000000-0000-0000-0000-000000000000";
+    expect(headers["x-api-key"]).toBe("test-key");
+    expect(headers["x-org-id"]).toBe(zero);
+    expect(headers["x-user-id"]).toBe(zero);
+    expect(headers["x-run-id"]).toBe(zero);
+  });
+
+  // The registration sentinel must never leak into a send: a send has a real
+  // organisation, and a fabricated user id there is the #77 anti-pattern.
+  it("never lets the registration sentinel reach a send", async () => {
+    await sendStaffEmail({
+      eventType: PAYMENT_METHOD_REMOVED_EVENT_TYPE,
+      orgId: ORG_ID,
+      metadata: {},
+    });
+
+    const headers = headersOfLastRequest();
+    expect(headers).not.toHaveProperty("x-user-id");
+    expect(headers["x-org-id"]).toBe(ORG_ID);
+    expect(headers["x-run-id"]).not.toBe("00000000-0000-0000-0000-000000000000");
+  });
+
   it("never throws when the email service rejects the registration", async () => {
     fetchMock.mockResolvedValueOnce(new Response("nope", { status: 401 }));
     await expect(deployEmailTemplates()).resolves.toBeUndefined();
