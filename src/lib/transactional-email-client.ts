@@ -24,24 +24,6 @@ export const PAYMENT_METHOD_REMOVED_EVENT_TYPE = "payment_method_removed";
 
 const REQUEST_TIMEOUT_MS = 8_000;
 
-/**
- * `PUT /templates` hard-requires `x-org-id`, `x-user-id` and `x-run-id`, and
- * boot-time template registration is a platform operation with none of the
- * three: no organisation, no acting user, no run. Every service in the fleet
- * that registers templates therefore sends the zero uuid on all three, and that
- * is the contract that is actually deployed (verified in prod 2026-08-01: our
- * first registration came back `400 Missing required headers: x-org-id,
- * x-user-id, and x-run-id`).
- *
- * This is scoped to the REGISTRATION call and must never spread to `/send`. A
- * send has a real organisation, and inventing a user id there is the exact
- * anti-pattern this service removed in #77 — transactional-email-service
- * exposes a user-less path for it instead. Follow-up filed to drop the identity
- * requirement from `/templates`, which is `x-api-key`-authed platform setup and
- * has no tenant to speak of.
- */
-const PLATFORM_SETUP_SENTINEL = "00000000-0000-0000-0000-000000000000";
-
 export interface EmailTemplate {
   name: string;
   subject: string;
@@ -177,15 +159,14 @@ export async function deployEmailTemplates(): Promise<void> {
 
   try {
     // `/platform-templates`, NOT `/templates` — same reason as the send above:
-    // `/templates` requires a full identity and boot has no end user at all.
+    // `/templates` requires a full identity and boot has none of it (no org, no
+    // acting user, no run). `/platform-templates` is `x-api-key`-only, so this
+    // call carries no identity at all rather than a fabricated one.
     const response = await fetch(`${config.url}/platform-templates`, {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
         "x-api-key": config.apiKey,
-        "x-org-id": PLATFORM_SETUP_SENTINEL,
-        "x-user-id": PLATFORM_SETUP_SENTINEL,
-        "x-run-id": PLATFORM_SETUP_SENTINEL,
       },
       body: JSON.stringify({ templates: [PAYMENT_METHOD_REMOVED_TEMPLATE] }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),

@@ -188,24 +188,24 @@ describe("deployEmailTemplates", () => {
     });
   });
 
-  // Prod rejected the first registration with
-  // `400 Missing required headers: x-org-id, x-user-id, and x-run-id`.
-  // Boot registration is platform setup with no org, no user and no run, so it
-  // sends the zero uuid the whole fleet uses on this endpoint.
-  it("satisfies the identity headers /templates requires, with no tenant to name", async () => {
+  // `/platform-templates` is `x-api-key`-only. Boot has no organisation, no
+  // acting user and no run, so it must send none of them rather than the zero
+  // uuid the fleet reaches for on the identity-guarded `/templates`. A
+  // fabricated id is the #77 anti-pattern and the user-less route exists so
+  // that nobody has to write one.
+  it("carries no identity at all, real or fabricated", async () => {
     await deployEmailTemplates();
 
     const headers = headersOfLastRequest();
     const zero = "00000000-0000-0000-0000-000000000000";
     expect(headers["x-api-key"]).toBe("test-key");
-    expect(headers["x-org-id"]).toBe(zero);
-    expect(headers["x-user-id"]).toBe(zero);
-    expect(headers["x-run-id"]).toBe(zero);
+    expect(headers).not.toHaveProperty("x-org-id");
+    expect(headers).not.toHaveProperty("x-user-id");
+    expect(headers).not.toHaveProperty("x-run-id");
+    expect(Object.values(headers)).not.toContain(zero);
   });
 
-  // The registration sentinel must never leak into a send: a send has a real
-  // organisation, and a fabricated user id there is the #77 anti-pattern.
-  it("never lets the registration sentinel reach a send", async () => {
+  it("never fabricates an identity on a send either", async () => {
     await sendStaffEmail({
       eventType: PAYMENT_METHOD_REMOVED_EVENT_TYPE,
       orgId: ORG_ID,
