@@ -109,15 +109,19 @@ export async function sendStaffEmail(input: SendStaffEmailInput): Promise<void> 
     );
   }
 
-  const response = await fetch(`${config.url}/send`, {
+  // `/platform-send`, NOT `/send`. The customer-facing `/send` is guarded by
+  // `requireIdentityHeaders` and 400s when `x-user-id` is absent, and we have no
+  // end user to give it: the customer removed the card inside Stripe's own
+  // billing portal. Never invent a sentinel user id to satisfy that guard
+  // (stripe-service#77) — `/platform-send` is the user-less path that exists for
+  // exactly this case. Because the send is fire-and-forget, targeting the wrong
+  // one fails SILENTLY: no mail, no alert, and the feature reads as shipped.
+  const response = await fetch(`${config.url}/platform-send`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-api-key": config.apiKey,
       "x-org-id": input.orgId,
-      // A machine caller with an organisation and no end user. Never invent a
-      // sentinel user id here (stripe-service#77) — the receiving service
-      // exposes a user-less path for exactly this case.
       "x-run-id": crypto.randomUUID(),
     },
     body: JSON.stringify({
@@ -130,7 +134,7 @@ export async function sendStaffEmail(input: SendStaffEmailInput): Promise<void> 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
     throw new Error(
-      `transactional-email-service POST /send failed: ${response.status} - ${errorText}`
+      `transactional-email-service POST /platform-send failed: ${response.status} - ${errorText}`
     );
   }
 }
@@ -154,7 +158,9 @@ export async function deployEmailTemplates(): Promise<void> {
   }
 
   try {
-    const response = await fetch(`${config.url}/templates`, {
+    // `/platform-templates`, NOT `/templates` — same reason as the send above:
+    // `/templates` requires a full identity and boot has no end user at all.
+    const response = await fetch(`${config.url}/platform-templates`, {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
