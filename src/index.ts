@@ -22,6 +22,7 @@ import webhooksRoutes from "./routes/webhooks";
 import { startEventPoller } from "./lib/event-poller";
 import { backfillHistorical } from "./lib/historical-backfill";
 import { repairAllSilverFromBronze } from "./lib/event-processor";
+import { deployEmailTemplates } from "./lib/transactional-email-client";
 
 const app = express();
 const PORT = process.env.PORT || 3011;
@@ -96,6 +97,12 @@ if (process.env.NODE_ENV !== "test") {
       app.listen(Number(PORT), "::", () => {
         console.log(`[stripe-service] Service running on port ${PORT}`);
         startEventPoller();
+        // Idempotent upsert-by-name of the staff-notification template, after
+        // listen() and never awaited: transactional-email-service sits on a
+        // Neon compute that can be suspended, so port-bind must not wait on it.
+        // The function owns its errors; a failure logs and the template lands
+        // on the next boot.
+        void deployEmailTemplates();
         // One-time silver repair from bronze. Bounded by COUNT(DISTINCT object_id)
         // in the events table (~hundreds, not millions). Heals rows whose latest
         // status was clobbered by out-of-order webhook arrivals before the
