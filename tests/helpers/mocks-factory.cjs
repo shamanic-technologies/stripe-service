@@ -91,6 +91,11 @@ function makeDbMock(vi) {
       captured.values.clear();
       captured.wheres.clear();
     },
+    // Drop every queued result. Queues survive `vi.clearAllMocks()`, so a test
+    // that returns early leaves its unconsumed row behind for the next one.
+    clearQueues: () => {
+      queues.clear();
+    },
   };
 }
 

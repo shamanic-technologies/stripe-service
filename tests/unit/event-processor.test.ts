@@ -7,12 +7,22 @@ const { dbMock } = vi.hoisted(() => {
 });
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
+vi.mock("../../src/lib/notify-payment-method-removed", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../src/lib/notify-payment-method-removed")
+  >("../../src/lib/notify-payment-method-removed");
+  return {
+    isPaymentMethodDetachedEvent: actual.isPaymentMethodDetachedEvent,
+    notifyPaymentMethodRemoved: vi.fn(async () => true),
+  };
+});
 
 import {
   processEvent,
   upsertCustomer,
   resolveOrgId,
 } from "../../src/lib/event-processor";
+import { notifyPaymentMethodRemoved } from "../../src/lib/notify-payment-method-removed";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -69,6 +79,57 @@ describe("processEvent — idempotence", () => {
     );
 
     expect(result).toBe(false);
+  });
+});
+
+describe("payment_method.detached — one detach, one staff email", () => {
+  function detached() {
+    return {
+      id: "evt_detach_1",
+      type: "payment_method.detached",
+      api_version: "2026-02-25.clover",
+      livemode: true,
+      created: 1785541883,
+      data: {
+        object: {
+          id: "pm_1",
+          object: "payment_method",
+          type: "card",
+          customer: null,
+        },
+        previous_attributes: { customer: "cus_1" },
+      },
+    } as never;
+  }
+
+  it("notifies on the first sighting of the event", async () => {
+    dbMock.queueInsert("events", [{ id: "evt_detach_1" }]);
+
+    expect(await processEvent(detached(), "webhook")).toBe(true);
+    expect(notifyPaymentMethodRemoved).toHaveBeenCalledTimes(1);
+  });
+
+  // Webhook delivery, webhook redelivery and the 5-minute poll all carry the
+  // same `evt_…`, so the bronze insert conflicts and side-effects never run
+  // again. This is what keeps one detach at one email.
+  it("does not notify again on redelivery or on the poller seeing it", async () => {
+    dbMock.queueInsert("events", []);
+    expect(await processEvent(detached(), "webhook")).toBe(false);
+
+    dbMock.queueInsert("events", []);
+    expect(await processEvent(detached(), "poll")).toBe(false);
+
+    expect(notifyPaymentMethodRemoved).not.toHaveBeenCalled();
+  });
+
+  it("leaves payment methods unmirrored — the detach writes no silver row", async () => {
+    dbMock.queueInsert("events", [{ id: "evt_detach_1" }]);
+    dbMock.clearCaptured();
+
+    await processEvent(detached(), "webhook");
+
+    expect(dbMock.lastInsertValues("customers")).toBeUndefined();
+    expect(dbMock.lastInsertValues("payment_intents")).toBeUndefined();
   });
 });
 
