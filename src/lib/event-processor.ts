@@ -18,6 +18,10 @@ import {
   isChargeRefundEvent,
   mirrorRefundsForChargeEvent,
 } from "./mirror-charge-refunds";
+import {
+  isPaymentMethodDetachedEvent,
+  notifyPaymentMethodRemoved,
+} from "./notify-payment-method-removed";
 
 type ProcessSource = "webhook" | "poll";
 type EventSource = ProcessSource | "api";
@@ -108,6 +112,14 @@ async function runSideEffects(event: Stripe.Event): Promise<void> {
   if (isFeeEvent(event.type)) {
     const stripe = await getPlatformStripe();
     await declareFeesForEvent(event, stripe);
+  }
+
+  // Staff notification only — it mirrors nothing and must never change the
+  // webhook's outcome, so it swallows its own failures (including resolving the
+  // platform key, hence the resolver rather than a client). Everything above
+  // still fails loud and makes Stripe retry.
+  if (isPaymentMethodDetachedEvent(event.type)) {
+    await notifyPaymentMethodRemoved(event, getPlatformStripe);
   }
 }
 
