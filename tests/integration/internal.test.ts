@@ -33,6 +33,28 @@ import { createTestApp } from "../helpers/test-app";
 
 const app = createTestApp();
 
+/**
+ * Collect every bound parameter value out of a drizzle SQL condition. The db
+ * mock replays queued rows without applying a WHERE, so the captured where
+ * clause is the only place a time bound is observable.
+ */
+function paramValues(node: unknown, seen = new Set<unknown>()): unknown[] {
+  if (node === null || typeof node !== "object") return [];
+  if (seen.has(node)) return [];
+  seen.add(node);
+  const rec = node as Record<string, unknown>;
+  if ("value" in rec && "encoder" in rec) return [rec.value];
+  const out: unknown[] = [];
+  for (const child of Object.values(rec)) {
+    if (Array.isArray(child)) {
+      for (const item of child) out.push(...paramValues(item, seen));
+    } else {
+      out.push(...paramValues(child, seen));
+    }
+  }
+  return out;
+}
+
 // Bronze event a deleted-customer projection reads back: its presence drives
 // projectSilverFromBronze into the `deleted` branch -> db.delete(customers).
 function deletedCustomerEvent(id: string) {
@@ -259,6 +281,7 @@ describe("GET /internal/payment_summary/by-org/:orgId (user-less)", () => {
       object: "payment_summary",
       org_id: TEST_ORG_ID,
       customer: "cus_1",
+      as_of: null,
       totals: [
         {
           currency: "usd",
@@ -331,6 +354,7 @@ describe("GET /internal/payment_summary/by-org/:orgId (user-less)", () => {
       object: "payment_summary",
       org_id: TEST_ORG_ID,
       customer: null,
+      as_of: null,
       totals: [],
     });
   });
@@ -345,6 +369,71 @@ describe("GET /internal/payment_summary/by-org/:orgId (user-less)", () => {
 
     expect(res.status).toBe(200);
   });
+
+  it("echoes the as_of bound it applied, so a caller can tell it was honoured", async () => {
+    dbMock.queueSelect("payment_intents", []);
+    dbMock.queueSelect("customers", []);
+
+    const res = await request(app)
+      .get(`/internal/payment_summary/by-org/${TEST_ORG_ID}?as_of=1700000000`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body.as_of).toBe(1700000000);
+  });
+
+  it("bounds the payments it sums to those created before the instant", async () => {
+    dbMock.queueSelect("payment_intents", []);
+    dbMock.queueSelect("customers", []);
+
+    await request(app)
+      .get(`/internal/payment_summary/by-org/${TEST_ORG_ID}?as_of=1700000000`)
+      .set(apiKeyOnly());
+
+    expect(paramValues(dbMock.lastSelectWhere("payment_intents"))).toContain(1700000000);
+  });
+
+  it("bounds the returns it subtracts by the same instant, not just the payments", async () => {
+    dbMock.queueSelect("payment_intents", [
+      { id: "pi_1", currency: "usd", status: "succeeded", amountReceived: 1000, latestCharge: "ch_1" },
+    ]);
+    dbMock.queueSelect("customers", [{ id: "cus_1" }]);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", []);
+
+    await request(app)
+      .get(`/internal/payment_summary/by-org/${TEST_ORG_ID}?as_of=1700000000`)
+      .set(apiKeyOnly());
+
+    // Both sides of amount_net must come from the same population — a bound on
+    // payments alone would subtract refunds that had not happened yet.
+    expect(paramValues(dbMock.lastSelectWhere("refunds"))).toContain(1700000000);
+    expect(paramValues(dbMock.lastSelectWhere("disputes"))).toContain(1700000000);
+  });
+
+  it("applies no bound and echoes null when as_of is absent", async () => {
+    dbMock.queueSelect("payment_intents", []);
+    dbMock.queueSelect("customers", []);
+
+    const res = await request(app)
+      .get(`/internal/payment_summary/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly());
+
+    expect(res.body.as_of).toBeNull();
+    expect(paramValues(dbMock.lastSelectWhere("payment_intents"))).toEqual([TEST_ORG_ID]);
+  });
+
+  it.each(["abc", "0", "-1", "1.5", ""])(
+    "rejects as_of=%j with 400 rather than silently answering a different question",
+    async (value) => {
+      const res = await request(app)
+        .get(`/internal/payment_summary/by-org/${TEST_ORG_ID}?as_of=${value}`)
+        .set(apiKeyOnly());
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/as_of/);
+    }
+  );
 
   it("rejects with 401 when X-API-Key is missing", async () => {
     const res = await request(app).get(

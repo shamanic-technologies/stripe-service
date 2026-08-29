@@ -1,4 +1,4 @@
-import { inArray, or } from "drizzle-orm";
+import { and, inArray, lt, or, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import { refunds, disputes } from "../db/schema";
 
@@ -72,9 +72,19 @@ function bump(
  * match on `charge` against the PaymentIntent's `latest_charge`. Results are
  * keyed by refund/dispute id first, so an object matching on BOTH keys is
  * counted once.
+ *
+ * `asOfUnix` (optional) bounds the sum to returns Stripe created STRICTLY
+ * BEFORE that second — "how much of this payment had come back as of then".
+ * A return is attributed to the moment it HAPPENED, never back-dated onto the
+ * payment it reverses, which is the same attribution `/public/stats/billing`
+ * already uses for its buckets. A refund or dispute with no `created_stripe`
+ * cannot be placed in time, so a bounded read excludes it (SQL `<` is NULL for
+ * a null column, so this falls out of the predicate rather than being special-
+ * cased); an unbounded read still counts it.
  */
 export async function returnedByPaymentIntent(
-  payments: PaymentRef[]
+  payments: PaymentRef[],
+  asOfUnix?: number
 ): Promise<Map<string, ReturnedAmounts>> {
   const result = new Map<string, ReturnedAmounts>();
   if (payments.length === 0) return result;
@@ -90,11 +100,17 @@ export async function returnedByPaymentIntent(
 
   const match = (
     piColumn: typeof refunds.paymentIntent | typeof disputes.paymentIntent,
-    chargeColumn: typeof refunds.charge | typeof disputes.charge
-  ) =>
-    chargeIds.length > 0
-      ? or(inArray(piColumn, piIds), inArray(chargeColumn, chargeIds))
-      : inArray(piColumn, piIds);
+    chargeColumn: typeof refunds.charge | typeof disputes.charge,
+    createdColumn: typeof refunds.createdStripe | typeof disputes.createdStripe
+  ): SQL | undefined => {
+    const attribution =
+      chargeIds.length > 0
+        ? or(inArray(piColumn, piIds), inArray(chargeColumn, chargeIds))
+        : inArray(piColumn, piIds);
+    return asOfUnix === undefined
+      ? attribution
+      : and(attribution, lt(createdColumn, asOfUnix));
+  };
 
   const [refundRows, disputeRows] = await Promise.all([
     db
@@ -106,7 +122,7 @@ export async function returnedByPaymentIntent(
         status: refunds.status,
       })
       .from(refunds)
-      .where(match(refunds.paymentIntent, refunds.charge)),
+      .where(match(refunds.paymentIntent, refunds.charge, refunds.createdStripe)),
     db
       .select({
         id: disputes.id,
@@ -116,7 +132,7 @@ export async function returnedByPaymentIntent(
         status: disputes.status,
       })
       .from(disputes)
-      .where(match(disputes.paymentIntent, disputes.charge)),
+      .where(match(disputes.paymentIntent, disputes.charge, disputes.createdStripe)),
   ]);
 
   const knownPi = new Set(piIds);
