@@ -337,3 +337,65 @@ describe("withReturnedAmounts", () => {
     expect(out).toMatchObject(ZERO_RETURNED);
   });
 });
+
+/**
+ * Collect every bound parameter value out of a drizzle SQL condition, so a test
+ * can assert WHICH values reached the query without reimplementing SQL. The
+ * db mock never applies a WHERE (it replays queued rows), so the where clause
+ * is the only place the time bound is observable.
+ */
+function paramValues(node: unknown, seen = new Set<unknown>()): unknown[] {
+  if (node === null || typeof node !== "object") return [];
+  if (seen.has(node)) return [];
+  seen.add(node);
+  const rec = node as Record<string, unknown>;
+  if ("value" in rec && "encoder" in rec) return [rec.value];
+  const out: unknown[] = [];
+  for (const child of Object.values(rec)) {
+    if (Array.isArray(child)) {
+      for (const item of child) out.push(...paramValues(item, seen));
+    } else {
+      out.push(...paramValues(child, seen));
+    }
+  }
+  return out;
+}
+
+describe("returnedByPaymentIntent — as-of bound", () => {
+  it("bounds BOTH refunds and disputes to returns created before the instant", async () => {
+    queueMirrors([], []);
+
+    await returnedByPaymentIntent([{ id: "pi_1", latestCharge: "ch_1" }], 1_700_000_000);
+
+    expect(paramValues(dbMock.lastSelectWhere("refunds"))).toContain(1_700_000_000);
+    expect(paramValues(dbMock.lastSelectWhere("disputes"))).toContain(1_700_000_000);
+  });
+
+  it("applies no time bound at all when none is given", async () => {
+    queueMirrors([], []);
+
+    await returnedByPaymentIntent([{ id: "pi_1", latestCharge: "ch_1" }]);
+
+    // Only the attribution ids reach the query — no timestamp.
+    expect(paramValues(dbMock.lastSelectWhere("refunds"))).toEqual(["pi_1", "ch_1"]);
+    expect(paramValues(dbMock.lastSelectWhere("disputes"))).toEqual(["pi_1", "ch_1"]);
+  });
+
+  it("still attributes bounded returns to their payment", async () => {
+    queueMirrors(
+      [{ id: "re_1", paymentIntent: "pi_1", charge: null, amount: 400, status: "succeeded" }],
+      []
+    );
+
+    const out = await returnedByPaymentIntent(
+      [{ id: "pi_1", latestCharge: null }],
+      1_700_000_000
+    );
+
+    expect(out.get("pi_1")).toEqual({
+      amount_refunded: 400,
+      amount_disputed_lost: 0,
+      amount_returned: 400,
+    });
+  });
+});

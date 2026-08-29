@@ -77,7 +77,12 @@ export const OrgPaymentSummarySchema = z
     object: z.literal("payment_summary"),
     org_id: z.string(),
     customer: z.string().nullable().openapi({
-      description: "The org's mirrored Stripe customer id, or null when it has none.",
+      description:
+        "The org's mirrored Stripe customer id, or null when it has none. Identity, not a money figure — never bounded by as_of.",
+    }),
+    as_of: z.number().int().nullable().openapi({
+      description:
+        "Echo of the requested as_of bound (Unix seconds), or null for an unbounded read. Echoed so a caller can tell a deploy that APPLIED the bound from one that predates it — otherwise the two responses are identical and the older one silently over-counts.",
     }),
     totals: z.array(CurrencyTotalsSchema).openapi({
       description:
@@ -518,16 +523,26 @@ registry.registerPath({
   path: "/internal/payment_summary/by-org/{orgId}",
   summary: "Org payment summary: paid in, given back, net (user-less)",
   description:
-    "Server-to-server. Per-currency Stripe money movement for one org: `amount_received` (gross paid in — SUM(amount_received) over succeeded PaymentIntents, the same predicate billing already uses), `amount_refunded` (succeeded Refunds), `amount_disputed_lost` (Disputes we LOST), `amount_returned` (refunded + disputed_lost) and `amount_net` (received − returned). Stripe never mutates a payment when money goes back out — the PaymentIntent stays succeeded at full amount and the return lives on a separate Refund/Dispute object — so summing payments alone over-reports what the org still holds. Computed live from the DB mirrors, so partial refunds, refunds that later fail/cancel, and dispute outcomes are all correct with no reconciliation step. This is Stripe money movement ONLY, NOT a credit balance: promo grants and usage remain billing-service's business. DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). An org with no mirrored payments returns `totals: []` and `customer: null`.",
+    "Server-to-server. Per-currency Stripe money movement for one org: `amount_received` (gross paid in — SUM(amount_received) over succeeded PaymentIntents, the same predicate billing already uses), `amount_refunded` (succeeded Refunds), `amount_disputed_lost` (Disputes we LOST), `amount_returned` (refunded + disputed_lost) and `amount_net` (received − returned). Stripe never mutates a payment when money goes back out — the PaymentIntent stays succeeded at full amount and the return lives on a separate Refund/Dispute object — so summing payments alone over-reports what the org still holds. Computed live from the DB mirrors, so partial refunds, refunds that later fail/cancel, and dispute outcomes are all correct with no reconciliation step. This is Stripe money movement ONLY, NOT a credit balance: promo grants and usage remain billing-service's business. DB-mirror read, no Stripe call. X-API-Key only — no identity headers (orgId is in the path). An org with no mirrored payments returns `totals: []` and `customer: null`.\n\nPass `as_of=<unix seconds>` for the same answer AS OF a moment: what the org had paid, net of what had come back, at that second. BOTH sides of the subtraction are bounded — payments AND returns Stripe created strictly before it — so the reply is the one this endpoint would itself have given then, and `as_of` at the current second is the unbounded reply. A return is attributed to the moment it HAPPENED and is never back-dated onto the payment it reverses, the same attribution `GET /public/stats/billing` uses for its buckets; back-dating would rewrite a figure a consumer has already read. The bound is EXCLUSIVE, so a launch instant T splits history cleanly and a payment made at T itself counts as after it. An object with no `created_stripe` cannot be placed in time and is excluded from a bounded read (an unbounded read still counts it) — the same rule for payments and for returns, so the two sides of `amount_net` are never drawn from different populations. An `as_of` that is not a positive integer is a 400, never a silently ignored filter.",
   tags: ["Internal"],
   security: apiKeySec,
   request: {
     params: z.object({ orgId: z.string() }),
+    query: z.object({
+      as_of: z.coerce.number().int().positive().optional().openapi({
+        description:
+          "Unix seconds. Bounds both payments and returns to those Stripe created strictly before this second. Omit for the all-time answer.",
+      }),
+    }),
   },
   responses: {
     200: {
       description: "Org payment summary",
       content: { "application/json": { schema: OrgPaymentSummarySchema } },
+    },
+    400: {
+      description: "as_of is not a positive integer number of Unix seconds",
+      content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },
 });
