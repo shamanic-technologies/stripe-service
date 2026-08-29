@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from "express";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc, lt } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "../db";
 import { customers, paymentIntents } from "../db/schema";
@@ -211,6 +211,30 @@ router.get(
  *
  * An org with no mirrored payments returns `totals: []` (and `customer: null`
  * when it has no Stripe customer) rather than a fabricated zero row.
+ *
+ * `?as_of=<unix seconds>` answers the same question AS OF a moment: what the
+ * org had paid, net of what had come back, at that second. Both sides of the
+ * subtraction are bounded — payments AND returns Stripe created strictly
+ * before it — so the answer is the one this endpoint would itself have given
+ * then, and `as_of` at the current second is the unbounded answer. That is the
+ * time attribution the rest of this service already uses: a return belongs to
+ * the moment it HAPPENED and is never back-dated onto the payment it reverses,
+ * because back-dating rewrites a figure a consumer has already read.
+ *
+ * The bound is EXCLUSIVE, so a launch instant `T` splits history cleanly: what
+ * `as_of=T` counts is exactly what happened before the launch, and a payment
+ * made at `T` itself is post-launch. An object with no `created_stripe` cannot
+ * be placed in time and is excluded from a bounded read (an unbounded read
+ * still counts it) — the same rule for payments and for returns, so the two
+ * sides of `amount_net` can never be drawn from different populations.
+ *
+ * `as_of` is echoed back (null when absent) so a caller can tell a deploy that
+ * APPLIED the bound from one that never knew about it — the two would
+ * otherwise be indistinguishable, and the second silently over-counts.
+ *
+ * Fail loud: an `as_of` that is not a positive integer is a 400, never a
+ * silently ignored filter. A dropped bound would answer a different question
+ * than the one asked and read as a correct answer.
  */
 router.get(
   "/internal/payment_summary/by-org/:orgId",
@@ -218,6 +242,20 @@ router.get(
     try {
       const orgId = req.params.orgId;
       res.locals.orgId = orgId;
+
+      const asOfParam = req.query.as_of;
+      let asOf: number | undefined;
+      if (asOfParam !== undefined) {
+        const parsed =
+          typeof asOfParam === "string" ? Number(asOfParam) : Number.NaN;
+        if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+          return res.status(400).json({
+            error:
+              "as_of must be a positive integer number of seconds since the Unix epoch",
+          });
+        }
+        asOf = parsed;
+      }
 
       const [piRows, customerRow] = await Promise.all([
         db
@@ -229,7 +267,14 @@ router.get(
             latestCharge: paymentIntents.latestCharge,
           })
           .from(paymentIntents)
-          .where(eq(paymentIntents.orgId, orgId)),
+          .where(
+            asOf === undefined
+              ? eq(paymentIntents.orgId, orgId)
+              : and(
+                  eq(paymentIntents.orgId, orgId),
+                  lt(paymentIntents.createdStripe, asOf)
+                )
+          ),
         db
           .select({ id: customers.id })
           .from(customers)
@@ -239,7 +284,7 @@ router.get(
       ]);
 
       const payments: SummaryPayment[] = piRows;
-      const returned = await returnedByPaymentIntent(payments);
+      const returned = await returnedByPaymentIntent(payments, asOf);
       const customer = customerRow.length > 0 ? customerRow[0].id : null;
       if (customer) res.locals.stripeObjectId = customer;
 
@@ -247,6 +292,7 @@ router.get(
         object: "payment_summary",
         org_id: orgId,
         customer,
+        as_of: asOf ?? null,
         totals: summarizeByCurrency(payments, returned),
       });
     } catch (err) {
