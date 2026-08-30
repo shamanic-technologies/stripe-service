@@ -108,6 +108,15 @@ export const CreateCustomerRequestSchema = z
   .passthrough()
   .openapi("CreateCustomerRequest");
 
+export const UpdateCustomerMetadataRequestSchema = z
+  .object({
+    metadata: z.record(z.string(), z.string()).openapi({
+      description:
+        "Forwarded verbatim to Stripe, so Stripe's semantics apply: keys are MERGED into the customer's existing metadata, and a key set to the empty string is deleted. Send the final shape you want, not a patch.",
+    }),
+  })
+  .openapi("UpdateCustomerMetadataRequest");
+
 export const UpdateCustomerRequestSchema = z
   .object({
     email: z.string().email().optional(),
@@ -499,6 +508,55 @@ registry.registerPath({
   responses: {
     200: { description: "Customer", content: { "application/json": { schema: StripeObjectSchema } } },
     404: { description: "No customer for org", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/customers/by-org/{orgId}/all",
+  summary: "List EVERY Stripe customer mirrored for an org (user-less)",
+  description:
+    "Server-to-server. Every customer mirrored for the org, as a Stripe list. The sibling GET /internal/customers/by-org/{orgId} returns the ONE customer the 1:1 org<->customer invariant promises; this returns all of them, because orgs predating the idempotent POST /v1/customers can hold more than one. A caller reassigning an org's customers must see all of them or it silently strands the ones it never listed. Resolved from the org_id column — the mapping this service owns — not from a metadata filter. DB-mirror read, no Stripe call, no pagination. X-API-Key only, no identity headers (orgId is in the path). An org with no customers gets an empty list, not a 404.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: { params: z.object({ orgId: z.string() }) },
+  responses: {
+    200: {
+      description: "Stripe list of the org's mirrored customers",
+      content: { "application/json": { schema: StripeListSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/customers/{id}/metadata",
+  summary: "Rewrite a customer's Stripe metadata (user-less)",
+  description:
+    "Server-to-server. Updates a Stripe customer's metadata with no end-user identity, via the platform key. The /v1 twin resolves a per-org-per-user Stripe key, so a machine caller cannot reach it — and the workaround for that was a zero-uuid x-user-id, which this tier exists to make unnecessary. Deliberately metadata-only: a user-less write surface stays as narrow as the need, and the need is the org<->customer mapping. `metadata` is forwarded verbatim, so Stripe's semantics apply — keys are MERGED and a key set to the empty string is deleted. Re-mirrors immediately, resolving the org from the UPDATED object, so a metadata.org_id rewrite (a tenant move) lands the silver row on the new owner in the same request rather than on the next webhook. Fail loud: unknown customer -> 404, any other Stripe error propagates. X-API-Key only, no identity headers.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ id: z.string() }),
+    body: {
+      content: {
+        "application/json": { schema: UpdateCustomerMetadataRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "The updated Stripe customer, verbatim",
+      content: { "application/json": { schema: z.any() } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: "Customer not found",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
   },
 });
 
