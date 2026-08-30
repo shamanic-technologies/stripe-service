@@ -16,6 +16,12 @@ vi.mock("../../src/lib/stripe-client", () => ({
   stripeErrorStatus: () => 500,
   isResourceMissing: () => false,
 }));
+// The Revolut webhook resolves its signing secret from key-service. Mock it so
+// the exemption test asserts the MIDDLEWARE, not a network timeout.
+vi.mock("../../src/lib/key-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/lib/key-client")>();
+  return { ...actual, resolvePlatformKey: vi.fn().mockResolvedValue({ key: "wsk_test" }) };
+});
 vi.mock("../../src/lib/resolve-stripe-key", () => ({
   resolveStripeKey: vi.fn().mockResolvedValue({ key: "sk_test_xxx", keySource: "platform" }),
 }));
@@ -27,6 +33,37 @@ const app = createTestApp();
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.STRIPE_SERVICE_API_KEY = TEST_API_KEY;
+});
+
+describe("Auth — the Revolut webhook is exempt from BOTH gates", () => {
+  // Revolut signs with its own scheme and cannot send our API key or an
+  // end-user identity. If either gate applied, every delivery would 4xx — and a
+  // webhook that keeps failing gets the endpoint DISABLED by the sender, which
+  // is silent. The path also does NOT match the /v1/webhooks prefix that
+  // exempts Stripe, so it needs its own exemption in both middlewares.
+  //
+  // Asserting on the STATUS alone would not prove this: the route itself
+  // answers 401 for a bad signature, which is the correct behaviour and is
+  // indistinguishable from the middleware's 401 by code. So these assert on the
+  // error the caller actually got back.
+  it("passes the API-key gate — a rejection can only come from the signature", async () => {
+    const res = await request(app)
+      .post("/v1/revolut/webhooks")
+      .set("content-type", "application/json")
+      .send({ order_id: "abc" });
+
+    expect(res.body.error).not.toMatch(/API-Key/i);
+    expect(res.body.error).toBe("Invalid signature");
+  });
+
+  it("passes the identity gate — it never asks for x-org-id or x-user-id", async () => {
+    const res = await request(app)
+      .post("/v1/revolut/webhooks")
+      .set("content-type", "application/json")
+      .send({ order_id: "abc" });
+
+    expect(res.body.error).not.toMatch(/x-org-id|x-user-id/i);
+  });
 });
 
 describe("Auth — X-API-Key", () => {

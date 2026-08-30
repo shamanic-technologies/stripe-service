@@ -19,10 +19,15 @@ import paymentMethodsRoutes from "./routes/payment-methods";
 import billingPortalSessionsRoutes from "./routes/billing-portal-sessions";
 import publicStatsRoutes from "./routes/public-stats";
 import webhooksRoutes from "./routes/webhooks";
+import revolutWebhooksRoutes from "./routes/revolut-webhooks";
 import { startEventPoller } from "./lib/event-poller";
 import { backfillHistorical } from "./lib/historical-backfill";
 import { repairAllSilverFromBronze } from "./lib/event-processor";
 import { deployEmailTemplates } from "./lib/transactional-email-client";
+import {
+  startRevolutPoller,
+  backfillRevolutHistory,
+} from "./lib/revolut-poller";
 
 const app = express();
 const PORT = process.env.PORT || 3011;
@@ -62,8 +67,11 @@ app.use(
   })
 );
 
-// Raw body for Stripe webhook signature verification (must precede express.json)
+// Raw body for webhook signature verification (must precede express.json).
+// Both acquirers sign the BYTES they sent, so a parsed-and-restringified body
+// would not reproduce the digest.
 app.use("/v1/webhooks", express.raw({ type: "application/json" }));
+app.use("/v1/revolut/webhooks", express.raw({ type: "application/json" }));
 
 app.use(express.json());
 app.use(serviceAuth);
@@ -89,6 +97,7 @@ app.use("/", paymentMethodsRoutes);
 app.use("/", billingPortalSessionsRoutes);
 app.use("/", publicStatsRoutes);
 app.use("/", webhooksRoutes);
+app.use("/", revolutWebhooksRoutes);
 
 if (process.env.NODE_ENV !== "test") {
   migrate(db, { migrationsFolder: "./drizzle" })
@@ -117,6 +126,14 @@ if (process.env.NODE_ENV !== "test") {
         // are recovered on the next boot.
         backfillHistorical().catch((err) => {
           console.error("[stripe-service] Historical back-fill failed:", err);
+        });
+        // Revolut, the second acquirer. Mirror-only for now: nothing routes
+        // traffic to it and no consumer reads these tables, so a failure here
+        // costs a stale mirror and nothing else. Fire-and-forget after
+        // listen(), same as the Stripe back-fill, so the port is never held.
+        startRevolutPoller();
+        backfillRevolutHistory().catch((err) => {
+          console.error("[stripe-service] Revolut back-fill failed:", err);
         });
       });
     })

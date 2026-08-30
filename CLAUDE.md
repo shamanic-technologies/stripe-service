@@ -1,5 +1,11 @@
 # Stripe Service
 
+⚠️ **The name is now narrower than the service.** A second acquirer (Revolut
+Merchant) is mirrored here alongside Stripe. The rename to `payment-service` is
+deliberately LAST — it is a deploy operation (repo, env var names, hostname,
+registry entry), not a refactor, and doing it before the consumer migration
+would break every caller's env for no gain. See issue #122 for the sequencing.
+
 Thin Stripe wrapper. Mirrors a subset of Stripe API objects (customers, checkout
 sessions, payment intents, billing portal sessions) under Stripe-native routes
 and DB tables. Internal-only HTTP API consumed by other Distribute services
@@ -132,8 +138,35 @@ Values live on the host box in `/root/distribute/env/stripe-service.env` — rea
 - `RUNS_SERVICE_URL` / `RUNS_SERVICE_API_KEY` — Runs-service connection for Stripe-fee declaration on webhook events. See "Stripe-fee declaration to runs-service" key pattern.
 - `CLIENT_SERVICE_URL` / `CLIENT_SERVICE_API_KEY` — Client-service connection. Resolves the end-user's email + name from `x-user-id` (`GET /internal/users/:userId`) so `POST /v1/customers` stamps an email on the Stripe customer. See "`POST /v1/customers` attaches the user's email + name" key pattern.
 - `TRANSACTIONAL_EMAIL_SERVICE_URL` / `TRANSACTIONAL_EMAIL_SERVICE_API_KEY` — transactional-email-service connection, used for the `payment_method_removed` staff notification and to register its template at boot. Absent = the template is not registered and no notification sends; both are logged loudly and nothing else degrades.
-- `RUN_EVENT_POLLER` — set to `"false"` to disable the background poller (default: enabled)
+- `RUN_EVENT_POLLER` — set to `"false"` to disable the Stripe background poller (default: enabled)
+- `RUN_REVOLUT_POLLER` — set to `"false"` to disable the Revolut order poller (default: enabled)
 - `PORT` — Server port (default 3011)
+
+## Revolut — the second acquirer (mirror-only, dark)
+
+**Nothing routes to it and no consumer reads it.** The tables fill, and that is
+all. billing-service does not know Revolut exists and must not learn.
+
+- **src/lib/revolut-client.ts** — Merchant API client. Secret key from key-service platform provider `revolut` (single merchant account, same model as the Stripe platform key). `Revolut-Api-Version` is PINNED: the API is versioned by date and old versions vanish (`2023-09-01` already 404s), so leaving it unset would let every response shape drift under the projector without a deploy.
+- **src/lib/revolut-processor.ts** — bronze → silver, same contract as the Stripe side: nothing writes silver directly, and the projection reads the LATEST snapshot rather than whatever arrived last. Ordering key is Revolut's own `updated_at` (monotonic per object), playing the role `event.created` plays for Stripe.
+- **src/routes/revolut-webhooks.ts** — `POST /v1/revolut/webhooks`. Signature-verified, exempt from BOTH `serviceAuth` and `requireIdentityHeaders`.
+- **src/lib/revolut-poller.ts** — 5-min reconciliation over a 24h window + `backfillRevolutHistory()` at boot (fire-and-forget after `listen()`).
+
+### Key patterns (verified against a real production transaction, 2026-08-30 — not against docs)
+
+- **One collection, discriminated by `type`.** `GET /orders` returns payments AND refunds. A refund is a TOP-LEVEL order of `type: "refund"` carrying `related_order_id` — the direct analogue of Stripe's `refund.payment_intent`. **There is no refund array nested on the payment, and no `/refunds` endpoint** (`GET /refunds` → `401 code:2000`, which means "not on this surface", NOT "not authorized"). So money-returned needs no special projector: it is `type='refund' AND state='completed'`, the same "one row per return keyed by its own id, summed over current state" contract the Stripe mirror already guarantees.
+- **Route on `type`, never on the id.** Revolut ids are **bare UUIDs with no prefix** and there is **no `object` field**. Same rule as the Stripe side (`data.object.object`), different field name. An id prefix would be no help at all here — there isn't one.
+- **The webhook body is a TRIGGER, never the record.** A delivery tells us WHICH order changed; we then `GET` that order and store what Revolut authoritatively says. Two consequences, both deliberate: the mirror does not depend on any webhook payload shape (still unobserved — nothing has been delivered yet), and a replayed or reordered delivery cannot write a stale state.
+- **Mirroring a refund re-reads its parent.** `refunded_amount` only ever moves on the payment, so a refund we just learned about leaves the payment stale until it is re-read too.
+- **⚠️ `GET /orders` is a SUMMARY, and the detail-only rule is STRUCTURAL because it cannot be sniffed.** The list omits `payments` and `refunded_amount` — the fee, the settled amount, and how much came back — so storing one would let a poll blank those fields on an order already mirrored correctly. The obvious defence, checking the payload for those keys, is **wrong**: a cancelled or never-paid order's DETAIL has neither field either, so it is byte-identical in shape to a list entry. That guard shipped, and in production it rejected a real `ORDER_CANCELLED` delivery and 500'd it back to Revolut — the exact way an endpoint gets disabled. There is no discriminator in the data, only provenance. So `recordRevolutObject` is **not exported**: the only way an order reaches bronze is `mirrorOrderById`, which fetches it itself. The list is used for discovery of ids and nothing else.
+- **Only ORDER_* webhook events exist.** Verified at registration by iteratively dropping what the API rejected: `PAYMENT_COMPLETED`, `PAYMENT_DECLINED`, `REFUND_COMPLETED` and `REFUND_FAILED` are **not supported** on this version. So **there is no refund webhook** — a refund's state change is discoverable only through the 5-minute poller, while a payment gets both paths. That is the one place a Revolut return is genuinely less fresh than a Stripe one, and it is bounded by the poll interval, not open-ended.
+- **A refund's org is JOINED through `related_order_id`, never copied onto the row.** Revolut mints a refund as its own order with NO metadata, so it cannot answer for itself. Same rule as the Stripe `refunds`/`disputes` tables, which carry no `org_id` either — and here it is not just tidiness: the back-fill walks NEWEST-FIRST, so a refund is mirrored BEFORE the payment it belongs to, and a copied tenant is written null forever with nothing to heal it. Observed in production on the first deploy: three refunds landed with a null org while their payment carried one. `revolutOrgIdOf` therefore reads the order's own metadata and nothing else.
+- **Fees live on the payment, not on a separate object.** `payments[].fees[]` is an ARRAY of typed entries, so `feeAmountOf` SUMS them rather than reading `fees[0]` — taking the first would silently under-report the moment Revolut adds a second kind. Null for an unsettled order, which is not a fee of zero.
+- **A refund needs SETTLED merchant funds.** Stripe refunds against a pending balance and will go negative; Revolut returns `400 insufficient_funds` until the money has settled. A refund can therefore fail for a reason that has nothing to do with the payment, and each failed attempt creates a real refund order at `state: "failed"` — which is exactly the "a refund that later fails drops out of every sum" case, and it works by construction.
+- **Bronze is keyed on a CONTENT HASH, not a vendor event id.** All four freshness paths legitimately fetch the same object; hashing the payload means an identical re-read collapses onto the row already there instead of inflating the ledger. It also needs no assumption about which id or timestamp field a shape we have not seen yet will carry.
+- **No dispute silver table, on purpose.** `GET /disputes` IS listable (unlike refunds) but has only ever returned an empty list, so no dispute payload has been observed. Disputes are captured in bronze and will be projected when a real one exists. Typed columns for an unobserved shape would be guesswork.
+- ⚠️ **The fee premise is UNMEASURED.** The one real transaction settled `472` of `500` — a 28¢ acquiring fee, 5.6% — but it was paid with `revolut_pay_account`, NOT a card. That says nothing about the cheap EEA card rate the second acquirer was chosen for. Do not quote a Revolut-vs-Stripe comparison from it.
+- **Webhook exemptions are per-path and easy to miss.** `/v1/revolut/webhooks` does NOT match the `/v1/webhooks` prefix that exempts Stripe, so it needs its OWN entry in `serviceAuth` AND `identityHeaders`. Without both, every delivery 4xxs — and a webhook that keeps failing gets the endpoint **disabled by the sender**, silently.
 
 ## Out of scope (Phase 2)
 
