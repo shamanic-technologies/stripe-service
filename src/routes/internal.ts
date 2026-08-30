@@ -3,7 +3,11 @@ import { and, eq, desc, lt } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "../db";
 import { customers, paymentIntents } from "../db/schema";
-import { getPlatformStripe, recordApiSnapshot } from "../lib/event-processor";
+import {
+  getPlatformStripe,
+  recordApiSnapshot,
+  resolveOrgId,
+} from "../lib/event-processor";
 import { isResourceMissing } from "../lib/stripe-client";
 import {
   returnedByPaymentIntent,
@@ -15,7 +19,10 @@ import {
   paymentIntentIdFromInvoice,
   paymentIntentProvenance,
 } from "../lib/invoice-provenance";
-import { CreateInvoiceByOrgRequestSchema } from "../schemas";
+import {
+  CreateInvoiceByOrgRequestSchema,
+  UpdateCustomerMetadataRequestSchema,
+} from "../schemas";
 
 const router = Router();
 
@@ -135,6 +142,124 @@ router.get(
       res.locals.stripeObjectId = row[0].id;
       return res.json(row[0].rawJson);
     } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+/**
+ * GET /internal/customers/by-org/:orgId/all
+ *
+ * EVERY Stripe customer mirrored for the org, as a Stripe list. The sibling
+ * route above returns the ONE customer the 1:1 invariant promises; this one
+ * returns all of them, because history does not always honour that promise.
+ * `POST /v1/customers` has been idempotent per org since #92, but orgs that
+ * predate it can hold more than one `cus_…` — 4 of them in production at the
+ * time of writing. A caller reassigning an org's customers has to see all of
+ * them or it silently strands the ones it never listed.
+ *
+ * Callers do NOT store `cus_…` (this service owns the org<->customer mapping),
+ * so "which customers belong to this org" is a question only we can answer.
+ * The answer comes from the `org_id` column rather than from a
+ * `metadata[org_id]` filter: the column IS the mapping, it is what every other
+ * org-scoped read here uses, and it stays right even for a row whose Stripe
+ * metadata was never stamped. (They agree in production today — 0 of 129 rows
+ * differ — so this is the same set, resolved through the mapping we own rather
+ * than through the vendor's metadata.)
+ *
+ * DB-mirror read, no Stripe call, no limit and no pagination: an org holds a
+ * handful of customers, not a page of them. An org with none gets an empty
+ * list, not a 404 — "this org has no customers" is a fine answer to a list.
+ */
+router.get(
+  "/internal/customers/by-org/:orgId/all",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+
+      const rows = await db
+        .select()
+        .from(customers)
+        .where(eq(customers.orgId, orgId))
+        .orderBy(desc(customers.syncedAt));
+
+      if (rows.length > 0) res.locals.stripeObjectId = rows[0].id;
+
+      return res.json({
+        object: "list",
+        data: rows.map((r) => r.rawJson).filter((raw) => raw !== null),
+        has_more: false,
+        url: `/internal/customers/by-org/${orgId}/all`,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+/**
+ * POST /internal/customers/:id/metadata
+ *
+ * Rewrite a Stripe customer's metadata with no end-user identity. The `/v1`
+ * twin (`POST /v1/customers/:id`) resolves a per-org-per-user Stripe key, so a
+ * machine caller cannot reach it — and the workaround for that was a zero-uuid
+ * `x-user-id`, which is exactly what the `/internal/*` tier exists to make
+ * unnecessary (#77). Platform key, org keyed off the customer, same as every
+ * other route in this file.
+ *
+ * Deliberately metadata-ONLY rather than a user-less mirror of the whole
+ * customer update. A user-less write surface should be as narrow as the need,
+ * and the need is the org<->customer mapping, which lives in metadata. Widen it
+ * when something actually needs more, not in advance.
+ *
+ * `metadata` is forwarded verbatim, so Stripe's own semantics apply unchanged:
+ * keys are MERGED into what is already there, and a key set to the empty string
+ * is deleted. This is a passthrough, not a replace — a caller that wants the
+ * final shape sends the final shape.
+ *
+ * Re-mirrors through `recordApiSnapshot`, so silver follows the write instead
+ * of waiting for a webhook. That matters here more than usual: rewriting
+ * `metadata.org_id` MOVES the customer between tenants, and the org the row
+ * gets projected under is resolved from the UPDATED object — so the mirror
+ * lands on the new owner in the same request, not on the next `customer.updated`
+ * delivery.
+ *
+ * Fail loud: unknown customer -> 404, any other Stripe error propagates.
+ */
+router.post(
+  "/internal/customers/:id/metadata",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = UpdateCustomerMetadataRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid request", details: parsed.error.flatten() });
+      }
+
+      const { id } = req.params;
+      res.locals.stripeObjectId = id;
+
+      const stripe = await getPlatformStripe();
+      const customer = await stripe.customers.update(id, {
+        metadata: parsed.data.metadata,
+      });
+
+      // The org the mirror row belongs to AFTER the write — a metadata.org_id
+      // rewrite is a tenant move, and silver has to land on the new owner.
+      const orgId = await resolveOrgId(
+        (customer.metadata?.org_id as string | undefined) ?? null,
+        customer.id
+      );
+      res.locals.orgId = orgId;
+
+      await recordApiSnapshot(customer, "customer", orgId);
+      return res.json(customer);
+    } catch (err) {
+      if (isResourceMissing(err)) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
       return next(err);
     }
   }

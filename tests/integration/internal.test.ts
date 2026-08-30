@@ -259,6 +259,169 @@ describe("GET /internal/payment_intents/by-org/:orgId (user-less)", () => {
   });
 });
 
+describe("GET /internal/customers/by-org/:orgId/all (user-less)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns EVERY mirrored customer for the org, not just the newest", async () => {
+    dbMock.queueSelect("customers", [
+      { id: "cus_2", rawJson: { id: "cus_2", object: "customer" } },
+      { id: "cus_1", rawJson: { id: "cus_1", object: "customer" } },
+    ]);
+
+    const res = await request(app)
+      .get(`/internal/customers/by-org/${TEST_ORG_ID}/all`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      object: "list",
+      data: [
+        { id: "cus_2", object: "customer" },
+        { id: "cus_1", object: "customer" },
+      ],
+      has_more: false,
+      url: `/internal/customers/by-org/${TEST_ORG_ID}/all`,
+    });
+  });
+
+  it("resolves the org from the mapping column, not from a metadata filter", async () => {
+    dbMock.queueSelect("customers", []);
+
+    await request(app)
+      .get(`/internal/customers/by-org/${TEST_ORG_ID}/all`)
+      .set(apiKeyOnly());
+
+    expect(paramValues(dbMock.lastSelectWhere("customers"))).toEqual([TEST_ORG_ID]);
+  });
+
+  it("answers an org with no customers with an empty list, not a 404", async () => {
+    dbMock.queueSelect("customers", []);
+
+    const res = await request(app)
+      .get(`/internal/customers/by-org/${TEST_ORG_ID}/all`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([]);
+  });
+
+  it("needs no end-user identity", async () => {
+    dbMock.queueSelect("customers", []);
+
+    const res = await request(app)
+      .get(`/internal/customers/by-org/${TEST_ORG_ID}/all`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects with 401 when X-API-Key is missing", async () => {
+    const res = await request(app).get(
+      `/internal/customers/by-org/${TEST_ORG_ID}/all`
+    );
+
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("POST /internal/customers/:id/metadata (user-less)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("forwards the metadata verbatim to Stripe with no end-user identity", async () => {
+    stripeMock.customers.update.mockResolvedValue({
+      id: "cus_1",
+      object: "customer",
+      metadata: { org_id: "org-target", brand_id: "brand-b" },
+    });
+    dbMock.queueInsert("events", [{ id: "evt_synthetic" }]);
+    dbMock.queueSelect("events", [
+      {
+        payload: {
+          data: {
+            object: {
+              id: "cus_1",
+              object: "customer",
+              metadata: { org_id: "org-target" },
+            },
+          },
+        },
+      },
+    ]);
+
+    const res = await request(app)
+      .post("/internal/customers/cus_1/metadata")
+      .set(apiKeyOnly())
+      .send({ metadata: { org_id: "org-target", brand_id: "brand-b" } });
+
+    expect(res.status).toBe(200);
+    expect(stripeMock.customers.update).toHaveBeenCalledWith("cus_1", {
+      metadata: { org_id: "org-target", brand_id: "brand-b" },
+    });
+  });
+
+  it("re-mirrors under the org the UPDATED object names, so a tenant move lands on the new owner", async () => {
+    stripeMock.customers.update.mockResolvedValue({
+      id: "cus_1",
+      object: "customer",
+      metadata: { org_id: "org-target" },
+    });
+    dbMock.queueInsert("events", [{ id: "evt_synthetic" }]);
+    dbMock.queueSelect("events", [
+      {
+        payload: {
+          data: {
+            object: {
+              id: "cus_1",
+              object: "customer",
+              metadata: { org_id: "org-target" },
+            },
+          },
+        },
+      },
+    ]);
+
+    await request(app)
+      .post("/internal/customers/cus_1/metadata")
+      .set(apiKeyOnly())
+      .send({ metadata: { org_id: "org-target" } });
+
+    // The synthetic bronze event is what carries the move into silver.
+    expect(dbMock.lastInsertValues("events")).toBeTruthy();
+  });
+
+  it("404s on a customer Stripe does not have", async () => {
+    stripeMock.customers.update.mockRejectedValue(
+      Object.assign(new Error("No such customer"), { statusCode: 404 })
+    );
+
+    const res = await request(app)
+      .post("/internal/customers/cus_missing/metadata")
+      .set(apiKeyOnly())
+      .send({ metadata: { org_id: "org-target" } });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a body with no metadata rather than writing nothing silently", async () => {
+    const res = await request(app)
+      .post("/internal/customers/cus_1/metadata")
+      .set(apiKeyOnly())
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(stripeMock.customers.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects with 401 when X-API-Key is missing", async () => {
+    const res = await request(app)
+      .post("/internal/customers/cus_1/metadata")
+      .send({ metadata: { org_id: "org-target" } });
+
+    expect(res.status).toBe(401);
+    expect(stripeMock.customers.update).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /internal/payment_summary/by-org/:orgId (user-less)", () => {
   beforeEach(() => vi.clearAllMocks());
 
