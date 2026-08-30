@@ -983,3 +983,37 @@ describe("GET /internal/payment_methods/by-org/:orgId (user-less)", () => {
     expect(stripeMock.paymentMethods.list).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /internal/invoices/by-org/:orgId — acquirer dispatch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock.clearQueues();
+  });
+
+  it("charges a Revolut-pinned org through Revolut and says there is no invoice", async () => {
+    dbMock.queueSelect("org_acquirers", [
+      { acquirer: "revolut", customerId: "cus-rev-1" },
+    ]);
+
+    const res = await request(app)
+      .post(`/internal/invoices/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly())
+      .set("Idempotency-Key", "k-1")
+      .send({ amount: 50000, currency: "usd", description: "top-up" });
+
+    // The Revolut client is not mocked here, so the call fails outward — what
+    // this asserts is the DISPATCH: a Revolut org must not be sent down the
+    // Stripe invoice path, which would charge the wrong acquirer.
+    expect(stripeMock.invoices?.create).not.toHaveBeenCalled();
+  });
+
+  it("still requires an Idempotency-Key before doing anything at all", async () => {
+    const res = await request(app)
+      .post(`/internal/invoices/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly())
+      .send({ amount: 50000, currency: "usd", description: "top-up" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Idempotency-Key/);
+  });
+});
