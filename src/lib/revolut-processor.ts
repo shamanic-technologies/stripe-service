@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { revolutObjectSnapshots, revolutOrders } from "../db/schema";
-import { getOrder, type RevolutOrder } from "./revolut-client";
+import { cancelOrder, getOrder, type RevolutOrder } from "./revolut-client";
 
 export type RevolutObjectKind = "order" | "dispute";
 export type RevolutSource = "webhook" | "poll" | "backfill";
@@ -219,6 +219,8 @@ export async function mirrorOrderById(
   const order = await getOrder(orderId);
   await recordRevolutObject("order", order, source);
 
+  await releaseCardSetupHold(order);
+
   // A refund's parent carries `refunded_amount`, which only changes on the
   // parent object — so a refund we just learned about leaves the payment stale
   // until we re-read it too.
@@ -240,4 +242,40 @@ export async function recordDisputeSnapshot(
   source: RevolutSource
 ): Promise<void> {
   await recordRevolutObject("dispute", dispute, source);
+}
+
+/**
+ * Release the authorisation placed to verify a card.
+ *
+ * Changing a card must not cost anything, but this acquirer cannot store a
+ * payment method without one — so card setup authorises a small amount and
+ * never captures it. The moment the customer has authorised, the card is saved
+ * and the hold has done its job, so it is cancelled and the money is released.
+ *
+ * Only ever touches an order this service created FOR card setup, identified by
+ * the metadata it stamped itself. A real payment is never cancelled here.
+ *
+ * Swallows its own failure on purpose: a hold that outlives its usefulness
+ * expires on its own within days and is an annoyance, while throwing would fail
+ * the webhook and make the acquirer retry — turning a released-late hold into a
+ * card that never got saved at all. It logs loudly instead.
+ */
+async function releaseCardSetupHold(order: RevolutOrder): Promise<void> {
+  if (order.metadata?.purpose !== "card-setup") return;
+  const state = order.state;
+  // `pending` means nobody has authorised yet; `cancelled`/`failed` are done.
+  if (state !== "authorised" && state !== "completed") return;
+
+  try {
+    await cancelOrder(order.id);
+    console.log(
+      `[stripe-service] Released the card-verification hold on Revolut order ${order.id}`
+    );
+  } catch (err) {
+    console.error(
+      `[stripe-service] Could NOT release the card-verification hold on ${order.id}. ` +
+        "The customer has a temporary authorisation that will expire on its own:",
+      err
+    );
+  }
 }

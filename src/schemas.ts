@@ -114,11 +114,10 @@ export const CardSetupRequestSchema = z
       description:
         "Where a hosted flow returns the customer to. Ignored by an acquirer whose flow is embedded rather than hosted.",
     }),
-    amount: z.number().int().positive().optional().openapi({
+    currency: z.string().min(3).optional().openapi({
       description:
-        "Minor units the customer is paying now. REQUIRED for an acquirer that can only store a card during a payment (409 card_setup_requires_payment without it); ignored by one with a hosted portal.",
+        "Currency for the verification authorisation an acquirer may need to place. Never captured.",
     }),
-    currency: z.string().min(3).optional(),
   })
   .openapi("CardSetupRequest");
 
