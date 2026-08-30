@@ -19,19 +19,6 @@ export type RevolutSource = "webhook" | "poll" | "backfill";
  */
 
 
-/**
- * Is this the DETAIL response rather than a list entry?
- *
- * `GET /orders` omits `payments` and `refunded_amount` entirely; `GET
- * /orders/{id}` includes both. Verified against production on 2026-08-30 —
- * the list carried 14 keys, the detail 16. Presence of either field is
- * therefore the discriminator, and a detail response always carries
- * `refunded_amount` even when it is 0.
- */
-export function isOrderDetail(order: Record<string, unknown>): boolean {
-  return "payments" in order || "refunded_amount" in order;
-}
-
 function snapshotId(
   kind: RevolutObjectKind,
   objectId: string,
@@ -58,22 +45,11 @@ function parseDate(value: unknown): Date | null {
  * (webhook, poll, back-fill, and a manual re-read) legitimately fetch the same
  * object, and none of them should be able to inflate the ledger.
  */
-export async function recordRevolutObject(
+async function recordRevolutObject(
   kind: RevolutObjectKind,
   object: { id: string; updated_at?: string; [key: string]: unknown },
   source: RevolutSource
 ): Promise<void> {
-  if (kind === "order" && !isOrderDetail(object)) {
-    // Bronze holds AUTHORITATIVE responses only. `GET /orders` returns a
-    // SUMMARY that silently omits `payments` and `refunded_amount` — i.e. the
-    // fee, the settled amount, and how much came back. Storing one would let a
-    // later poll overwrite a full snapshot with a hollow one and blank real
-    // money fields, so the list is discovery and nothing more.
-    throw new Error(
-      `Refusing to mirror a summary payload for Revolut order ${object.id}: ` +
-        "fetch the order by id and store that instead"
-    );
-  }
   await db
     .insert(revolutObjectSnapshots)
     .values({
@@ -216,13 +192,27 @@ async function upsertRevolutOrder(order: RevolutOrder): Promise<void> {
 }
 
 /**
- * Fetch an order from Revolut and mirror it. This is the ONLY path a webhook
- * takes: a delivery tells us WHICH order changed and we ask Revolut what it now
- * says, rather than trusting a body we did not authenticate the contents of.
- * It also means the mirror does not depend on the shape of any webhook payload,
- * which is the one Revolut shape we have still never observed.
+ * Mirror one order, BY ID. This is the only way an order reaches bronze, and
+ * that is a structural guarantee rather than a convention: `recordRevolutObject`
+ * is not exported, so no caller can hand in a payload it got from somewhere
+ * else.
+ *
+ * It has to be structural, because the shapes cannot be told apart. `GET
+ * /orders` returns a SUMMARY missing `payments` and `refunded_amount` — the
+ * fee, the settled amount, and how much came back — and storing one would let a
+ * later poll blank those fields on an order already mirrored correctly. The
+ * obvious defence, sniffing the payload for those keys, is WRONG: a cancelled
+ * or never-paid order's DETAIL has neither field either, so it is byte-identical
+ * in shape to a list entry. Verified in production on 2026-08-30, when exactly
+ * that guard rejected a legitimate `ORDER_CANCELLED` delivery and 500'd it back
+ * to Revolut. There is no discriminator in the data; there is only where the
+ * payload came from.
+ *
+ * This is also the whole of the webhook path: a delivery tells us WHICH order
+ * changed and we ask Revolut what it now says, rather than trusting a body
+ * whose shape we have no other way to check.
  */
-export async function fetchAndMirrorOrder(
+export async function mirrorOrderById(
   orderId: string,
   source: RevolutSource
 ): Promise<RevolutOrder> {
@@ -238,4 +228,16 @@ export async function fetchAndMirrorOrder(
     await recordRevolutObject("order", parent, source);
   }
   return order;
+}
+
+/**
+ * Capture a dispute in bronze, verbatim. No silver projection: `GET /disputes`
+ * is listable but has only ever returned an empty list, so no dispute payload
+ * has been observed and typed columns would be guessed.
+ */
+export async function recordDisputeSnapshot(
+  dispute: { id: string; updated_at?: string; [key: string]: unknown },
+  source: RevolutSource
+): Promise<void> {
+  await recordRevolutObject("dispute", dispute, source);
 }

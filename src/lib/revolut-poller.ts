@@ -1,5 +1,8 @@
-import { listOrders, listDisputes, getOrder } from "./revolut-client";
-import { recordRevolutObject } from "./revolut-processor";
+import { listOrders, listDisputes } from "./revolut-client";
+import {
+  mirrorOrderById,
+  recordDisputeSnapshot,
+} from "./revolut-processor";
 
 /**
  * Periodic reconciliation against Revolut, the backstop for anything the
@@ -43,8 +46,7 @@ export async function pollRevolutOnce(nowMs: number = Date.now()): Promise<numbe
     let oldest: string | undefined;
     for (const summary of orders) {
       if (!summary?.id) continue;
-      const detail = await getOrder(summary.id);
-      await recordRevolutObject("order", detail, "poll");
+      await mirrorOrderById(summary.id, "poll");
       mirrored += 1;
       if (summary.created_at) oldest = summary.created_at;
     }
@@ -61,7 +63,7 @@ export async function pollRevolutOnce(nowMs: number = Date.now()): Promise<numbe
     for (const dispute of Array.isArray(disputes) ? disputes : []) {
       const d = dispute as { id?: string; updated_at?: string };
       if (typeof d?.id === "string") {
-        await recordRevolutObject("dispute", d as { id: string }, "poll");
+        await recordDisputeSnapshot(d as { id: string }, "poll");
         mirrored += 1;
       }
     }
@@ -95,8 +97,7 @@ export async function backfillRevolutHistory(): Promise<number> {
     let oldest: string | undefined;
     for (const summary of orders) {
       if (!summary?.id) continue;
-      const detail = await getOrder(summary.id);
-      await recordRevolutObject("order", detail, "backfill");
+      await mirrorOrderById(summary.id, "backfill");
       mirrored += 1;
       if (summary.created_at) oldest = summary.created_at;
     }

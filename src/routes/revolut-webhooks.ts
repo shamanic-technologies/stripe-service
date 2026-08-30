@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { Router, Request, Response } from "express";
 import { resolvePlatformKey } from "../lib/key-client";
-import { fetchAndMirrorOrder } from "../lib/revolut-processor";
+import { mirrorOrderById } from "../lib/revolut-processor";
 
 const router = Router();
 
@@ -144,7 +144,7 @@ router.post("/v1/revolut/webhooks", async (req: Request, res: Response) => {
   }
 
   try {
-    await fetchAndMirrorOrder(orderId, "webhook");
+    await mirrorOrderById(orderId, "webhook");
   } catch (err) {
     // Fail loud: Revolut retries a 5xx, and the 5-minute poller is the backstop
     // if the retries also fail. Swallowing here would lose the change silently.
