@@ -1027,9 +1027,19 @@ describe("POST /internal/charges/by-org/:orgId (vendor-neutral charge)", () => {
     stripeMock.invoices.pay.mockReset();
     stripeMock.invoiceItems.create.mockReset();
     stripeMock.paymentIntents.update.mockReset();
+    stripeMock.paymentMethods.list.mockReset();
   });
 
+  /** The org's saved card, which this route resolves itself. */
+  function queueSavedCard(id = "pm_card_1") {
+    stripeMock.paymentMethods.list.mockResolvedValueOnce({
+      object: "list",
+      data: [{ id, object: "payment_method", type: "card" }],
+    });
+  }
+
   function queueHappyStripeInvoice() {
+    queueSavedCard();
     stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_9", status: "draft" });
     stripeMock.invoiceItems.create.mockResolvedValueOnce({ id: "ii_9" });
     stripeMock.invoices.finalizeInvoice.mockResolvedValueOnce({ id: "in_9", status: "open" });
@@ -1090,7 +1100,7 @@ describe("POST /internal/charges/by-org/:orgId (vendor-neutral charge)", () => {
     );
     expect(stripeMock.invoices.pay).toHaveBeenCalledWith(
       "in_9",
-      { off_session: true, expand: ["payments"] },
+      { off_session: true, expand: ["payments"], payment_method: "pm_card_1" },
       expect.objectContaining({ idempotencyKey: "topup_n2:pay" })
     );
     expect(stripeMock.paymentIntents.update).toHaveBeenCalledWith(
@@ -1155,6 +1165,7 @@ describe("POST /internal/charges/by-org/:orgId (vendor-neutral charge)", () => {
   it("reports a Stripe charge that did not complete as failed, not as a missing document", async () => {
     dbMock.queueSelect("org_acquirers", []);
     dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    queueSavedCard();
     stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_8", status: "draft" });
     stripeMock.invoiceItems.create.mockResolvedValueOnce({ id: "ii_8" });
     stripeMock.invoices.finalizeInvoice.mockResolvedValueOnce({ id: "in_8", status: "open" });
@@ -1179,6 +1190,96 @@ describe("POST /internal/charges/by-org/:orgId (vendor-neutral charge)", () => {
     // A document that exists is still reported: absence means "no such thing",
     // and it must not be how a caller reads a failure.
     expect(res.body.hosted_document_url).toBe("https://pay.stripe.com/i/in_8");
+  });
+
+  it("charges the org's saved card without the caller naming one", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    queueHappyStripeInvoice();
+
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_pm1" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("succeeded");
+    // Named explicitly on BOTH the draft and the pay call — never left to the
+    // customer's Stripe default, which is routinely absent or a wallet method
+    // Stripe refuses off-session.
+    expect(stripeMock.paymentMethods.list).toHaveBeenCalledWith({
+      customer: "cus_x",
+      type: "card",
+    });
+    expect(stripeMock.invoices.create).toHaveBeenCalledWith(
+      expect.objectContaining({ default_payment_method: "pm_card_1" }),
+      expect.anything()
+    );
+    expect(stripeMock.invoices.pay).toHaveBeenCalledWith(
+      "in_9",
+      expect.objectContaining({ payment_method: "pm_card_1" }),
+      expect.anything()
+    );
+  });
+
+  it("charges a Link-saved method when the org has no card", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    // No card; a Link method IS chargeable off-session when named by id.
+    stripeMock.paymentMethods.list.mockResolvedValueOnce({ object: "list", data: [] });
+    stripeMock.paymentMethods.list.mockResolvedValueOnce({
+      object: "list",
+      data: [{ id: "pm_link_1", object: "payment_method", type: "link" }],
+    });
+    stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_9", status: "draft" });
+    stripeMock.invoiceItems.create.mockResolvedValueOnce({ id: "ii_9" });
+    stripeMock.invoices.finalizeInvoice.mockResolvedValueOnce({ id: "in_9", status: "open" });
+    stripeMock.invoices.pay.mockResolvedValueOnce({
+      id: "in_9",
+      object: "invoice",
+      status: "paid",
+      payments: {
+        object: "list",
+        data: [{ id: "inpay_9", payment: { type: "payment_intent", payment_intent: "pi_9" } }],
+      },
+      hosted_invoice_url: "https://pay.stripe.com/i/in_9",
+    });
+    stripeMock.paymentIntents.update.mockResolvedValueOnce({
+      id: "pi_9",
+      object: "payment_intent",
+      status: "succeeded",
+    });
+
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_pm2" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    expect(res.status).toBe(200);
+    expect(stripeMock.paymentMethods.list).toHaveBeenNthCalledWith(2, {
+      customer: "cus_x",
+      type: "link",
+    });
+    expect(stripeMock.invoices.pay).toHaveBeenCalledWith(
+      "in_9",
+      expect.objectContaining({ payment_method: "pm_link_1" }),
+      expect.anything()
+    );
+  });
+
+  it("refuses a Stripe org with no chargeable saved method, the same way Revolut does, and charges nothing", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    stripeMock.paymentMethods.list.mockResolvedValue({ object: "list", data: [] });
+
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_pm3" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/no chargeable saved payment method/i);
+    expect(stripeMock.invoices.create).not.toHaveBeenCalled();
   });
 
   it("rejects with 401 when X-API-Key is missing", async () => {
