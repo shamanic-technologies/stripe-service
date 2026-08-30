@@ -59,7 +59,10 @@ GET    /internal/customers/by-org/:orgId        — user-less: org's customer ra
 GET    /internal/customers/by-org/:orgId/all    — user-less: EVERY customer mirrored for the org, as a Stripe list
 POST   /internal/customers/:id/metadata         — user-less: rewrite a customer's Stripe metadata (platform key), re-mirrors immediately
 GET    /internal/payment_intents/by-org/:orgId  — user-less: org's PIs as Stripe list (DB mirror, no limit) + per-PI amount_refunded / amount_disputed_lost / amount_returned
-GET    /internal/payment_summary/by-org/:orgId  — user-less: per-currency amount_received / amount_returned / amount_net (DB mirror); ?as_of=<unix seconds> bounds payments AND returns to before that instant
+GET    /internal/payment_summary/by-org/:orgId  — user-less: per-currency amount_received / amount_returned / amount_net ACROSS BOTH ACQUIRERS (DB mirror); ?as_of=<unix seconds> bounds payments AND returns to before that instant
+GET    /internal/acquirer/by-org/:orgId         — user-less: which acquirer charges this org (absent = stripe)
+PUT    /internal/acquirer/by-org/:orgId         — user-less: pin an org to an acquirer; creates its Revolut customer when needed
+POST   /internal/charges/by-org/:orgId          — user-less: charge an org off-session, vendor-neutral result; 409 for a Stripe org (use the invoice route)
 GET    /internal/payment_methods/by-org/:orgId  — user-less: org customer's PMs (live Stripe, platform key); ?type=card
 POST   /internal/invoices/by-org/:orgId          — user-less: create + pay an OFF-SESSION invoice for the org's customer (finalized + paid Stripe invoice); idempotent per Idempotency-Key header
 POST  /v1/checkout/sessions               — create (line_items required for mode payment/subscription; forbidden for mode setup)
@@ -167,6 +170,16 @@ all. billing-service does not know Revolut exists and must not learn.
 - **No dispute silver table, on purpose.** `GET /disputes` IS listable (unlike refunds) but has only ever returned an empty list, so no dispute payload has been observed. Disputes are captured in bronze and will be projected when a real one exists. Typed columns for an unobserved shape would be guesswork.
 - ⚠️ **The fee premise is UNMEASURED.** The one real transaction settled `472` of `500` — a 28¢ acquiring fee, 5.6% — but it was paid with `revolut_pay_account`, NOT a card. That says nothing about the cheap EEA card rate the second acquirer was chosen for. Do not quote a Revolut-vs-Stripe comparison from it.
 - **Webhook exemptions are per-path and easy to miss.** `/v1/revolut/webhooks` does NOT match the `/v1/webhooks` prefix that exempts Stripe, so it needs its OWN entry in `serviceAuth` AND `identityHeaders`. Without both, every delivery 4xxs — and a webhook that keeps failing gets the endpoint **disabled by the sender**, silently.
+
+### Routing an org to Revolut
+
+- **The acquirer pin lives HERE, and billing never names a vendor.** This service already owns the other half of the same fact — which KEY charges an org, resolved per-org from key-service — so which acquirer that key belongs to is our business too. `org_acquirers` is absent-means-Stripe, so every org that predates it keeps its behaviour with no backfill and a lookup miss can never reroute money. A row we cannot READ throws rather than falling back: charging on the default would put the money through the wrong acquirer while the customer's saved card sits on the other one.
+- **Re-pinning an org that already has a customer on the other acquirer is REFUSED.** A saved card lives with one acquirer and cannot move. Flipping the pin would leave the org uncharge-able while its dashboard still shows a card on file — a decline nobody can explain.
+- **`POST /internal/charges/by-org/:orgId` is the vendor-neutral charge, and it is NOT the invoice route.** The caller states an amount and a reason and never names an acquirer. `hosted_document_url` is null for an acquirer with no invoice object — Revolut has none — and null means "this acquirer does not produce one", never "it failed". A Stripe org gets a **409 pointing at the invoice route**, because that route produces the finalized invoice + PDF this one cannot, and silently downgrading a Stripe org to a document-less charge would lose a customer-visible artifact.
+- **The payment summary spans BOTH acquirers, and that is what makes a switch safe.** An org's money is its money whichever acquirer took it. Without this, moving an org to a second acquirer makes its payments invisible to every balance that reads this endpoint: **it would pay and its balance would not move.** Revolut money in is `type='payment' AND state='completed'`; money out is `type='refund' AND state='completed'`, attributed by joining the refund to its parent through `related_order_id`.
+- **Charging via Revolut = create order, then `POST /orders/{id}/payments` with `saved_payment_method: {type, id}`.** Established against the live API, not docs: the endpoint answers `400 Either 'payment_method' or 'saved_payment_method' must be set`, and both `type` and a UUID `id` are required.
+- **The saved-method list is read LIVE on every charge, never cached.** Revolut invalidates merchant-initiated eligibility once the customer UPDATES their card — no event, no error, until the charge fails. Reading live puts the refusal here, where the reason is legible, instead of at the acquirer.
+- **The charge mirrors the order in a `finally`, including when the pay call THROWS.** A declined charge is a real state; leaving it unmirrored makes a failure indistinguishable from a charge that never ran.
 
 ## Out of scope (Phase 2)
 
