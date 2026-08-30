@@ -16,6 +16,7 @@ import {
   type SummaryPayment,
 } from "../lib/returned-amounts";
 import { resolveAcquirer, pinAcquirer } from "../lib/acquirer";
+import { buildCardSetup } from "../lib/card-setup";
 import {
   chargeViaRevolut,
   chargeViaStripeInvoice,
@@ -36,6 +37,7 @@ import {
   UpdateCustomerMetadataRequestSchema,
   PinAcquirerRequestSchema,
   ChargeByOrgRequestSchema,
+  CardSetupRequestSchema,
 } from "../schemas";
 
 const router = Router();
@@ -403,6 +405,70 @@ router.get(
         customer_id: pin.customerId,
       });
     } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+/**
+ * POST /internal/card_setup/by-org/:orgId
+ *
+ * How this org's customer adds a card — described, not performed.
+ *
+ * The acquirers do not do this the same way and no wrapper makes them: one
+ * hosts a portal we redirect to, the other has no portal at all and saves a
+ * card only through a browser widget the page must mount itself. So the
+ * response says WHICH mechanism and hands over exactly what that mechanism
+ * needs. The caller switches on `mode` — a UI concern it owns anyway — and
+ * still never names an acquirer, never resolves a key, and never learns which
+ * vendor it is dealing with.
+ *
+ * The widget flow creates a ZERO-amount order, so storing a card costs the
+ * customer nothing: charging a token amount purely to capture a mandate would
+ * be a real debit on a real card for no service.
+ *
+ * Fail loud: an org with no customer on its acquirer -> 409. There is nothing
+ * to attach a card to, and answering with a session that cannot work would move
+ * the failure into the customer's browser.
+ */
+router.post(
+  "/internal/card_setup/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = CardSetupRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid request", details: parsed.error.flatten() });
+      }
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+
+      const row = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.orgId, orgId))
+        .orderBy(desc(customers.syncedAt))
+        .limit(1);
+
+      const setup = await buildCardSetup({
+        orgId,
+        returnUrl: parsed.data.return_url,
+        defaultCustomerId: row.length > 0 ? row[0].id : null,
+        hostedSession: async (customerId) => {
+          const stripe = await getPlatformStripe();
+          const session = await stripe.billingPortal.sessions.create({
+            customer: customerId,
+            return_url: parsed.data.return_url,
+          });
+          return session.url;
+        },
+      });
+      return res.json(setup);
+    } catch (err) {
+      if (err instanceof Error && /has no (acquirer )?customer/.test(err.message)) {
+        return res.status(409).json({ error: err.message });
+      }
       return next(err);
     }
   }
