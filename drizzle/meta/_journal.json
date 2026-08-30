@@ -57,6 +57,13 @@
       "when": 1788079624017,
       "tag": "0007_revolut_mirror",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788093988961,
+      "tag": "0008_org_acquirers",
+      "breakpoints": true
     }
   ]
 }

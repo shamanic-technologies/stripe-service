@@ -108,6 +108,29 @@ export const CreateCustomerRequestSchema = z
   .passthrough()
   .openapi("CreateCustomerRequest");
 
+export const PinAcquirerRequestSchema = z
+  .object({
+    acquirer: z.enum(["stripe", "revolut"]),
+    customer_id: z.string().optional().openapi({
+      description:
+        "The acquirer's own customer id. Created automatically for Revolut when omitted.",
+    }),
+    email: z.string().email().optional(),
+    full_name: z.string().optional(),
+  })
+  .openapi("PinAcquirerRequest");
+
+export const ChargeByOrgRequestSchema = z
+  .object({
+    amount: z.number().int().positive().openapi({
+      description: "Minor units, e.g. 50000 for $500.00.",
+    }),
+    currency: z.string().min(3),
+    description: z.string().min(1),
+    metadata: z.record(z.string(), z.string()).optional(),
+  })
+  .openapi("ChargeByOrgRequest");
+
 export const UpdateCustomerMetadataRequestSchema = z
   .object({
     metadata: z.record(z.string(), z.string()).openapi({

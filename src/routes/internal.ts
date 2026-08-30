@@ -19,9 +19,21 @@ import {
   paymentIntentIdFromInvoice,
   paymentIntentProvenance,
 } from "../lib/invoice-provenance";
+import { resolveAcquirer, pinAcquirer } from "../lib/acquirer";
+import {
+  chargeViaRevolut,
+  NoChargeablePaymentMethod,
+} from "../lib/charge-org";
+import { createCustomer } from "../lib/revolut-client";
+import {
+  revolutTotalsByCurrency,
+  mergeCurrencyTotals,
+} from "../lib/revolut-money";
 import {
   CreateInvoiceByOrgRequestSchema,
   UpdateCustomerMetadataRequestSchema,
+  PinAcquirerRequestSchema,
+  ChargeByOrgRequestSchema,
 } from "../schemas";
 
 const router = Router();
@@ -312,6 +324,155 @@ router.get(
 );
 
 /**
+ * PUT /internal/acquirer/by-org/:orgId
+ *
+ * Pin an org to an acquirer. Absent means Stripe, so this is only ever called
+ * to move an org OFF the default — every org that predates the pin keeps its
+ * behaviour untouched.
+ *
+ * For Revolut it also establishes the org's Revolut customer, because a saved
+ * card is saved against one: without it there is nothing to attach a card to
+ * and nothing to charge later.
+ *
+ * Re-pinning an org that already holds a customer on the other acquirer is
+ * REFUSED (see `pinAcquirer`). A saved card cannot move between acquirers, so
+ * flipping the pin would leave the org uncharge-able while its dashboard still
+ * shows a card on file.
+ */
+router.put(
+  "/internal/acquirer/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = PinAcquirerRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid request", details: parsed.error.flatten() });
+      }
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+
+      let customerId = parsed.data.customer_id ?? null;
+      if (parsed.data.acquirer === "revolut" && !customerId) {
+        const existing = await resolveAcquirer(orgId);
+        customerId =
+          existing.acquirer === "revolut" && existing.customerId
+            ? existing.customerId
+            : (
+                await createCustomer({
+                  email: parsed.data.email,
+                  full_name: parsed.data.full_name,
+                })
+              ).id;
+      }
+
+      await pinAcquirer({
+        orgId,
+        acquirer: parsed.data.acquirer,
+        customerId,
+      });
+
+      return res.json({
+        object: "org_acquirer",
+        org_id: orgId,
+        acquirer: parsed.data.acquirer,
+        customer_id: customerId,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+/**
+ * GET /internal/acquirer/by-org/:orgId — which acquirer charges this org.
+ */
+router.get(
+  "/internal/acquirer/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+      const pin = await resolveAcquirer(orgId);
+      return res.json({
+        object: "org_acquirer",
+        org_id: orgId,
+        acquirer: pin.acquirer,
+        customer_id: pin.customerId,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+/**
+ * POST /internal/charges/by-org/:orgId
+ *
+ * Take money from an org, off-session, whichever acquirer holds its card.
+ *
+ * This is the vendor-neutral charge surface: the caller states an amount and a
+ * reason, and never names an acquirer. It is what lets a second acquirer exist
+ * without billing-service changing, and it is the route that should replace the
+ * invoice-shaped one for every caller that wants a CHARGE rather than a
+ * document.
+ *
+ * `hosted_document_url` is null for an acquirer with no invoice object — which
+ * Revolut does not have. Null means "this acquirer does not produce one", never
+ * "it failed. A caller that needs a document checks for null; it is never
+ * handed a fabricated invoice.
+ *
+ * Fail loud: no saved card -> 409, any acquirer error propagates. A caller
+ * retries, and the Stripe path stays idempotency-keyed as it always was.
+ */
+router.post(
+  "/internal/charges/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = ChargeByOrgRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid request", details: parsed.error.flatten() });
+      }
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+
+      const pin = await resolveAcquirer(orgId);
+      if (pin.acquirer !== "revolut") {
+        // Stripe orgs keep the invoiced charge they already have, PDF and all.
+        return res.status(409).json({
+          error:
+            "Org is on Stripe; use POST /internal/invoices/by-org/{orgId}, which produces the invoice document this route cannot",
+          acquirer: pin.acquirer,
+        });
+      }
+      if (!pin.customerId) {
+        return res
+          .status(409)
+          .json({ error: "Org is pinned to Revolut but has no acquirer customer" });
+      }
+
+      const result = await chargeViaRevolut({
+        orgId,
+        customerId: pin.customerId,
+        amount: parsed.data.amount,
+        currency: parsed.data.currency,
+        description: parsed.data.description,
+        metadata: parsed.data.metadata,
+      });
+      res.locals.stripeObjectId = result.reference;
+      return res.json(result);
+    } catch (err) {
+      if (err instanceof NoChargeablePaymentMethod) {
+        return res.status(409).json({ error: err.message });
+      }
+      return next(err);
+    }
+  }
+);
+
+/**
  * GET /internal/payment_summary/by-org/:orgId
  *
  * What the org paid us, what we gave back, and what is therefore still real
@@ -413,12 +574,26 @@ router.get(
       const customer = customerRow.length > 0 ? customerRow[0].id : null;
       if (customer) res.locals.stripeObjectId = customer;
 
+      // The org's money is the org's money whichever acquirer took it. Summing
+      // across them here is the whole point of a neutral surface: a consumer
+      // asks what an org has paid, not what it paid THROUGH SOMETHING. Without
+      // this, moving an org to a second acquirer would make its payments
+      // invisible to every balance that reads this endpoint — it would pay and
+      // its balance would not move.
+      const revolut = await revolutTotalsByCurrency(
+        orgId,
+        asOf === undefined ? undefined : new Date(asOf * 1000)
+      );
+
       return res.json({
         object: "payment_summary",
         org_id: orgId,
         customer,
         as_of: asOf ?? null,
-        totals: summarizeByCurrency(payments, returned),
+        totals: mergeCurrencyTotals(
+          summarizeByCurrency(payments, returned),
+          revolut
+        ),
       });
     } catch (err) {
       return next(err);

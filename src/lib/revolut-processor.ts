@@ -179,7 +179,7 @@ async function upsertRevolutOrder(order: RevolutOrder): Promise<void> {
     paymentMethodType: paymentMethodTypeOf(order),
     description: order.description ?? null,
     metadata: order.metadata ?? null,
-    createdAtStripe: parseDate(order.created_at),
+    createdAtRevolut: parseDate(order.created_at),
     updatedAtRevolut: parseDate(order.updated_at),
     rawJson: order as unknown as Record<string, unknown>,
     syncedAt: new Date(),

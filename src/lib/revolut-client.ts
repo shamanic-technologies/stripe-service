@@ -134,3 +134,94 @@ export function listOrders(params: {
 export function listDisputes(): Promise<unknown[]> {
   return request<unknown[]>("GET", "/disputes");
 }
+
+/** A Revolut customer. Payment methods are saved against one of these. */
+export interface RevolutCustomer {
+  id: string;
+  email?: string;
+  full_name?: string;
+  [key: string]: unknown;
+}
+
+/** A payment method saved against a customer, chargeable off-session. */
+export interface RevolutPaymentMethod {
+  id: string;
+  type?: string;
+  /** Revolut invalidates merchant-initiated use once a method is updated. */
+  saved_for?: string;
+  method_details?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export function createCustomer(body: {
+  email?: string;
+  full_name?: string;
+}): Promise<RevolutCustomer> {
+  return request<RevolutCustomer>("POST", "/customers", body);
+}
+
+/**
+ * The customer's saved payment methods. This is the Revolut answer to "does
+ * this org have a chargeable card", and it is a LIVE read for the same reason
+ * the Stripe one is: a method can be removed or invalidated without an event we
+ * would see, so a local cache would drift.
+ */
+export async function listCustomerPaymentMethods(
+  customerId: string
+): Promise<RevolutPaymentMethod[]> {
+  const res = await request<{ payment_methods?: RevolutPaymentMethod[] }>(
+    "GET",
+    `/customers/${encodeURIComponent(customerId)}/payment-methods`
+  );
+  return res.payment_methods ?? [];
+}
+
+/**
+ * Create an order. An order is an INTENT — it moves no money until it is paid,
+ * which is what makes a save-card flow free.
+ *
+ * ⚠️ Revolut SILENTLY IGNORES unknown fields on this endpoint: sending a
+ * misspelled parameter returns 201 with the parameter dropped, and the order
+ * comes back without echoing it. Verified against production. So a typo here
+ * does not fail, it just does not do the thing — never assume a field took
+ * effect because the call succeeded; check the effect instead.
+ */
+export function createOrder(body: {
+  amount: number;
+  currency: string;
+  description?: string;
+  customer_id?: string;
+  save_payment_method_for?: "merchant" | "customer";
+  metadata?: Record<string, string>;
+}): Promise<RevolutOrder> {
+  return request<RevolutOrder>("POST", "/orders", body);
+}
+
+/**
+ * Charge an order against a card the customer already saved — the
+ * merchant-initiated transaction, with nobody on the checkout page.
+ *
+ * Shape established against the live API, not documentation: the endpoint
+ * requires `saved_payment_method` with BOTH `type` and a UUID `id`, and answers
+ * `400 Either 'payment_method' or 'saved_payment_method' must be set` when
+ * neither is given.
+ */
+export function payOrderWithSavedMethod(
+  orderId: string,
+  savedPaymentMethodId: string,
+  type = "card"
+): Promise<RevolutOrder> {
+  return request<RevolutOrder>(
+    "POST",
+    `/orders/${encodeURIComponent(orderId)}/payments`,
+    { saved_payment_method: { type, id: savedPaymentMethodId } }
+  );
+}
+
+/** Cancel an unpaid order. */
+export function cancelOrder(orderId: string): Promise<RevolutOrder> {
+  return request<RevolutOrder>(
+    "POST",
+    `/orders/${encodeURIComponent(orderId)}/cancel`
+  );
+}
