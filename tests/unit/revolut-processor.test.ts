@@ -14,9 +14,8 @@ vi.mock("../../src/lib/revolut-client", () => ({
 import {
   feeAmountOf,
   revolutOrgIdOf,
-  isOrderDetail,
-  recordRevolutObject,
-  fetchAndMirrorOrder,
+  mirrorOrderById,
+  recordDisputeSnapshot,
 } from "../../src/lib/revolut-processor";
 
 // The payment Revolut actually returned for the 2026-08-30 production test.
@@ -103,46 +102,49 @@ describe("revolutOrgIdOf", () => {
   });
 });
 
-describe("isOrderDetail", () => {
-  // GET /orders returns a SUMMARY missing `payments` and `refunded_amount` —
-  // the fee, the settled amount, and how much came back. Verified against
-  // production: 14 keys in the list, 16 in the detail.
-  const LIST_ENTRY = {
-    id: REAL_PAYMENT.id,
+describe("the detail-only invariant is structural, not sniffed", () => {
+  // A cancelled or never-paid order's DETAIL has neither `payments` nor
+  // `refunded_amount` — byte-identical in shape to a list entry. Verified in
+  // production when a payload-sniffing guard rejected a real ORDER_CANCELLED
+  // delivery. There is no discriminator in the data, so the only defence is
+  // that nothing can hand an order payload in: it is always fetched by id.
+  const CANCELLED_DETAIL = {
+    id: "6a93f223-c627-a837-a295-8f4ee0e9d10b",
     type: "payment",
-    state: "completed",
-    amount: 500,
+    state: "cancelled",
+    amount: 100,
     currency: "USD",
-    outstanding_amount: 0,
-    metadata: REAL_PAYMENT.metadata,
-    updated_at: REAL_PAYMENT.updated_at,
+    updated_at: "2026-08-30T09:04:40.000000Z",
   };
 
-  it("recognises the detail response", () => {
-    expect(isOrderDetail(REAL_PAYMENT)).toBe(true);
+  it("mirrors a cancelled order that carries neither payments nor refunded_amount", async () => {
+    getOrder.mockResolvedValue(CANCELLED_DETAIL);
+    dbMock.queueSelect("revolut_object_snapshots", [{ payload: CANCELLED_DETAIL }]);
+
+    await mirrorOrderById(CANCELLED_DETAIL.id, "webhook");
+
+    expect(dbMock.lastInsertValues("revolut_orders")).toMatchObject({
+      id: CANCELLED_DETAIL.id,
+      state: "cancelled",
+    });
   });
 
-  it("recognises a detail with no payments yet, via refunded_amount", () => {
-    expect(isOrderDetail({ id: "x", refunded_amount: 0 })).toBe(true);
-  });
+  it("always asks Revolut rather than trusting a payload it was handed", async () => {
+    getOrder.mockResolvedValue(REAL_PAYMENT);
+    dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
 
-  it("rejects a list entry", () => {
-    expect(isOrderDetail(LIST_ENTRY)).toBe(false);
-  });
+    await mirrorOrderById(REAL_PAYMENT.id, "poll");
 
-  it("refuses to mirror a summary rather than blanking real money fields", async () => {
-    await expect(
-      recordRevolutObject("order", LIST_ENTRY, "poll")
-    ).rejects.toThrow(/summary payload/i);
-    expect(dbMock.lastInsertValues("revolut_object_snapshots")).toBeUndefined();
+    expect(getOrder).toHaveBeenCalledWith(REAL_PAYMENT.id);
   });
 });
 
-describe("recordRevolutObject", () => {
+describe("bronze capture", () => {
   it("stores the payload verbatim in bronze before projecting", async () => {
+    getOrder.mockResolvedValue(REAL_PAYMENT);
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
 
-    await recordRevolutObject("order", REAL_PAYMENT, "poll");
+    await mirrorOrderById(REAL_PAYMENT.id, "poll");
 
     const stored = dbMock.lastInsertValues("revolut_object_snapshots");
     expect(stored.objectKind).toBe("order");
@@ -152,33 +154,32 @@ describe("recordRevolutObject", () => {
   });
 
   it("keys bronze on the payload so an identical re-read cannot duplicate", async () => {
+    getOrder.mockResolvedValue(REAL_PAYMENT);
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
-    await recordRevolutObject("order", REAL_PAYMENT, "poll");
+    await mirrorOrderById(REAL_PAYMENT.id, "poll");
     const first = dbMock.lastInsertValues("revolut_object_snapshots").id;
 
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
-    await recordRevolutObject("order", REAL_PAYMENT, "webhook");
+    await mirrorOrderById(REAL_PAYMENT.id, "webhook");
     const second = dbMock.lastInsertValues("revolut_object_snapshots").id;
 
     expect(second).toBe(first);
   });
 
   it("gives a changed object a different bronze row", async () => {
+    getOrder.mockResolvedValue(REAL_PAYMENT);
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
-    await recordRevolutObject("order", REAL_PAYMENT, "poll");
+    await mirrorOrderById(REAL_PAYMENT.id, "poll");
     const first = dbMock.lastInsertValues("revolut_object_snapshots").id;
 
+    getOrder.mockResolvedValue({ ...REAL_PAYMENT, state: "cancelled" });
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
-    await recordRevolutObject(
-      "order",
-      { ...REAL_PAYMENT, state: "cancelled" },
-      "poll"
-    );
+    await mirrorOrderById(REAL_PAYMENT.id, "poll");
     expect(dbMock.lastInsertValues("revolut_object_snapshots").id).not.toBe(first);
   });
 
   it("captures a dispute in bronze but projects no silver for it", async () => {
-    await recordRevolutObject("dispute", { id: "dp-1" }, "poll");
+    await recordDisputeSnapshot({ id: "dp-1" }, "poll");
 
     expect(dbMock.lastInsertValues("revolut_object_snapshots").objectKind).toBe(
       "dispute"
@@ -190,9 +191,10 @@ describe("recordRevolutObject", () => {
 
 describe("silver projection", () => {
   it("lands a payment's money fields where consumers can read them", async () => {
+    getOrder.mockResolvedValue(REAL_PAYMENT);
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
 
-    await recordRevolutObject("order", REAL_PAYMENT, "poll");
+    await mirrorOrderById(REAL_PAYMENT.id, "poll");
 
     const row = dbMock.lastInsertValues("revolut_orders");
     expect(row).toMatchObject({
@@ -209,9 +211,12 @@ describe("silver projection", () => {
   });
 
   it("projects a refund as its own row carrying the join key, not a copied org", async () => {
+    getOrder.mockImplementation((id: string) =>
+      Promise.resolve(id === REAL_REFUND.id ? REAL_REFUND : REAL_PAYMENT)
+    );
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_REFUND }]);
 
-    await recordRevolutObject("order", REAL_REFUND, "webhook");
+    await mirrorOrderById(REAL_REFUND.id, "webhook");
 
     expect(dbMock.lastInsertValues("revolut_orders")).toMatchObject({
       id: REAL_REFUND.id,
@@ -223,7 +228,7 @@ describe("silver projection", () => {
   });
 });
 
-describe("fetchAndMirrorOrder", () => {
+describe("mirrorOrderById — parent chasing", () => {
   it("re-reads the parent too, because refunded_amount only moves there", async () => {
     getOrder.mockImplementation((id: string) =>
       Promise.resolve(id === REAL_REFUND.id ? REAL_REFUND : REAL_PAYMENT)
@@ -231,7 +236,7 @@ describe("fetchAndMirrorOrder", () => {
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_REFUND }]);
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
 
-    await fetchAndMirrorOrder(REAL_REFUND.id, "webhook");
+    await mirrorOrderById(REAL_REFUND.id, "webhook");
 
     expect(getOrder).toHaveBeenCalledWith(REAL_REFUND.id);
     expect(getOrder).toHaveBeenCalledWith(REAL_PAYMENT.id);
@@ -241,7 +246,7 @@ describe("fetchAndMirrorOrder", () => {
     getOrder.mockResolvedValue(REAL_PAYMENT);
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
 
-    await fetchAndMirrorOrder(REAL_PAYMENT.id, "poll");
+    await mirrorOrderById(REAL_PAYMENT.id, "poll");
 
     expect(getOrder).toHaveBeenCalledTimes(1);
   });
