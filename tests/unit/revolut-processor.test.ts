@@ -281,54 +281,80 @@ describe("mergeCurrencyTotals", () => {
 });
 
 describe("releasing the card-verification hold", () => {
-  const SETUP_ORDER = {
+  const setupOrder = (over = {}) => ({
     id: "ord-setup",
-    type: "payment",
     state: "authorised",
-    amount: 100,
-    currency: "USD",
-    refunded_amount: 0,
-    updated_at: "2026-08-30T14:00:00.000000Z",
-    metadata: { org_id: "org-a", purpose: "card-setup" },
-  };
-
-  it("cancels the hold once the customer has authorised, so nothing is charged", async () => {
-    getOrder.mockResolvedValue(SETUP_ORDER);
-    dbMock.queueSelect("revolut_object_snapshots", [{ payload: SETUP_ORDER }]);
-
-    await mirrorOrderById(SETUP_ORDER.id, "webhook");
-
-    expect(cancelOrder).toHaveBeenCalledWith(SETUP_ORDER.id);
+    metadata: { purpose: "card-setup" },
+    updatedAt: new Date(Date.now() - 20 * 60 * 1000),
+    ...over,
   });
 
-  it("leaves a REAL payment alone", async () => {
-    getOrder.mockResolvedValue(REAL_PAYMENT);
-    dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
+  it("does NOT cancel on the webhook — that cancels it under the customer", async () => {
+    // Cancelling the moment the authorisation lands leaves the customer's page
+    // reporting a failure and the card unsaved, because the order it was being
+    // saved against no longer exists. Verified in production, twice.
+    const order = {
+      id: "ord-setup",
+      type: "payment",
+      state: "authorised",
+      amount: 100,
+      currency: "USD",
+      refunded_amount: 0,
+      updated_at: "2026-08-30T18:38:42.000000Z",
+      metadata: { org_id: "org-a", purpose: "card-setup" },
+    };
+    getOrder.mockResolvedValue(order);
+    dbMock.queueSelect("revolut_object_snapshots", [{ payload: order }]);
 
-    await mirrorOrderById(REAL_PAYMENT.id, "webhook");
+    await mirrorOrderById(order.id, "webhook");
 
     expect(cancelOrder).not.toHaveBeenCalled();
   });
 
-  it("does not cancel a setup order nobody has authorised yet", async () => {
-    const pending = { ...SETUP_ORDER, state: "pending" };
-    getOrder.mockResolvedValue(pending);
-    dbMock.queueSelect("revolut_object_snapshots", [{ payload: pending }]);
+  it("releases a hold once the flow has certainly finished", async () => {
+    const { releaseSettledCardSetupHolds } = await import(
+      "../../src/lib/revolut-processor"
+    );
+    dbMock.queueSelect("revolut_orders", [setupOrder()]);
 
-    await mirrorOrderById(pending.id, "poll");
+    expect(await releaseSettledCardSetupHolds()).toBe(1);
+    expect(cancelOrder).toHaveBeenCalledWith("ord-setup");
+  });
 
+  it("leaves a hold alone while the customer could still be in the flow", async () => {
+    const { releaseSettledCardSetupHolds } = await import(
+      "../../src/lib/revolut-processor"
+    );
+    dbMock.queueSelect("revolut_orders", [
+      setupOrder({ updatedAt: new Date(Date.now() - 30 * 1000) }),
+    ]);
+
+    expect(await releaseSettledCardSetupHolds()).toBe(0);
     expect(cancelOrder).not.toHaveBeenCalled();
   });
 
-  it("still mirrors when the release fails, rather than failing the webhook", async () => {
-    // A hold that outlives its usefulness expires on its own; a thrown webhook
-    // makes the acquirer retry and can leave the card unsaved entirely.
-    getOrder.mockResolvedValue(SETUP_ORDER);
+  it("never cancels a real payment, however old", async () => {
+    const { releaseSettledCardSetupHolds } = await import(
+      "../../src/lib/revolut-processor"
+    );
+    dbMock.queueSelect("revolut_orders", [
+      setupOrder({ metadata: { purpose: "manual-topup" } }),
+    ]);
+
+    expect(await releaseSettledCardSetupHolds()).toBe(0);
+    expect(cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it("keeps going when one release fails", async () => {
+    const { releaseSettledCardSetupHolds } = await import(
+      "../../src/lib/revolut-processor"
+    );
     cancelOrder.mockRejectedValueOnce(new Error("cancel failed"));
-    dbMock.queueSelect("revolut_object_snapshots", [{ payload: SETUP_ORDER }]);
+    dbMock.queueSelect("revolut_orders", [
+      setupOrder({ id: "a" }),
+      setupOrder({ id: "b" }),
+    ]);
 
-    await expect(
-      mirrorOrderById(SETUP_ORDER.id, "webhook")
-    ).resolves.toBeTruthy();
+    expect(await releaseSettledCardSetupHolds()).toBe(1);
   });
 });

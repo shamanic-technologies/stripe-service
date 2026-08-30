@@ -2,6 +2,7 @@ import { listOrders, listDisputes } from "./revolut-client";
 import {
   mirrorOrderById,
   recordDisputeSnapshot,
+  releaseSettledCardSetupHolds,
 } from "./revolut-processor";
 
 /**
@@ -54,6 +55,16 @@ export async function pollRevolutOnce(nowMs: number = Date.now()): Promise<numbe
     if (!oldest || new Date(oldest) < cutoff) break;
     if (orders.length < PAGE_LIMIT) break;
     createdBefore = oldest;
+  }
+
+  // Card-verification holds are released here rather than on the webhook that
+  // announces the authorisation: cancelling that early cancels the order out
+  // from under a customer who is still completing the flow, which reads to them
+  // as the card being rejected.
+  try {
+    await releaseSettledCardSetupHolds(nowMs);
+  } catch (err) {
+    console.error("[stripe-service] Releasing card-verification holds failed:", err);
   }
 
   // Disputes are captured verbatim into bronze. No silver projection until a

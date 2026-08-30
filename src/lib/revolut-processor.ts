@@ -219,8 +219,6 @@ export async function mirrorOrderById(
   const order = await getOrder(orderId);
   await recordRevolutObject("order", order, source);
 
-  await releaseCardSetupHold(order);
-
   // A refund's parent carries `refunded_amount`, which only changes on the
   // parent object — so a refund we just learned about leaves the payment stale
   // until we re-read it too.
@@ -245,37 +243,57 @@ export async function recordDisputeSnapshot(
 }
 
 /**
- * Release the authorisation placed to verify a card.
+ * Release the authorisation placed to verify a card — LATER, never on the
+ * webhook that announces it.
  *
- * Changing a card must not cost anything, but this acquirer cannot store a
- * payment method without one — so card setup authorises a small amount and
- * never captures it. The moment the customer has authorised, the card is saved
- * and the hold has done its job, so it is cancelled and the money is released.
+ * Cancelling the moment the authorisation lands cancels it out from under the
+ * customer, who is still in the payment flow: their page reports "something
+ * went wrong" and the card is never saved, because the order it was being saved
+ * against no longer exists. Verified in production, twice, and it looked
+ * exactly like the acquirer rejecting the card.
  *
- * Only ever touches an order this service created FOR card setup, identified by
- * the metadata it stamped itself. A real payment is never cancelled here.
- *
- * Swallows its own failure on purpose: a hold that outlives its usefulness
- * expires on its own within days and is an annoyance, while throwing would fail
- * the webhook and make the acquirer retry — turning a released-late hold into a
- * card that never got saved at all. It logs loudly instead.
+ * So the release runs from the poller, over holds old enough that the flow has
+ * certainly finished. A hold that lingers a few extra minutes costs nothing —
+ * it is an authorisation, not a charge — while releasing one too early costs
+ * the whole feature.
  */
-async function releaseCardSetupHold(order: RevolutOrder): Promise<void> {
-  if (order.metadata?.purpose !== "card-setup") return;
-  const state = order.state;
-  // `pending` means nobody has authorised yet; `cancelled`/`failed` are done.
-  if (state !== "authorised" && state !== "completed") return;
+const HOLD_MIN_AGE_MS = 10 * 60 * 1000;
 
-  try {
-    await cancelOrder(order.id);
-    console.log(
-      `[stripe-service] Released the card-verification hold on Revolut order ${order.id}`
-    );
-  } catch (err) {
-    console.error(
-      `[stripe-service] Could NOT release the card-verification hold on ${order.id}. ` +
-        "The customer has a temporary authorisation that will expire on its own:",
-      err
-    );
+export async function releaseSettledCardSetupHolds(
+  nowMs: number = Date.now()
+): Promise<number> {
+  const rows = await db
+    .select({
+      id: revolutOrders.id,
+      state: revolutOrders.state,
+      metadata: revolutOrders.metadata,
+      updatedAt: revolutOrders.updatedAtRevolut,
+    })
+    .from(revolutOrders)
+    .where(eq(revolutOrders.state, "authorised"));
+
+  let released = 0;
+  for (const row of rows) {
+    if ((row.metadata as { purpose?: string } | null)?.purpose !== "card-setup") {
+      // Only ever an order this service created FOR card setup. A real payment
+      // is never cancelled here.
+      continue;
+    }
+    const age = row.updatedAt ? nowMs - row.updatedAt.getTime() : Infinity;
+    if (age < HOLD_MIN_AGE_MS) continue;
+
+    try {
+      await cancelOrder(row.id);
+      released += 1;
+      console.log(`[stripe-service] Released the card-verification hold on ${row.id}`);
+    } catch (err) {
+      // A hold expires on its own within days. Failing loudly here would take
+      // down a poll that has other work to do.
+      console.error(
+        `[stripe-service] Could not release the card-verification hold on ${row.id}:`,
+        err
+      );
+    }
   }
+  return released;
 }
