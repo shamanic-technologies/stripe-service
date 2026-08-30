@@ -17,6 +17,7 @@ import {
 } from "../lib/returned-amounts";
 import { resolveAcquirer, pinAcquirer } from "../lib/acquirer";
 import { buildCardSetup } from "../lib/card-setup";
+import { listOrgPayments } from "../lib/payments-list";
 import {
   chargeViaRevolut,
   chargeViaStripeInvoice,
@@ -595,6 +596,44 @@ router.post(
       if (err instanceof NoChargeablePaymentMethod) {
         return res.status(409).json({ error: err.message });
       }
+      return next(err);
+    }
+  }
+);
+
+/**
+ * GET /internal/payments/by-org/:orgId
+ *
+ * Every payment the org has made, newest first, ACROSS ACQUIRERS.
+ *
+ * This is what a payment history should read. The sibling
+ * `/internal/payment_intents/by-org/:orgId` returns verbatim Stripe objects and
+ * therefore shows nothing an org paid through any other acquirer — which makes
+ * it contradict the balance, where that money is counted. A customer seeing
+ * credit they cannot find a payment for is worse than a missing feature.
+ *
+ * The items are NOT vendor objects. `status` is canonicalised (Stripe says
+ * `succeeded`, Revolut says `completed`) and `created` is unix seconds on both
+ * sides, so one sort key orders the whole history. A consumer renders it
+ * without knowing an acquirer exists; `acquirer` rides along for support and
+ * must not be branched on.
+ *
+ * DB-mirror read, no acquirer call, no identity headers.
+ */
+router.get(
+  "/internal/payments/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+      const payments = await listOrgPayments(orgId);
+      return res.json({
+        object: "list",
+        data: payments,
+        has_more: false,
+        url: `/internal/payments/by-org/${orgId}`,
+      });
+    } catch (err) {
       return next(err);
     }
   }
