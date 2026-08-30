@@ -16,7 +16,7 @@ import {
   type SummaryPayment,
 } from "../lib/returned-amounts";
 import { resolveAcquirer, pinAcquirer } from "../lib/acquirer";
-import { buildCardSetup } from "../lib/card-setup";
+import { buildCardSetup, CardSetupNeedsAmount } from "../lib/card-setup";
 import {
   chargeViaRevolut,
   chargeViaStripeInvoice,
@@ -454,6 +454,8 @@ router.post(
       const setup = await buildCardSetup({
         orgId,
         returnUrl: parsed.data.return_url,
+        amount: parsed.data.amount,
+        currency: parsed.data.currency,
         defaultCustomerId: row.length > 0 ? row[0].id : null,
         hostedSession: async (customerId) => {
           const stripe = await getPlatformStripe();
@@ -466,6 +468,14 @@ router.post(
       });
       return res.json(setup);
     } catch (err) {
+      if (err instanceof CardSetupNeedsAmount) {
+        // 409, not 400: the request was well-formed, the ACQUIRER cannot do
+        // what was asked. The caller needs to collect an amount and retry.
+        return res.status(409).json({
+          error: err.message,
+          code: "card_setup_requires_payment",
+        });
+      }
       if (err instanceof Error && /has no (acquirer )?customer/.test(err.message)) {
         return res.status(409).json({ error: err.message });
       }

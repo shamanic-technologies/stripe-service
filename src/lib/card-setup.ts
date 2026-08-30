@@ -42,9 +42,16 @@ export type CardSetup =
 /**
  * Build the card-setup descriptor for an org.
  *
- * For Revolut the order is created with amount ZERO — verified accepted — so
- * storing a card costs the customer nothing. Charging a token amount just to
- * capture a mandate would be a real debit on a real card for no service.
+ * ⚠️ Some acquirers CANNOT store a card without taking a payment. Revolut is
+ * one: "you cannot create a payment method explicitly, they are generated as
+ * part of a payment", and there is no zero-amount verification. A zero-amount
+ * order is ACCEPTED at create (201) and then simply cannot be paid — the widget
+ * fails with a bare "Transaction failed" and the order sits `pending` with no
+ * payment attempt recorded at all. Verified in production, the hard way.
+ *
+ * So a widget flow needs a REAL amount, and the honest product shape is to fold
+ * card-saving into a payment the customer wanted to make anyway rather than
+ * charge them a token sum for nothing.
  *
  * ⚠️ `save_payment_method_for` is NOT sent on the order: this API silently
  * ignores unknown fields there, and it was verified to do exactly that — a real
@@ -52,10 +59,27 @@ export type CardSetup =
  * takes effect when the browser SDK is initialised with it, which is why it is
  * returned here for the consumer to pass on rather than set server-side.
  */
+export class CardSetupNeedsAmount extends Error {
+  constructor() {
+    super(
+      "This org's acquirer cannot store a card without taking a payment: " +
+        "pass the amount the customer is paying, and the card is saved with it"
+    );
+    this.name = "CardSetupNeedsAmount";
+  }
+}
+
 export async function buildCardSetup(params: {
   orgId: string;
   /** Where a hosted flow should return the customer to. */
   returnUrl: string;
+  /**
+   * Minor units the customer is paying now. Required for an acquirer that can
+   * only save a card during a payment; ignored by one with a hosted portal,
+   * which stores a card on its own.
+   */
+  amount?: number;
+  currency?: string;
   /** Builds the hosted session for the default acquirer. */
   hostedSession: (customerId: string) => Promise<string>;
   /** The org's mirrored customer on the default acquirer. */
@@ -69,10 +93,11 @@ export async function buildCardSetup(params: {
         `Org ${params.orgId} is pinned to Revolut but has no acquirer customer`
       );
     }
+    if (!params.amount || params.amount <= 0) throw new CardSetupNeedsAmount();
     const order = await createOrder({
-      amount: 0,
-      currency: "USD",
-      description: "Save a card for automatic top-ups",
+      amount: params.amount,
+      currency: params.currency ?? "USD",
+      description: "Top-up, saving the card for automatic top-ups",
       customer_id: pin.customerId,
       metadata: { org_id: params.orgId, purpose: "card-setup" },
     });

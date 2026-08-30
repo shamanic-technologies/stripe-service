@@ -14,7 +14,7 @@ vi.mock("../../src/lib/key-client", async (importOriginal) => {
   return { ...actual, resolvePlatformKey: vi.fn().mockResolvedValue({ key: "pk_test" }) };
 });
 
-import { buildCardSetup } from "../../src/lib/card-setup";
+import { buildCardSetup, CardSetupNeedsAmount } from "../../src/lib/card-setup";
 
 const hostedSession = vi.fn().mockResolvedValue("https://portal.example/session");
 
@@ -29,6 +29,8 @@ const base = {
   returnUrl: "https://dashboard.example/billing",
   hostedSession,
   defaultCustomerId: "cus_stripe_1",
+  amount: 50000,
+  currency: "USD",
 };
 
 describe("buildCardSetup", () => {
@@ -60,7 +62,7 @@ describe("buildCardSetup", () => {
     expect(hostedSession).not.toHaveBeenCalled();
   });
 
-  it("creates the setup order at ZERO so storing a card costs the customer nothing", async () => {
+  it("creates the order for the amount the customer is actually paying", async () => {
     dbMock.queueSelect("org_acquirers", [
       { acquirer: "revolut", customerId: "cus-rev-1" },
     ]);
@@ -69,8 +71,28 @@ describe("buildCardSetup", () => {
     await buildCardSetup(base);
 
     expect(createOrder).toHaveBeenCalledWith(
-      expect.objectContaining({ amount: 0, customer_id: "cus-rev-1" })
+      expect.objectContaining({ amount: 50000, customer_id: "cus-rev-1" })
     );
+  });
+
+  it("refuses without an amount, because that acquirer cannot store a card for free", async () => {
+    // A zero-amount order is ACCEPTED at create and then cannot be paid: the
+    // widget fails with a bare "Transaction failed" and the order sits pending
+    // with no payment attempt recorded. Verified in production.
+    dbMock.queueSelect("org_acquirers", [
+      { acquirer: "revolut", customerId: "cus-rev-1" },
+    ]);
+
+    await expect(
+      buildCardSetup({ ...base, amount: undefined })
+    ).rejects.toBeInstanceOf(CardSetupNeedsAmount);
+    expect(createOrder).not.toHaveBeenCalled();
+  });
+
+  it("still needs no amount for an acquirer whose portal stores a card itself", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    const out = await buildCardSetup({ ...base, amount: undefined });
+    expect(out.mode).toBe("hosted_redirect");
   });
 
   it("does NOT put the save flag on the order, because that API drops it silently", async () => {
