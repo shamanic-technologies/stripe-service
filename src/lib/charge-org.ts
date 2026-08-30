@@ -318,6 +318,50 @@ export async function chargeViaStripeInvoice(params: {
   return paid;
 }
 
+/**
+ * The saved-method types Stripe will charge off-session when the id is passed
+ * EXPLICITLY, in the order we prefer them.
+ *
+ * `card` first because that is what a customer means by "my card on file".
+ * `link` second because a Link-saved method IS chargeable merchant-initiated
+ * when named by id — only the DEFAULT-payment-method fallback refuses it, which
+ * is exactly the path this pick exists to stop relying on.
+ */
+const STRIPE_OFF_SESSION_PM_TYPES = ["card", "link"] as const;
+
+/**
+ * Which saved method to charge for a Stripe org whose caller named none.
+ *
+ * The neutral charge promises to hide the acquirer, and picking a method is
+ * part of that: which card to charge belongs to the acquirer that holds it, not
+ * to a consumer that only wants to take money. The Revolut side already reads
+ * the customer's saved methods live and refuses loudly when there is none; this
+ * is the same behaviour on Stripe, so the promise holds on both.
+ *
+ * ⚠️ NOT the customer's own `invoice_settings.default_payment_method`. For the
+ * way this platform saves cards that default is routinely ABSENT (a card saved
+ * through hosted Checkout is attached without becoming the default), and when
+ * it IS set it is often a Link/wallet method Stripe refuses through the default
+ * fallback — a refusal this platform has already had in production on this same
+ * off-session path. Falling through to it would turn "no method named" into a
+ * charge that silently does not happen.
+ *
+ * Read live on every charge, never cached: a detached or replaced card must
+ * make the refusal legible HERE rather than at the acquirer.
+ */
+export async function resolveStripeChargeablePaymentMethod(
+  stripe: Stripe,
+  orgId: string,
+  customerId: string
+): Promise<string> {
+  for (const type of STRIPE_OFF_SESSION_PM_TYPES) {
+    const list = await stripe.paymentMethods.list({ customer: customerId, type });
+    const pm = list?.data?.[0];
+    if (pm?.id) return pm.id;
+  }
+  throw new NoChargeablePaymentMethod(orgId);
+}
+
 /** Shape a paid Stripe invoice into the same neutral answer. */
 export function chargeResultFromInvoice(
   orgId: string,

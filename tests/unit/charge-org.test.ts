@@ -27,6 +27,7 @@ vi.mock("../../src/lib/revolut-processor", () => ({
 import {
   chargeViaRevolut,
   chargeResultFromInvoice,
+  resolveStripeChargeablePaymentMethod,
   NoChargeablePaymentMethod,
 } from "../../src/lib/charge-org";
 
@@ -194,5 +195,42 @@ describe("chargeViaRevolut — retrying one logical top-up", () => {
     expect(createOrder).not.toHaveBeenCalled();
     expect(payOrderWithSavedMethod).toHaveBeenCalledWith("ord-1", "pm-1", "card");
     expect(out).toMatchObject({ reference: "ord-1", status: "succeeded" });
+  });
+});
+
+describe("resolveStripeChargeablePaymentMethod", () => {
+  function stripeWith(byType: Record<string, unknown[]>) {
+    return {
+      paymentMethods: {
+        list: vi.fn(async ({ type }: { type: string }) => ({
+          object: "list",
+          data: byType[type] ?? [],
+        })),
+      },
+    } as never;
+  }
+
+  it("prefers the saved card", async () => {
+    const stripe = stripeWith({
+      card: [{ id: "pm_card_1" }],
+      link: [{ id: "pm_link_1" }],
+    });
+    await expect(
+      resolveStripeChargeablePaymentMethod(stripe, "org-1", "cus_x")
+    ).resolves.toBe("pm_card_1");
+  });
+
+  it("falls back to a Link-saved method, which IS chargeable when named by id", async () => {
+    const stripe = stripeWith({ card: [], link: [{ id: "pm_link_1" }] });
+    await expect(
+      resolveStripeChargeablePaymentMethod(stripe, "org-1", "cus_x")
+    ).resolves.toBe("pm_link_1");
+  });
+
+  it("refuses loudly rather than falling through to the customer's default", async () => {
+    const stripe = stripeWith({ card: [], link: [] });
+    await expect(
+      resolveStripeChargeablePaymentMethod(stripe, "org-1", "cus_x")
+    ).rejects.toBeInstanceOf(NoChargeablePaymentMethod);
   });
 });
