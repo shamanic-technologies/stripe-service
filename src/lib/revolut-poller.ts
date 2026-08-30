@@ -1,4 +1,4 @@
-import { listOrders, listDisputes } from "./revolut-client";
+import { listOrders, listDisputes, getOrder } from "./revolut-client";
 import { recordRevolutObject } from "./revolut-processor";
 
 /**
@@ -11,6 +11,12 @@ import { recordRevolutObject } from "./revolut-processor";
  * AND refunds in one collection — a refund is an order of `type: "refund"` — so
  * one walk reconciles both halves of the money-returned mirror. There is no
  * separate refunds endpoint to forget.
+ *
+ * ⚠️ **The list is DISCOVERY ONLY.** `GET /orders` returns a SUMMARY that omits
+ * `payments` and `refunded_amount` — the fee, the settled amount, and how much
+ * came back. So every id it yields is fetched individually and the DETAIL is
+ * what gets mirrored. Storing the summary would let a poll overwrite a full
+ * snapshot with a hollow one and blank real money fields.
  *
  * Re-mirroring an unchanged order is free: bronze is keyed on a hash of the
  * payload, so an identical re-read collapses onto the row already stored.
@@ -35,11 +41,12 @@ export async function pollRevolutOnce(nowMs: number = Date.now()): Promise<numbe
     if (orders.length === 0) break;
 
     let oldest: string | undefined;
-    for (const order of orders) {
-      if (!order?.id) continue;
-      await recordRevolutObject("order", order, "poll");
+    for (const summary of orders) {
+      if (!summary?.id) continue;
+      const detail = await getOrder(summary.id);
+      await recordRevolutObject("order", detail, "poll");
       mirrored += 1;
-      if (order.created_at) oldest = order.created_at;
+      if (summary.created_at) oldest = summary.created_at;
     }
 
     if (!oldest || new Date(oldest) < cutoff) break;
@@ -86,11 +93,12 @@ export async function backfillRevolutHistory(): Promise<number> {
     if (orders.length === 0) break;
 
     let oldest: string | undefined;
-    for (const order of orders) {
-      if (!order?.id) continue;
-      await recordRevolutObject("order", order, "backfill");
+    for (const summary of orders) {
+      if (!summary?.id) continue;
+      const detail = await getOrder(summary.id);
+      await recordRevolutObject("order", detail, "backfill");
       mirrored += 1;
-      if (order.created_at) oldest = order.created_at;
+      if (summary.created_at) oldest = summary.created_at;
     }
     if (!oldest || orders.length < PAGE_LIMIT) break;
     createdBefore = oldest;

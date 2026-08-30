@@ -13,7 +13,8 @@ vi.mock("../../src/lib/revolut-client", () => ({
 
 import {
   feeAmountOf,
-  resolveRevolutOrgId,
+  revolutOrgIdOf,
+  isOrderDetail,
   recordRevolutObject,
   fetchAndMirrorOrder,
 } from "../../src/lib/revolut-processor";
@@ -54,6 +55,7 @@ const REAL_REFUND = {
   outstanding_amount: 500,
   updated_at: "2026-08-30T08:32:14.177476Z",
   related_order_id: REAL_PAYMENT.id,
+  refunded_amount: 0,
 };
 
 beforeEach(() => {
@@ -83,20 +85,56 @@ describe("feeAmountOf", () => {
   });
 });
 
-describe("resolveRevolutOrgId", () => {
-  it("takes the org straight off a payment's own metadata", async () => {
-    expect(await resolveRevolutOrgId(REAL_PAYMENT)).toBe("org-a");
+describe("revolutOrgIdOf", () => {
+  it("takes the org straight off a payment's own metadata", () => {
+    expect(revolutOrgIdOf(REAL_PAYMENT)).toBe("org-a");
   });
 
-  it("inherits a refund's org from the payment it reverses", async () => {
-    dbMock.queueSelect("revolut_orders", [{ orgId: "org-a" }]);
-    expect(await resolveRevolutOrgId(REAL_REFUND)).toBe("org-a");
+  it("leaves a refund's org NULL — the tenant is joined, never copied", () => {
+    // Copying it would reintroduce an ordering dependency: the back-fill walks
+    // newest-first, so a refund is mirrored BEFORE its payment and a copied
+    // tenant is written null forever. Observed in production on first deploy.
+    expect(revolutOrgIdOf(REAL_REFUND)).toBeNull();
   });
 
-  it("returns null rather than inventing a tenant when nothing answers", async () => {
-    dbMock.queueSelect("revolut_orders", []);
-    expect(await resolveRevolutOrgId(REAL_REFUND)).toBeNull();
-    expect(await resolveRevolutOrgId({ id: "orphan" })).toBeNull();
+  it("never invents a tenant for an order with no metadata", () => {
+    expect(revolutOrgIdOf({ id: "orphan" })).toBeNull();
+    expect(revolutOrgIdOf({ id: "x", metadata: {} })).toBeNull();
+  });
+});
+
+describe("isOrderDetail", () => {
+  // GET /orders returns a SUMMARY missing `payments` and `refunded_amount` —
+  // the fee, the settled amount, and how much came back. Verified against
+  // production: 14 keys in the list, 16 in the detail.
+  const LIST_ENTRY = {
+    id: REAL_PAYMENT.id,
+    type: "payment",
+    state: "completed",
+    amount: 500,
+    currency: "USD",
+    outstanding_amount: 0,
+    metadata: REAL_PAYMENT.metadata,
+    updated_at: REAL_PAYMENT.updated_at,
+  };
+
+  it("recognises the detail response", () => {
+    expect(isOrderDetail(REAL_PAYMENT)).toBe(true);
+  });
+
+  it("recognises a detail with no payments yet, via refunded_amount", () => {
+    expect(isOrderDetail({ id: "x", refunded_amount: 0 })).toBe(true);
+  });
+
+  it("rejects a list entry", () => {
+    expect(isOrderDetail(LIST_ENTRY)).toBe(false);
+  });
+
+  it("refuses to mirror a summary rather than blanking real money fields", async () => {
+    await expect(
+      recordRevolutObject("order", LIST_ENTRY, "poll")
+    ).rejects.toThrow(/summary payload/i);
+    expect(dbMock.lastInsertValues("revolut_object_snapshots")).toBeUndefined();
   });
 });
 
@@ -170,9 +208,8 @@ describe("silver projection", () => {
     });
   });
 
-  it("projects a refund as its own row joined by related_order_id", async () => {
+  it("projects a refund as its own row carrying the join key, not a copied org", async () => {
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_REFUND }]);
-    dbMock.queueSelect("revolut_orders", [{ orgId: "org-a" }]);
 
     await recordRevolutObject("order", REAL_REFUND, "webhook");
 
@@ -181,7 +218,7 @@ describe("silver projection", () => {
       type: "refund",
       state: "failed",
       relatedOrderId: REAL_PAYMENT.id,
-      orgId: "org-a",
+      orgId: null,
     });
   });
 });
@@ -192,7 +229,6 @@ describe("fetchAndMirrorOrder", () => {
       Promise.resolve(id === REAL_REFUND.id ? REAL_REFUND : REAL_PAYMENT)
     );
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_REFUND }]);
-    dbMock.queueSelect("revolut_orders", [{ orgId: "org-a" }]);
     dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
 
     await fetchAndMirrorOrder(REAL_REFUND.id, "webhook");

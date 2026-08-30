@@ -18,6 +18,20 @@ export type RevolutSource = "webhook" | "poll" | "backfill";
  * the object has already left.
  */
 
+
+/**
+ * Is this the DETAIL response rather than a list entry?
+ *
+ * `GET /orders` omits `payments` and `refunded_amount` entirely; `GET
+ * /orders/{id}` includes both. Verified against production on 2026-08-30 —
+ * the list carried 14 keys, the detail 16. Presence of either field is
+ * therefore the discriminator, and a detail response always carries
+ * `refunded_amount` even when it is 0.
+ */
+export function isOrderDetail(order: Record<string, unknown>): boolean {
+  return "payments" in order || "refunded_amount" in order;
+}
+
 function snapshotId(
   kind: RevolutObjectKind,
   objectId: string,
@@ -49,6 +63,17 @@ export async function recordRevolutObject(
   object: { id: string; updated_at?: string; [key: string]: unknown },
   source: RevolutSource
 ): Promise<void> {
+  if (kind === "order" && !isOrderDetail(object)) {
+    // Bronze holds AUTHORITATIVE responses only. `GET /orders` returns a
+    // SUMMARY that silently omits `payments` and `refunded_amount` — i.e. the
+    // fee, the settled amount, and how much came back. Storing one would let a
+    // later poll overwrite a full snapshot with a hollow one and blank real
+    // money fields, so the list is discovery and nothing more.
+    throw new Error(
+      `Refusing to mirror a summary payload for Revolut order ${object.id}: ` +
+        "fetch the order by id and store that instead"
+    );
+  }
   await db
     .insert(revolutObjectSnapshots)
     .values({
@@ -136,38 +161,29 @@ function paymentMethodTypeOf(order: RevolutOrder): string | null {
 }
 
 /**
- * Resolve the tenant for an order.
+ * Resolve the tenant for an order — from its OWN metadata, and nowhere else.
  *
- * A payment carries `metadata.org_id` because we stamp it at creation. A REFUND
- * does not — Revolut mints it as its own order with no metadata at all — so the
- * org is inherited from the payment it reverses via `related_order_id`. Same
- * principle as the Stripe mirror, where refunds and disputes carry no `org_id`
- * and resolve through the PaymentIntent: one home for the mapping, so a return
- * can never drift out of sync with the payment it belongs to.
+ * We stamp `metadata.org_id` when we create a payment, so a payment answers for
+ * itself. A REFUND does not: Revolut mints it as its own order with no metadata
+ * at all. Its tenant is the tenant of the payment it reverses, resolved by
+ * JOINING through `related_order_id` at read time — never copied onto the row.
  *
- * Returns null rather than a placeholder when neither source answers. An
- * unattributable row is honestly unattributed; inventing an `"unknown"` tenant
- * would put it in a bucket some future query treats as real.
+ * This is the same rule the Stripe mirror already follows, where `refunds` and
+ * `disputes` carry no `org_id` and resolve through the PaymentIntent. One home
+ * for the mapping means a return can never drift out of sync with it — and,
+ * decisively here, it removes an ORDERING dependency: the back-fill walks
+ * newest-first, so a refund is mirrored BEFORE the payment it belongs to, and a
+ * copied tenant would have been written null forever. Observed in production on
+ * the first deploy: three refunds landed with a null org while their payment
+ * carried one.
  */
-export async function resolveRevolutOrgId(
-  order: RevolutOrder
-): Promise<string | null> {
+export function revolutOrgIdOf(order: RevolutOrder): string | null {
   const own = order.metadata?.org_id;
-  if (typeof own === "string" && own.length > 0) return own;
-
-  const parentId = order.related_order_id;
-  if (typeof parentId !== "string" || parentId.length === 0) return null;
-
-  const parent = await db
-    .select({ orgId: revolutOrders.orgId })
-    .from(revolutOrders)
-    .where(eq(revolutOrders.id, parentId))
-    .limit(1);
-  return parent.length > 0 ? parent[0].orgId : null;
+  return typeof own === "string" && own.length > 0 ? own : null;
 }
 
 async function upsertRevolutOrder(order: RevolutOrder): Promise<void> {
-  const orgId = await resolveRevolutOrgId(order);
+  const orgId = revolutOrgIdOf(order);
   const values = {
     id: order.id,
     type: typeof order.type === "string" ? order.type : "unknown",
