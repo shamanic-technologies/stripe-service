@@ -108,6 +108,15 @@ export const CreateCustomerRequestSchema = z
   .passthrough()
   .openapi("CreateCustomerRequest");
 
+export const CardSetupRequestSchema = z
+  .object({
+    return_url: z.string().url().openapi({
+      description:
+        "Where a hosted flow returns the customer to. Ignored by an acquirer whose flow is embedded rather than hosted.",
+    }),
+  })
+  .openapi("CardSetupRequest");
+
 export const PinAcquirerRequestSchema = z
   .object({
     acquirer: z.enum(["stripe", "revolut"]),
