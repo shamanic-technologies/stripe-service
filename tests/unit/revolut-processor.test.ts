@@ -7,8 +7,10 @@ const { dbMock } = vi.hoisted(() => {
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
 const getOrder = vi.fn();
+const cancelOrder = vi.fn().mockResolvedValue({});
 vi.mock("../../src/lib/revolut-client", () => ({
   getOrder: (...args: unknown[]) => getOrder(...args),
+  cancelOrder: (...args: unknown[]) => cancelOrder(...args),
 }));
 
 import {
@@ -275,5 +277,58 @@ describe("mergeCurrencyTotals", () => {
     const { mergeCurrencyTotals } = await import("../../src/lib/revolut-money");
     const out = mergeCurrencyTotals([row("usd", 100)], [row("EUR", 500)]);
     expect(out.map((r) => r.currency)).toEqual(["eur", "usd"]);
+  });
+});
+
+describe("releasing the card-verification hold", () => {
+  const SETUP_ORDER = {
+    id: "ord-setup",
+    type: "payment",
+    state: "authorised",
+    amount: 100,
+    currency: "USD",
+    refunded_amount: 0,
+    updated_at: "2026-08-30T14:00:00.000000Z",
+    metadata: { org_id: "org-a", purpose: "card-setup" },
+  };
+
+  it("cancels the hold once the customer has authorised, so nothing is charged", async () => {
+    getOrder.mockResolvedValue(SETUP_ORDER);
+    dbMock.queueSelect("revolut_object_snapshots", [{ payload: SETUP_ORDER }]);
+
+    await mirrorOrderById(SETUP_ORDER.id, "webhook");
+
+    expect(cancelOrder).toHaveBeenCalledWith(SETUP_ORDER.id);
+  });
+
+  it("leaves a REAL payment alone", async () => {
+    getOrder.mockResolvedValue(REAL_PAYMENT);
+    dbMock.queueSelect("revolut_object_snapshots", [{ payload: REAL_PAYMENT }]);
+
+    await mirrorOrderById(REAL_PAYMENT.id, "webhook");
+
+    expect(cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel a setup order nobody has authorised yet", async () => {
+    const pending = { ...SETUP_ORDER, state: "pending" };
+    getOrder.mockResolvedValue(pending);
+    dbMock.queueSelect("revolut_object_snapshots", [{ payload: pending }]);
+
+    await mirrorOrderById(pending.id, "poll");
+
+    expect(cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it("still mirrors when the release fails, rather than failing the webhook", async () => {
+    // A hold that outlives its usefulness expires on its own; a thrown webhook
+    // makes the acquirer retry and can leave the card unsaved entirely.
+    getOrder.mockResolvedValue(SETUP_ORDER);
+    cancelOrder.mockRejectedValueOnce(new Error("cancel failed"));
+    dbMock.queueSelect("revolut_object_snapshots", [{ payload: SETUP_ORDER }]);
+
+    await expect(
+      mirrorOrderById(SETUP_ORDER.id, "webhook")
+    ).resolves.toBeTruthy();
   });
 });
