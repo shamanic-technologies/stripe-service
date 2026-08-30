@@ -126,3 +126,31 @@ describe("listOrgPayments", () => {
     expect(values).toContain("payment");
   });
 });
+
+describe("card-verification orders", () => {
+  it("keeps our own card-verification holds out of the customer's history", async () => {
+    // An acquirer that cannot store a card without an authorisation makes us
+    // place one. It is our artifact, not something the customer bought.
+    dbMock.queueSelect("payment_intents", []);
+    dbMock.queueSelect("revolut_orders", [
+      { ...REVOLUT_PAYMENT, id: "setup-1", state: "pending", amount: 100,
+        metadata: { purpose: "card-setup" } },
+      { ...REVOLUT_PAYMENT, metadata: { purpose: "manual-topup" } },
+    ]);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", []);
+
+    const out = await listOrgPayments("org-1");
+
+    expect(out.map((p) => p.id)).toEqual([REVOLUT_PAYMENT.id]);
+  });
+
+  it("keeps a payment that carries no metadata at all", async () => {
+    dbMock.queueSelect("payment_intents", []);
+    dbMock.queueSelect("revolut_orders", [{ ...REVOLUT_PAYMENT, metadata: null }]);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", []);
+
+    expect(await listOrgPayments("org-1")).toHaveLength(1);
+  });
+});

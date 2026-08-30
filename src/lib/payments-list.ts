@@ -69,6 +69,7 @@ export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
         description: revolutOrders.description,
         createdAt: revolutOrders.createdAtRevolut,
         refunded: revolutOrders.refundedAmount,
+        metadata: revolutOrders.metadata,
       })
       .from(revolutOrders)
       .where(
@@ -78,6 +79,14 @@ export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
 
   const returned = await returnedByPaymentIntent(
     stripeRows.map((r) => ({ id: r.id, latestCharge: r.latestCharge }))
+  );
+
+  // Card-verification orders are OUR artifact, not something the customer
+  // bought. An acquirer that cannot store a card without an authorisation makes
+  // us place one; showing it as a pending payment in someone's history invites
+  // exactly the question it has no good answer to.
+  const customerFacing = revolutRows.filter(
+    (r) => (r.metadata as { purpose?: string } | null)?.purpose !== "card-setup"
   );
 
   const payments: OrgPayment[] = [
@@ -96,7 +105,7 @@ export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
       description: r.description ?? null,
       amount_returned: returned.get(r.id)?.amount_returned ?? 0,
     })),
-    ...revolutRows.map((r) => ({
+    ...customerFacing.map((r) => ({
       id: r.id,
       acquirer: "revolut" as const,
       amount: r.amount ?? 0,
