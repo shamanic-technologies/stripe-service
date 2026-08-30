@@ -50,6 +50,13 @@
       "when": 1785308660308,
       "tag": "0006_dark_living_tribunal",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788079624017,
+      "tag": "0007_revolut_mirror",
+      "breakpoints": true
     }
   ]
 }

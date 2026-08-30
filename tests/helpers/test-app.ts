@@ -12,11 +12,13 @@ import paymentMethodsRoutes from "../../src/routes/payment-methods";
 import billingPortalSessionsRoutes from "../../src/routes/billing-portal-sessions";
 import publicStatsRoutes from "../../src/routes/public-stats";
 import webhooksRoutes from "../../src/routes/webhooks";
+import revolutWebhooksRoutes from "../../src/routes/revolut-webhooks";
 
 export function createTestApp() {
   const app = express();
   app.use(cors());
   app.use("/v1/webhooks", express.raw({ type: "application/json" }));
+  app.use("/v1/revolut/webhooks", express.raw({ type: "application/json" }));
   app.use(express.json());
   app.use(serviceAuth);
   app.use(requireIdentityHeaders);
@@ -30,5 +32,6 @@ export function createTestApp() {
   app.use("/", billingPortalSessionsRoutes);
   app.use("/", publicStatsRoutes);
   app.use("/", webhooksRoutes);
+  app.use("/", revolutWebhooksRoutes);
   return app;
 }
