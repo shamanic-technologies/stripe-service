@@ -15,7 +15,13 @@ import {
   withReturnedAmounts,
   type SummaryPayment,
 } from "../lib/returned-amounts";
-import { resolveAcquirer, pinAcquirer } from "../lib/acquirer";
+import {
+  resolveAcquirer,
+  pinAcquirer,
+  unpinAcquirer,
+  DEFAULT_ACQUIRER,
+} from "../lib/acquirer";
+import { hasChargeablePaymentMethod } from "../lib/chargeable-method";
 import { buildCardSetup } from "../lib/card-setup";
 import { listOrgPayments } from "../lib/payments-list";
 import {
@@ -339,10 +345,23 @@ router.get(
  * card is saved against one: without it there is nothing to attach a card to
  * and nothing to charge later.
  *
- * Re-pinning an org that already holds a customer on the other acquirer is
- * REFUSED (see `pinAcquirer`). A saved card cannot move between acquirers, so
- * flipping the pin would leave the org uncharge-able while its dashboard still
- * shows a card on file.
+ * Moving an org that can currently be charged is REFUSED — 409, before
+ * anything is created or written. A saved card lives with one acquirer and
+ * cannot move, so a pin that leaves the card behind takes an org from
+ * chargeable to un-chargeable as a SIDE EFFECT: nothing fails, nothing logs,
+ * and the org is simply told it has no card while a perfectly good one sits on
+ * the acquirer it just left. Downstream that is not cosmetic — billing-service
+ * grants a postpaid credit line only while an org can be auto-reloaded, so the
+ * org reads as out of credit and its campaigns stop.
+ *
+ * ⚠️ The refusal keys on the METHOD, read live from the acquirer the org is on
+ * — not on whether the other acquirer has a customer id recorded. That was the
+ * earlier guard (in `pinAcquirer`, still in place as the DB-level half) and it
+ * could never fire for the population that matters most: an org on the default
+ * acquirer records NO row at all, so "the other acquirer has a customer id" is
+ * false for every Stripe org, card or no card. Observed in production
+ * 2026-08-30 — an org with a live Mastercard on Stripe was pinned to Revolut,
+ * and was emailed that it had run out of credit five hours later.
  */
 router.put(
   "/internal/acquirer/by-org/:orgId",
@@ -357,9 +376,24 @@ router.put(
       const orgId = req.params.orgId;
       res.locals.orgId = orgId;
 
+      const existing = await resolveAcquirer(orgId);
+      if (
+        existing.acquirer !== parsed.data.acquirer &&
+        (await hasChargeablePaymentMethod(orgId, existing))
+      ) {
+        return res.status(409).json({
+          error:
+            `Refusing to move org ${orgId} from ${existing.acquirer} to ` +
+            `${parsed.data.acquirer}: it has a chargeable payment method on ` +
+            `${existing.acquirer}, and a saved card cannot move between ` +
+            "acquirers. Have the customer add a card on the new acquirer and " +
+            "remove the old one first, or the move would leave this org " +
+            "un-chargeable with a card still on file.",
+        });
+      }
+
       let customerId = parsed.data.customer_id ?? null;
       if (parsed.data.acquirer === "revolut" && !customerId) {
-        const existing = await resolveAcquirer(orgId);
         customerId =
           existing.acquirer === "revolut" && existing.customerId
             ? existing.customerId
@@ -404,6 +438,67 @@ router.get(
         org_id: orgId,
         acquirer: pin.acquirer,
         customer_id: pin.customerId,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+/**
+ * DELETE /internal/acquirer/by-org/:orgId
+ *
+ * Return an org to the DEFAULT acquirer. The supported way back from a pin.
+ *
+ * There used to be none: a mis-pinned org could not be re-pinned (the guard
+ * that stops a card being stranded refuses the correction too) and there was no
+ * unpin, so the only recovery in production was deleting the row by hand in the
+ * database. That is not a recovery, it is an incident with a DBA in it.
+ *
+ * The invariant is untouched — this refuses (409) exactly when a re-pin would,
+ * i.e. when the org holds a chargeable method on the acquirer it would leave.
+ * It is precisely the mis-pin case that is safe: the org never saved a card on
+ * the acquirer it was wrongly moved to, so there is nothing to strand and
+ * nothing to lose.
+ *
+ * Idempotent: an org already on the default is a 200 with nothing deleted.
+ */
+router.delete(
+  "/internal/acquirer/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+
+      const existing = await resolveAcquirer(orgId);
+      if (existing.acquirer === DEFAULT_ACQUIRER) {
+        return res.json({
+          object: "org_acquirer",
+          org_id: orgId,
+          acquirer: DEFAULT_ACQUIRER,
+          customer_id: existing.customerId,
+          unpinned: false,
+        });
+      }
+
+      if (await hasChargeablePaymentMethod(orgId, existing)) {
+        return res.status(409).json({
+          error:
+            `Refusing to return org ${orgId} to ${DEFAULT_ACQUIRER}: it has a ` +
+            `chargeable payment method on ${existing.acquirer}, and a saved ` +
+            "card cannot move between acquirers. Returning it would leave this " +
+            "org un-chargeable with a card still on file.",
+        });
+      }
+
+      await unpinAcquirer(orgId);
+
+      return res.json({
+        object: "org_acquirer",
+        org_id: orgId,
+        acquirer: DEFAULT_ACQUIRER,
+        customer_id: null,
+        unpinned: true,
       });
     } catch (err) {
       return next(err);
