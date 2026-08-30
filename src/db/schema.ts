@@ -290,7 +290,7 @@ export const revolutOrders = pgTable(
     paymentMethodType: text("payment_method_type"),
     description: text("description"),
     metadata: jsonb("metadata"),
-    createdAtStripe: timestamp("created_at_revolut", { withTimezone: true }),
+    createdAtRevolut: timestamp("created_at_revolut", { withTimezone: true }),
     updatedAtRevolut: timestamp("updated_at_revolut", { withTimezone: true }),
     rawJson: jsonb("raw_json"),
     syncedAt: timestamp("synced_at").defaultNow().notNull(),
@@ -302,3 +302,23 @@ export const revolutOrders = pgTable(
   ]
 );
 
+
+// Which acquirer charges an org. Absent = Stripe, so every org that predates
+// this table keeps its behaviour with no backfill.
+//
+// The pin lives HERE because this service already owns the other half of the
+// same fact — which key charges an org, resolved per org from key-service. A
+// caller asks us to charge an org; which acquirer that means is our business,
+// not theirs. billing must never name a vendor.
+//
+// It is deliberately never changed silently for an existing customer: a saved
+// card lives with ONE acquirer and cannot move, so re-pinning an org that has a
+// stored payment method strands it.
+export const orgAcquirers = pgTable("org_acquirers", {
+  orgId: text("org_id").primaryKey(),
+  acquirer: text("acquirer").notNull(), // 'stripe' | 'revolut'
+  // The acquirer's own customer id, so a charge does not have to re-resolve it.
+  acquirerCustomerId: text("acquirer_customer_id"),
+  pinnedAt: timestamp("pinned_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});

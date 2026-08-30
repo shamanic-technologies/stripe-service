@@ -983,3 +983,209 @@ describe("GET /internal/payment_methods/by-org/:orgId (user-less)", () => {
     expect(stripeMock.paymentMethods.list).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /internal/invoices/by-org/:orgId — acquirer dispatch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock.clearQueues();
+  });
+
+  it("charges a Revolut-pinned org through Revolut and says there is no invoice", async () => {
+    dbMock.queueSelect("org_acquirers", [
+      { acquirer: "revolut", customerId: "cus-rev-1" },
+    ]);
+
+    const res = await request(app)
+      .post(`/internal/invoices/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly())
+      .set("Idempotency-Key", "k-1")
+      .send({ amount: 50000, currency: "usd", description: "top-up" });
+
+    // The Revolut client is not mocked here, so the call fails outward — what
+    // this asserts is the DISPATCH: a Revolut org must not be sent down the
+    // Stripe invoice path, which would charge the wrong acquirer.
+    expect(stripeMock.invoices?.create).not.toHaveBeenCalled();
+  });
+
+  it("still requires an Idempotency-Key before doing anything at all", async () => {
+    const res = await request(app)
+      .post(`/internal/invoices/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly())
+      .send({ amount: 50000, currency: "usd", description: "top-up" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Idempotency-Key/);
+  });
+});
+
+describe("POST /internal/charges/by-org/:orgId (vendor-neutral charge)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock.clearQueues();
+    stripeMock.invoices.create.mockReset();
+    stripeMock.invoices.finalizeInvoice.mockReset();
+    stripeMock.invoices.pay.mockReset();
+    stripeMock.invoiceItems.create.mockReset();
+    stripeMock.paymentIntents.update.mockReset();
+  });
+
+  function queueHappyStripeInvoice() {
+    stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_9", status: "draft" });
+    stripeMock.invoiceItems.create.mockResolvedValueOnce({ id: "ii_9" });
+    stripeMock.invoices.finalizeInvoice.mockResolvedValueOnce({ id: "in_9", status: "open" });
+    stripeMock.invoices.pay.mockResolvedValueOnce({
+      id: "in_9",
+      object: "invoice",
+      status: "paid",
+      payments: {
+        object: "list",
+        data: [{ id: "inpay_9", payment: { type: "payment_intent", payment_intent: "pi_9" } }],
+      },
+      hosted_invoice_url: "https://pay.stripe.com/i/in_9",
+    });
+    stripeMock.paymentIntents.update.mockResolvedValueOnce({
+      id: "pi_9",
+      object: "payment_intent",
+      status: "succeeded",
+    });
+  }
+
+  it("charges an org on the DEFAULT acquirer and reports where its hosted document is", async () => {
+    // No pin row: absent means Stripe, which is where nearly every org is.
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    queueHappyStripeInvoice();
+
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_n1" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      object: "charge_result",
+      org_id: TEST_ORG_ID,
+      acquirer: "stripe",
+      reference: "in_9",
+      status: "succeeded",
+      amount: 5000,
+      currency: "usd",
+      hosted_document_url: "https://pay.stripe.com/i/in_9",
+    });
+  });
+
+  it("takes the money the same way the invoiced route does, provenance and all", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    queueHappyStripeInvoice();
+
+    await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_n2" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    expect(stripeMock.invoices.create).toHaveBeenCalledWith(
+      expect.objectContaining({ customer: "cus_x", pending_invoice_items_behavior: "exclude" }),
+      expect.objectContaining({ idempotencyKey: "topup_n2:invoice" })
+    );
+    expect(stripeMock.invoices.pay).toHaveBeenCalledWith(
+      "in_9",
+      { off_session: true, expand: ["payments"] },
+      expect.objectContaining({ idempotencyKey: "topup_n2:pay" })
+    );
+    expect(stripeMock.paymentIntents.update).toHaveBeenCalledWith(
+      "pi_9",
+      { metadata: { org_id: TEST_ORG_ID, invoice_id: "in_9" }, description: "Auto top-up" },
+      expect.objectContaining({ idempotencyKey: "topup_n2:pi-provenance" })
+    );
+  });
+
+  it("no longer refuses a Stripe org by pointing at the invoiced route", async () => {
+    dbMock.queueSelect("org_acquirers", [{ acquirer: "stripe", customerId: null }]);
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    queueHappyStripeInvoice();
+
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_n3" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toMatch(/invoices\/by-org/);
+  });
+
+  it("does not send a Revolut org down the Stripe invoice path", async () => {
+    dbMock.queueSelect("org_acquirers", [{ acquirer: "revolut", customerId: "cus-rev-1" }]);
+
+    await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_n4" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    // The Revolut client is not mocked here, so the call fails outward — what
+    // this asserts is the DISPATCH: money must not leave through the acquirer
+    // that does not hold this org's card.
+    expect(stripeMock.invoices.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses before charging anything when there is no Idempotency-Key", async () => {
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Idempotency-Key/);
+    expect(stripeMock.invoices.create).not.toHaveBeenCalled();
+  });
+
+  it("404s an org with no customer on its acquirer, without calling Stripe", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", []);
+
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_n5" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    expect(res.status).toBe(404);
+    expect(stripeMock.invoices.create).not.toHaveBeenCalled();
+  });
+
+  it("reports a Stripe charge that did not complete as failed, not as a missing document", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_8", status: "draft" });
+    stripeMock.invoiceItems.create.mockResolvedValueOnce({ id: "ii_8" });
+    stripeMock.invoices.finalizeInvoice.mockResolvedValueOnce({ id: "in_8", status: "open" });
+    stripeMock.invoices.pay.mockResolvedValueOnce({
+      id: "in_8",
+      object: "invoice",
+      status: "open",
+      payments: {
+        object: "list",
+        data: [{ id: "inpay_8", payment: { type: "payment_intent", payment_intent: "pi_8" } }],
+      },
+      hosted_invoice_url: "https://pay.stripe.com/i/in_8",
+    });
+    stripeMock.paymentIntents.update.mockResolvedValueOnce({ id: "pi_8", object: "payment_intent" });
+
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_n6" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    expect(res.body.status).toBe("failed");
+    // A document that exists is still reported: absence means "no such thing",
+    // and it must not be how a caller reads a failure.
+    expect(res.body.hosted_document_url).toBe("https://pay.stripe.com/i/in_8");
+  });
+
+  it("rejects with 401 when X-API-Key is missing", async () => {
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "Idempotency-Key": "topup_n7" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+    expect(res.status).toBe(401);
+  });
+});

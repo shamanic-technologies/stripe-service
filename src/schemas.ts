@@ -108,6 +108,51 @@ export const CreateCustomerRequestSchema = z
   .passthrough()
   .openapi("CreateCustomerRequest");
 
+export const PinAcquirerRequestSchema = z
+  .object({
+    acquirer: z.enum(["stripe", "revolut"]),
+    customer_id: z.string().optional().openapi({
+      description:
+        "The acquirer's own customer id. Created automatically for Revolut when omitted.",
+    }),
+    email: z.string().email().optional(),
+    full_name: z.string().optional(),
+  })
+  .openapi("PinAcquirerRequest");
+
+export const ChargeByOrgRequestSchema = z
+  .object({
+    amount: z.number().int().positive().openapi({
+      description: "Minor units, e.g. 50000 for $500.00.",
+    }),
+    currency: z.string().min(3),
+    description: z.string().min(1),
+    metadata: z.record(z.string(), z.string()).optional(),
+  })
+  .openapi("ChargeByOrgRequest");
+
+export const ChargeResultSchema = z
+  .object({
+    object: z.literal("charge_result"),
+    org_id: z.string(),
+    acquirer: z.enum(["stripe", "revolut"]).openapi({
+      description: "Which acquirer took the money. Diagnostic only — do not branch on it.",
+    }),
+    reference: z.string().openapi({
+      description: "The acquirer's own id for this charge, for support and reconciliation.",
+    }),
+    status: z.enum(["succeeded", "failed"]).openapi({
+      description: "`succeeded` only when the money actually moved.",
+    }),
+    amount: z.number().int(),
+    currency: z.string(),
+    hosted_document_url: z.string().nullable().openapi({
+      description:
+        "A hosted document for this charge when the acquirer produces one (Stripe finalizes an invoice with a PDF). Null means this acquirer has no such thing — never that the charge failed.",
+    }),
+  })
+  .openapi("ChargeResult");
+
 export const UpdateCustomerMetadataRequestSchema = z
   .object({
     metadata: z.record(z.string(), z.string()).openapi({
@@ -657,6 +702,38 @@ registry.registerPath({
     200: { description: "Finalized, paid Stripe Invoice", content: { "application/json": { schema: StripeObjectSchema } } },
     400: { description: "Invalid request or missing Idempotency-Key header", content: { "application/json": { schema: ErrorResponseSchema } } },
     404: { description: "No customer for org", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+// --- Internal: vendor-neutral charge ---
+//
+// The charge surface a caller uses when it wants MONEY TAKEN rather than a
+// document. It resolves the org's acquirer itself and answers in one shape
+// whatever it resolved, so no consumer ever learns a second acquirer exists.
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/charges/by-org/{orgId}",
+  summary: "Charge an org off-session, whichever acquirer holds its card",
+  description:
+    "Server-to-server. Takes money from the org off-session and answers in ONE vendor-neutral shape whichever acquirer it resolved — the caller never names one. An org on Stripe gets the same finalized, paid invoice it always did, with its hosted invoice URL reported as `hosted_document_url`; an org on an acquirer with no invoice object gets `hosted_document_url: null`, which means \"this acquirer does not produce one\" and never \"the charge failed\" — `status` is the only thing that says whether the money moved. Requires the `Idempotency-Key` header: on Stripe it is derived per Stripe step, on Revolut it is stamped on the order so a retry resumes it instead of charging twice. X-API-Key only — no identity headers (orgId is in the path).",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+    headers: z.object({
+      "idempotency-key": z.string().openapi({
+        description:
+          "Required. Stable per-logical-top-up key, so a retry never takes money twice on either acquirer.",
+      }),
+    }),
+    body: { content: { "application/json": { schema: ChargeByOrgRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Charge result", content: { "application/json": { schema: ChargeResultSchema } } },
+    400: { description: "Invalid request or missing Idempotency-Key header", content: { "application/json": { schema: ErrorResponseSchema } } },
+    404: { description: "No customer for org on its acquirer", content: { "application/json": { schema: ErrorResponseSchema } } },
+    409: { description: "No chargeable saved payment method", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });
 
