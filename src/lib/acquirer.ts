@@ -51,6 +51,27 @@ export async function resolveAcquirer(orgId: string): Promise<AcquirerPin> {
 }
 
 /**
+ * Return an org to the DEFAULT acquirer by deleting its pin.
+ *
+ * Absent means Stripe, so removing the row is what "back to the default" means
+ * — the org ends up byte-identical to one that was never pinned, rather than
+ * carrying a row that says the same thing in a second way.
+ *
+ * This exists because a mis-pin used to have no way back. `pinAcquirer` refuses
+ * to move an org that holds a customer on the other acquirer, which is right
+ * for a card that must not be stranded but also refused the correction itself —
+ * so recovering meant deleting the row by hand in the database. It is the
+ * CALLER's job to have established that the org holds no chargeable method on
+ * the acquirer it is leaving; the route above this does that.
+ *
+ * Idempotent: an org with no pin is already on the default, and deleting
+ * nothing is success.
+ */
+export async function unpinAcquirer(orgId: string): Promise<void> {
+  await db.delete(orgAcquirers).where(eq(orgAcquirers.orgId, orgId));
+}
+
+/**
  * Pin an org to an acquirer, or record the acquirer's customer id for one
  * already pinned.
  *

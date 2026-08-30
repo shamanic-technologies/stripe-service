@@ -6,7 +6,12 @@ const { dbMock } = vi.hoisted(() => {
 });
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
 
-import { resolveAcquirer, pinAcquirer, DEFAULT_ACQUIRER } from "../../src/lib/acquirer";
+import {
+  resolveAcquirer,
+  pinAcquirer,
+  unpinAcquirer,
+  DEFAULT_ACQUIRER,
+} from "../../src/lib/acquirer";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -79,5 +84,15 @@ describe("pinAcquirer", () => {
     ]);
     await pinAcquirer({ orgId: "org-1", acquirer: "revolut" });
     expect(dbMock.lastInsertValues("org_acquirers").acquirerCustomerId).toBe("cus-rev-1");
+  });
+});
+
+describe("unpinAcquirer", () => {
+  it("deletes the pin so the org reads as one that was never pinned", async () => {
+    // Absent means Stripe, so removing the row IS "back to the default" — the
+    // org ends up byte-identical to one that never moved, rather than carrying
+    // a row that says the same thing a second way.
+    await unpinAcquirer("org-1");
+    expect(dbMock.db.delete).toHaveBeenCalled();
   });
 });
