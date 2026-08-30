@@ -446,7 +446,7 @@ router.post(
         // Stripe orgs keep the invoiced charge they already have, PDF and all.
         return res.status(409).json({
           error:
-            "Org is on Stripe; use POST /internal/invoices/by-org/{orgId}, which produces the invoice document this route cannot",
+            "Org is on Stripe; POST /internal/invoices/by-org/{orgId} charges it AND produces the invoice document this route cannot",
           acquirer: pin.acquirer,
         });
       }
@@ -733,6 +733,29 @@ router.post(
       const { amount, currency, description, payment_method, metadata } =
         parsed.data;
 
+      // Which acquirer holds this org's card decides what "charge it" means
+      // here. The caller asked to take money and never named a vendor, so the
+      // dispatch belongs on this side. An org on an acquirer with no invoice
+      // object gets the neutral charge result instead of a fabricated invoice —
+      // the shape differs because the capability differs, and saying so is the
+      // point.
+      const pin = await resolveAcquirer(orgId);
+      if (pin.acquirer === "revolut") {
+        if (!pin.customerId) {
+          return res.status(404).json({ error: "Customer not found" });
+        }
+        const result = await chargeViaRevolut({
+          orgId,
+          customerId: pin.customerId,
+          amount,
+          currency,
+          description,
+          metadata,
+        });
+        res.locals.stripeObjectId = result.reference;
+        return res.json(result);
+      }
+
       // Resolve the org's Stripe customer (1:1 org<->customer).
       const row = await db
         .select({ id: customers.id })
@@ -851,6 +874,9 @@ router.post(
 
       return res.json(paid);
     } catch (err) {
+      if (err instanceof NoChargeablePaymentMethod) {
+        return res.status(409).json({ error: err.message });
+      }
       return next(err);
     }
   }
