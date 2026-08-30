@@ -14,7 +14,7 @@ vi.mock("../../src/lib/key-client", async (importOriginal) => {
   return { ...actual, resolvePlatformKey: vi.fn().mockResolvedValue({ key: "pk_test" }) };
 });
 
-import { buildCardSetup } from "../../src/lib/card-setup";
+import { buildCardSetup, VERIFICATION_AMOUNT } from "../../src/lib/card-setup";
 
 const hostedSession = vi.fn().mockResolvedValue("https://portal.example/session");
 
@@ -29,6 +29,7 @@ const base = {
   returnUrl: "https://dashboard.example/billing",
   hostedSession,
   defaultCustomerId: "cus_stripe_1",
+  currency: "USD",
 };
 
 describe("buildCardSetup", () => {
@@ -60,7 +61,7 @@ describe("buildCardSetup", () => {
     expect(hostedSession).not.toHaveBeenCalled();
   });
 
-  it("creates the setup order at ZERO so storing a card costs the customer nothing", async () => {
+  it("AUTHORISES without capturing, so changing a card costs nothing", async () => {
     dbMock.queueSelect("org_acquirers", [
       { acquirer: "revolut", customerId: "cus-rev-1" },
     ]);
@@ -69,7 +70,37 @@ describe("buildCardSetup", () => {
     await buildCardSetup(base);
 
     expect(createOrder).toHaveBeenCalledWith(
-      expect.objectContaining({ amount: 0, customer_id: "cus-rev-1" })
+      expect.objectContaining({
+        capture_mode: "manual",
+        amount: VERIFICATION_AMOUNT,
+        customer_id: "cus-rev-1",
+      })
+    );
+  });
+
+  it("needs no amount from the caller — updating a card is not a purchase", async () => {
+    dbMock.queueSelect("org_acquirers", [
+      { acquirer: "revolut", customerId: "cus-rev-1" },
+    ]);
+    createOrder.mockResolvedValue({ id: "ord-1", token: "tok-1" });
+
+    await expect(buildCardSetup(base)).resolves.toMatchObject({
+      mode: "embedded_widget",
+    });
+  });
+
+  it("marks the order so the hold can be found and released later", async () => {
+    dbMock.queueSelect("org_acquirers", [
+      { acquirer: "revolut", customerId: "cus-rev-1" },
+    ]);
+    createOrder.mockResolvedValue({ id: "ord-1", token: "tok-1" });
+
+    await buildCardSetup(base);
+
+    expect(createOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ purpose: "card-setup" }),
+      })
     );
   });
 

@@ -7,8 +7,10 @@ const { dbMock } = vi.hoisted(() => {
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
 const getOrder = vi.fn();
+const cancelOrder = vi.fn().mockResolvedValue({});
 vi.mock("../../src/lib/revolut-client", () => ({
   getOrder: (...args: unknown[]) => getOrder(...args),
+  cancelOrder: (...args: unknown[]) => cancelOrder(...args),
 }));
 
 import {
@@ -275,5 +277,84 @@ describe("mergeCurrencyTotals", () => {
     const { mergeCurrencyTotals } = await import("../../src/lib/revolut-money");
     const out = mergeCurrencyTotals([row("usd", 100)], [row("EUR", 500)]);
     expect(out.map((r) => r.currency)).toEqual(["eur", "usd"]);
+  });
+});
+
+describe("releasing the card-verification hold", () => {
+  const setupOrder = (over = {}) => ({
+    id: "ord-setup",
+    state: "authorised",
+    metadata: { purpose: "card-setup" },
+    updatedAt: new Date(Date.now() - 20 * 60 * 1000),
+    ...over,
+  });
+
+  it("does NOT cancel on the webhook — that cancels it under the customer", async () => {
+    // Cancelling the moment the authorisation lands leaves the customer's page
+    // reporting a failure and the card unsaved, because the order it was being
+    // saved against no longer exists. Verified in production, twice.
+    const order = {
+      id: "ord-setup",
+      type: "payment",
+      state: "authorised",
+      amount: 100,
+      currency: "USD",
+      refunded_amount: 0,
+      updated_at: "2026-08-30T18:38:42.000000Z",
+      metadata: { org_id: "org-a", purpose: "card-setup" },
+    };
+    getOrder.mockResolvedValue(order);
+    dbMock.queueSelect("revolut_object_snapshots", [{ payload: order }]);
+
+    await mirrorOrderById(order.id, "webhook");
+
+    expect(cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it("releases a hold once the flow has certainly finished", async () => {
+    const { releaseSettledCardSetupHolds } = await import(
+      "../../src/lib/revolut-processor"
+    );
+    dbMock.queueSelect("revolut_orders", [setupOrder()]);
+
+    expect(await releaseSettledCardSetupHolds()).toBe(1);
+    expect(cancelOrder).toHaveBeenCalledWith("ord-setup");
+  });
+
+  it("leaves a hold alone while the customer could still be in the flow", async () => {
+    const { releaseSettledCardSetupHolds } = await import(
+      "../../src/lib/revolut-processor"
+    );
+    dbMock.queueSelect("revolut_orders", [
+      setupOrder({ updatedAt: new Date(Date.now() - 30 * 1000) }),
+    ]);
+
+    expect(await releaseSettledCardSetupHolds()).toBe(0);
+    expect(cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it("never cancels a real payment, however old", async () => {
+    const { releaseSettledCardSetupHolds } = await import(
+      "../../src/lib/revolut-processor"
+    );
+    dbMock.queueSelect("revolut_orders", [
+      setupOrder({ metadata: { purpose: "manual-topup" } }),
+    ]);
+
+    expect(await releaseSettledCardSetupHolds()).toBe(0);
+    expect(cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it("keeps going when one release fails", async () => {
+    const { releaseSettledCardSetupHolds } = await import(
+      "../../src/lib/revolut-processor"
+    );
+    cancelOrder.mockRejectedValueOnce(new Error("cancel failed"));
+    dbMock.queueSelect("revolut_orders", [
+      setupOrder({ id: "a" }),
+      setupOrder({ id: "b" }),
+    ]);
+
+    expect(await releaseSettledCardSetupHolds()).toBe(1);
   });
 });

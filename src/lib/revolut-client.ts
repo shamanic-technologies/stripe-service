@@ -191,7 +191,12 @@ export function createOrder(body: {
   currency: string;
   description?: string;
   customer_id?: string;
-  save_payment_method_for?: "merchant" | "customer";
+  /**
+   * `manual` authorises without capturing, so the order can be cancelled and
+   * the hold released. Unlike most fields here it is VALIDATED and echoed back,
+   * which is how you can tell it takes effect.
+   */
+  capture_mode?: "automatic" | "manual";
   metadata?: Record<string, string>;
 }): Promise<RevolutOrder> {
   return request<RevolutOrder>("POST", "/orders", body);

@@ -114,6 +114,10 @@ export const CardSetupRequestSchema = z
       description:
         "Where a hosted flow returns the customer to. Ignored by an acquirer whose flow is embedded rather than hosted.",
     }),
+    currency: z.string().min(3).optional().openapi({
+      description:
+        "Currency for the verification authorisation an acquirer may need to place. Never captured.",
+    }),
   })
   .openapi("CardSetupRequest");
 

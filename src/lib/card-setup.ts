@@ -42,20 +42,40 @@ export type CardSetup =
 /**
  * Build the card-setup descriptor for an org.
  *
- * For Revolut the order is created with amount ZERO — verified accepted — so
- * storing a card costs the customer nothing. Charging a token amount just to
- * capture a mandate would be a real debit on a real card for no service.
+ * ⚠️ Some acquirers cannot store a card without a payment. Revolut is one: "you
+ * cannot create a payment method explicitly, they are generated as part of a
+ * payment", and there is no zero-amount verification. A zero-amount order is
+ * ACCEPTED at create (201) and then cannot be paid — the widget fails with a
+ * bare `Transaction failed` and the order sits `pending` with no payment
+ * attempt recorded. Verified in production.
  *
- * ⚠️ `save_payment_method_for` is NOT sent on the order: this API silently
- * ignores unknown fields there, and it was verified to do exactly that — a real
- * card paid a real order carrying it and no method was saved. The flag only
- * takes effect when the browser SDK is initialised with it, which is why it is
- * returned here for the consumer to pass on rather than set server-side.
+ * That does NOT mean the customer must pay to change their card. The standard
+ * answer is an AUTHORISATION that is never captured: create the order with
+ * `capture_mode: "manual"`, let the customer authorise it, keep the payment
+ * method, then cancel the order so the hold is released. No money moves, and
+ * nobody has to pick an amount to update a card.
+ *
+ * `VERIFICATION_AMOUNT` exists only to give the authorisation something to be
+ * for. It is never captured, and `cancelCardSetupHold` releases it as soon as
+ * the card is saved.
+ *
+ * Unlike `save_payment_method_for`, `capture_mode` is a REAL field on this
+ * endpoint — it is echoed back in the response, which is the only way to tell
+ * an accepted parameter from a silently dropped one on an API that returns 201
+ * either way.
  */
+/**
+ * The amount an authorisation is placed for so a card can be verified. Never
+ * captured — the hold is released as soon as the method is saved.
+ */
+export const VERIFICATION_AMOUNT = 100;
+
 export async function buildCardSetup(params: {
   orgId: string;
   /** Where a hosted flow should return the customer to. */
   returnUrl: string;
+  /** Currency for the verification authorisation. */
+  currency?: string;
   /** Builds the hosted session for the default acquirer. */
   hostedSession: (customerId: string) => Promise<string>;
   /** The org's mirrored customer on the default acquirer. */
@@ -70,9 +90,12 @@ export async function buildCardSetup(params: {
       );
     }
     const order = await createOrder({
-      amount: 0,
-      currency: "USD",
-      description: "Save a card for automatic top-ups",
+      amount: VERIFICATION_AMOUNT,
+      currency: params.currency ?? "USD",
+      // Authorise only. The hold is released once the card is saved, so the
+      // customer is never charged for updating a card.
+      capture_mode: "manual",
+      description: "Card verification (released immediately, not charged)",
       customer_id: pin.customerId,
       metadata: { org_id: params.orgId, purpose: "card-setup" },
     });

@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { revolutObjectSnapshots, revolutOrders } from "../db/schema";
-import { getOrder, type RevolutOrder } from "./revolut-client";
+import { cancelOrder, getOrder, type RevolutOrder } from "./revolut-client";
 
 export type RevolutObjectKind = "order" | "dispute";
 export type RevolutSource = "webhook" | "poll" | "backfill";
@@ -240,4 +240,60 @@ export async function recordDisputeSnapshot(
   source: RevolutSource
 ): Promise<void> {
   await recordRevolutObject("dispute", dispute, source);
+}
+
+/**
+ * Release the authorisation placed to verify a card — LATER, never on the
+ * webhook that announces it.
+ *
+ * Cancelling the moment the authorisation lands cancels it out from under the
+ * customer, who is still in the payment flow: their page reports "something
+ * went wrong" and the card is never saved, because the order it was being saved
+ * against no longer exists. Verified in production, twice, and it looked
+ * exactly like the acquirer rejecting the card.
+ *
+ * So the release runs from the poller, over holds old enough that the flow has
+ * certainly finished. A hold that lingers a few extra minutes costs nothing —
+ * it is an authorisation, not a charge — while releasing one too early costs
+ * the whole feature.
+ */
+const HOLD_MIN_AGE_MS = 10 * 60 * 1000;
+
+export async function releaseSettledCardSetupHolds(
+  nowMs: number = Date.now()
+): Promise<number> {
+  const rows = await db
+    .select({
+      id: revolutOrders.id,
+      state: revolutOrders.state,
+      metadata: revolutOrders.metadata,
+      updatedAt: revolutOrders.updatedAtRevolut,
+    })
+    .from(revolutOrders)
+    .where(eq(revolutOrders.state, "authorised"));
+
+  let released = 0;
+  for (const row of rows) {
+    if ((row.metadata as { purpose?: string } | null)?.purpose !== "card-setup") {
+      // Only ever an order this service created FOR card setup. A real payment
+      // is never cancelled here.
+      continue;
+    }
+    const age = row.updatedAt ? nowMs - row.updatedAt.getTime() : Infinity;
+    if (age < HOLD_MIN_AGE_MS) continue;
+
+    try {
+      await cancelOrder(row.id);
+      released += 1;
+      console.log(`[stripe-service] Released the card-verification hold on ${row.id}`);
+    } catch (err) {
+      // A hold expires on its own within days. Failing loudly here would take
+      // down a poll that has other work to do.
+      console.error(
+        `[stripe-service] Could not release the card-verification hold on ${row.id}:`,
+        err
+      );
+    }
+  }
+  return released;
 }
