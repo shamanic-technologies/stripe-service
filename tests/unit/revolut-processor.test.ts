@@ -251,3 +251,29 @@ describe("mirrorOrderById — parent chasing", () => {
     expect(getOrder).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("mergeCurrencyTotals", () => {
+  const row = (currency: string, received: number) => ({
+    currency,
+    amount_received: received,
+    amount_refunded: 0,
+    amount_disputed_lost: 0,
+    amount_returned: 0,
+    amount_net: received,
+  });
+
+  it("folds the acquirers' different spellings of one currency together", async () => {
+    const { mergeCurrencyTotals } = await import("../../src/lib/revolut-money");
+    // Stripe reports `usd`, Revolut reports `USD`. Two entries for one currency
+    // is the quiet way to halve a balance.
+    expect(mergeCurrencyTotals([row("usd", 100)], [row("USD", 500)])).toEqual([
+      { ...row("usd", 600) },
+    ]);
+  });
+
+  it("still keeps genuinely different currencies apart", async () => {
+    const { mergeCurrencyTotals } = await import("../../src/lib/revolut-money");
+    const out = mergeCurrencyTotals([row("usd", 100)], [row("EUR", 500)]);
+    expect(out.map((r) => r.currency)).toEqual(["eur", "usd"]);
+  });
+});

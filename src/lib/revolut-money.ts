@@ -67,7 +67,11 @@ export async function revolutTotalsByCurrency(
     .groupBy(revolutOrders.currency);
 
   const byCurrency = new Map<string, CurrencyTotals>();
-  const entry = (currency: string): CurrencyTotals => {
+  const entry = (rawCurrency: string): CurrencyTotals => {
+    // Stripe reports `usd`, Revolut reports `USD`. Same currency. Left
+    // unnormalised they become two entries in the merged summary and a caller
+    // summing per currency silently under-counts each of them.
+    const currency = rawCurrency.toLowerCase();
     const existing = byCurrency.get(currency);
     if (existing) return existing;
     const fresh: CurrencyTotals = {
@@ -113,9 +117,13 @@ export function mergeCurrencyTotals(
   const byCurrency = new Map<string, CurrencyTotals>();
   for (const set of sets) {
     for (const row of set) {
-      const existing = byCurrency.get(row.currency);
+      // Case-fold before merging: the acquirers disagree on it (Stripe `usd`,
+      // Revolut `USD`) and two spellings of one currency is the quiet way to
+      // halve a balance.
+      const key = row.currency.toLowerCase();
+      const existing = byCurrency.get(key);
       if (!existing) {
-        byCurrency.set(row.currency, { ...row });
+        byCurrency.set(key, { ...row, currency: key });
         continue;
       }
       existing.amount_received += row.amount_received;
