@@ -19,6 +19,7 @@ import { resolveAcquirer, pinAcquirer } from "../lib/acquirer";
 import {
   chargeViaRevolut,
   chargeViaStripeInvoice,
+  resolveStripeChargeablePaymentMethod,
   chargeResultFromInvoice,
   NoChargeablePaymentMethod,
 } from "../lib/charge-org";
@@ -496,6 +497,18 @@ router.post(
       }
 
       const stripe = await getPlatformStripe();
+      // The caller names no method — that is the whole point of this surface —
+      // so we pick one, exactly as the Revolut side does. Never fall through to
+      // the customer's Stripe default: it is routinely absent for a card saved
+      // through hosted Checkout, and when present it is often a Link/wallet
+      // method Stripe refuses off-session. Refusing here is what makes an org
+      // with no chargeable card legible (409) instead of an opaque acquirer
+      // error, on both acquirers alike.
+      const payment_method = await resolveStripeChargeablePaymentMethod(
+        stripe,
+        orgId,
+        row[0].id
+      );
       const paid = await chargeViaStripeInvoice({
         stripe,
         orgId,
@@ -503,6 +516,7 @@ router.post(
         amount,
         currency,
         description,
+        payment_method,
         metadata,
         idempotencyKey,
         onPaid: (invoice) => {
