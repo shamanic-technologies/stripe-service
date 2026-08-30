@@ -9,10 +9,15 @@ vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
 const listCustomerPaymentMethods = vi.fn();
 const createOrder = vi.fn();
 const payOrderWithSavedMethod = vi.fn();
+const getOrder = vi.fn();
 vi.mock("../../src/lib/revolut-client", () => ({
   listCustomerPaymentMethods: (...a: unknown[]) => listCustomerPaymentMethods(...a),
   createOrder: (...a: unknown[]) => createOrder(...a),
   payOrderWithSavedMethod: (...a: unknown[]) => payOrderWithSavedMethod(...a),
+  getOrder: (...a: unknown[]) => getOrder(...a),
+}));
+vi.mock("../../src/lib/event-processor", () => ({
+  recordApiSnapshot: vi.fn().mockResolvedValue(undefined),
 }));
 const mirrorOrderById = vi.fn().mockResolvedValue(undefined);
 vi.mock("../../src/lib/revolut-processor", () => ({
@@ -143,5 +148,51 @@ describe("chargeResultFromInvoice", () => {
       chargeResultFromInvoice("org-1", { id: "in_1", status: "open" } as never, 1, "usd")
         .status
     ).toBe("failed");
+  });
+});
+
+describe("chargeViaRevolut — retrying one logical top-up", () => {
+  beforeEach(() => {
+    dbMock.clearQueues();
+    listCustomerPaymentMethods.mockResolvedValue([{ id: "pm-1", type: "card" }]);
+  });
+
+  it("stamps the caller's key on the order, which is what a retry finds", async () => {
+    dbMock.queueSelect("revolut_orders", []);
+    createOrder.mockResolvedValue({ id: "ord-1" });
+    payOrderWithSavedMethod.mockResolvedValue({ id: "ord-1", state: "completed" });
+
+    await chargeViaRevolut({ ...BASE, idempotencyKey: "topup_1" });
+
+    expect(createOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ idempotency_key: "topup_1" }),
+      })
+    );
+  });
+
+  it("does NOT take the money twice when the same top-up is retried", async () => {
+    // The first attempt's order is mirrored, so the retry finds it completed.
+    dbMock.queueSelect("revolut_orders", [{ id: "ord-1" }]);
+    getOrder.mockResolvedValue({ id: "ord-1", state: "completed" });
+
+    const out = await chargeViaRevolut({ ...BASE, idempotencyKey: "topup_1" });
+
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(payOrderWithSavedMethod).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ reference: "ord-1", status: "succeeded" });
+  });
+
+  it("resumes the order it already created rather than minting a second one", async () => {
+    // A crash between create and pay leaves an unpaid order carrying the key.
+    dbMock.queueSelect("revolut_orders", [{ id: "ord-1" }]);
+    getOrder.mockResolvedValue({ id: "ord-1", state: "pending" });
+    payOrderWithSavedMethod.mockResolvedValue({ id: "ord-1", state: "completed" });
+
+    const out = await chargeViaRevolut({ ...BASE, idempotencyKey: "topup_1" });
+
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(payOrderWithSavedMethod).toHaveBeenCalledWith("ord-1", "pm-1", "card");
+    expect(out).toMatchObject({ reference: "ord-1", status: "succeeded" });
   });
 });

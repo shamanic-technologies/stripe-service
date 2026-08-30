@@ -366,6 +366,91 @@
           "nullable": true
         }
       },
+      "ChargeResult": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "charge_result"
+            ]
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "acquirer": {
+            "type": "string",
+            "enum": [
+              "stripe",
+              "revolut"
+            ],
+            "description": "Which acquirer took the money. Diagnostic only — do not branch on it."
+          },
+          "reference": {
+            "type": "string",
+            "description": "The acquirer's own id for this charge, for support and reconciliation."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed"
+            ],
+            "description": "`succeeded` only when the money actually moved."
+          },
+          "amount": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "hosted_document_url": {
+            "type": "string",
+            "nullable": true,
+            "description": "A hosted document for this charge when the acquirer produces one (Stripe finalizes an invoice with a PDF). Null means this acquirer has no such thing — never that the charge failed."
+          }
+        },
+        "required": [
+          "object",
+          "org_id",
+          "acquirer",
+          "reference",
+          "status",
+          "amount",
+          "currency",
+          "hosted_document_url"
+        ]
+      },
+      "ChargeByOrgRequest": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Minor units, e.g. 50000 for $500.00."
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "description"
+        ]
+      },
       "CreateCheckoutSessionRequest": {
         "type": "object",
         "properties": {
@@ -1524,6 +1609,91 @@
           },
           "404": {
             "description": "No customer for org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/charges/by-org/{orgId}": {
+      "post": {
+        "summary": "Charge an org off-session, whichever acquirer holds its card",
+        "description": "Server-to-server. Takes money from the org off-session and answers in ONE vendor-neutral shape whichever acquirer it resolved — the caller never names one. An org on Stripe gets the same finalized, paid invoice it always did, with its hosted invoice URL reported as `hosted_document_url`; an org on an acquirer with no invoice object gets `hosted_document_url: null`, which means \"this acquirer does not produce one\" and never \"the charge failed\" — `status` is the only thing that says whether the money moved. Requires the `Idempotency-Key` header: on Stripe it is derived per Stripe step, on Revolut it is stamped on the order so a retry resumes it instead of charging twice. X-API-Key only — no identity headers (orgId is in the path).",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Required. Stable per-logical-top-up key, so a retry never takes money twice on either acquirer."
+            },
+            "required": true,
+            "description": "Required. Stable per-logical-top-up key, so a retry never takes money twice on either acquirer.",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChargeByOrgRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Charge result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChargeResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or missing Idempotency-Key header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No customer for org on its acquirer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No chargeable saved payment method",
             "content": {
               "application/json": {
                 "schema": {

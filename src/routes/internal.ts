@@ -15,13 +15,11 @@ import {
   withReturnedAmounts,
   type SummaryPayment,
 } from "../lib/returned-amounts";
-import {
-  paymentIntentIdFromInvoice,
-  paymentIntentProvenance,
-} from "../lib/invoice-provenance";
 import { resolveAcquirer, pinAcquirer } from "../lib/acquirer";
 import {
   chargeViaRevolut,
+  chargeViaStripeInvoice,
+  chargeResultFromInvoice,
   NoChargeablePaymentMethod,
 } from "../lib/charge-org";
 import {
@@ -415,18 +413,27 @@ router.get(
  * Take money from an org, off-session, whichever acquirer holds its card.
  *
  * This is the vendor-neutral charge surface: the caller states an amount and a
- * reason, and never names an acquirer. It is what lets a second acquirer exist
- * without billing-service changing, and it is the route that should replace the
- * invoice-shaped one for every caller that wants a CHARGE rather than a
- * document.
+ * reason, and never names an acquirer. It answers in ONE shape whatever it
+ * resolved, which is what lets a second acquirer exist without billing-service
+ * changing — and what lets billing move onto it at all. It takes money for an
+ * org on EITHER acquirer: a Stripe org gets exactly the charge it has always
+ * had (the same finalized, paid invoice as the invoiced route, same steps, same
+ * provenance), reported as a neutral result whose `hosted_document_url` is that
+ * invoice's hosted URL.
  *
- * `hosted_document_url` is null for an acquirer with no invoice object — which
- * Revolut does not have. Null means "this acquirer does not produce one", never
- * "it failed. A caller that needs a document checks for null; it is never
- * handed a fabricated invoice.
+ * `hosted_document_url` is null only for an acquirer with no invoice object —
+ * which Revolut does not have. Null means "this acquirer does not produce one",
+ * never "it failed": `status` is the only thing that says whether the money
+ * moved, so a caller can tell success from failure without knowing which
+ * acquirer ran, and can tell an absent document from a failed charge.
  *
- * Fail loud: no saved card -> 409, any acquirer error propagates. A caller
- * retries, and the Stripe path stays idempotency-keyed as it always was.
+ * Idempotent: the mandatory `Idempotency-Key` header is the caller's stable key
+ * for one logical top-up. On Stripe it is derived per Stripe step, exactly as
+ * on the invoiced route. On Revolut it is stamped on the order, so a retry
+ * resumes that order instead of creating a second one.
+ *
+ * Fail loud: missing key -> 400, no customer -> 404, no saved card -> 409, any
+ * acquirer error propagates and the caller retries.
  */
 router.post(
   "/internal/charges/by-org/:orgId",
@@ -441,31 +448,68 @@ router.post(
       const orgId = req.params.orgId;
       res.locals.orgId = orgId;
 
-      const pin = await resolveAcquirer(orgId);
-      if (pin.acquirer !== "revolut") {
-        // Stripe orgs keep the invoiced charge they already have, PDF and all.
-        return res.status(409).json({
+      const idempotencyHeader = req.headers["idempotency-key"];
+      const idempotencyKey =
+        typeof idempotencyHeader === "string" ? idempotencyHeader.trim() : "";
+      if (!idempotencyKey) {
+        return res.status(400).json({
           error:
-            "Org is on Stripe; POST /internal/invoices/by-org/{orgId} charges it AND produces the invoice document this route cannot",
-          acquirer: pin.acquirer,
+            "Idempotency-Key header is required (guarantees no double-charge on retry)",
         });
       }
-      if (!pin.customerId) {
-        return res
-          .status(409)
-          .json({ error: "Org is pinned to Revolut but has no acquirer customer" });
+
+      const { amount, currency, description, metadata } = parsed.data;
+      const pin = await resolveAcquirer(orgId);
+
+      if (pin.acquirer === "revolut") {
+        if (!pin.customerId) {
+          return res
+            .status(404)
+            .json({ error: "Org is pinned to Revolut but has no acquirer customer" });
+        }
+        const result = await chargeViaRevolut({
+          orgId,
+          customerId: pin.customerId,
+          amount,
+          currency,
+          description,
+          metadata,
+          idempotencyKey,
+        });
+        res.locals.stripeObjectId = result.reference;
+        return res.json(result);
       }
 
-      const result = await chargeViaRevolut({
+      // A Stripe org keeps the charge it already had — the same invoiced one,
+      // document and all. What changes is only how the answer is SHAPED: the
+      // hosted invoice is reported in the neutral result rather than dropped,
+      // so a caller never has to ask which acquirer an org is on to know how to
+      // read the reply.
+      const row = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.orgId, orgId))
+        .orderBy(desc(customers.syncedAt))
+        .limit(1);
+      if (row.length === 0) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      const stripe = await getPlatformStripe();
+      const paid = await chargeViaStripeInvoice({
+        stripe,
         orgId,
-        customerId: pin.customerId,
-        amount: parsed.data.amount,
-        currency: parsed.data.currency,
-        description: parsed.data.description,
-        metadata: parsed.data.metadata,
+        customerId: row[0].id,
+        amount,
+        currency,
+        description,
+        metadata,
+        idempotencyKey,
+        onPaid: (invoice) => {
+          res.locals.stripeObjectId = invoice.id;
+        },
       });
-      res.locals.stripeObjectId = result.reference;
-      return res.json(result);
+      return res.json(chargeResultFromInvoice(orgId, paid, amount, currency));
     } catch (err) {
       if (err instanceof NoChargeablePaymentMethod) {
         return res.status(409).json({ error: err.message });
@@ -766,111 +810,21 @@ router.post(
       if (row.length === 0) {
         return res.status(404).json({ error: "Customer not found" });
       }
-      const customer = row[0].id;
-
       const stripe = await getPlatformStripe();
-      const invoiceMetadata = { ...(metadata ?? {}), org_id: orgId };
-
-      // 1. Draft invoice. `charge_automatically` + no `auto_advance` so WE drive
-      //    finalize + pay explicitly (synchronous, off-session).
-      //    `pending_invoice_items_behavior: "exclude"` so ONLY the item we
-      //    explicitly attach below lands on this invoice — never a stray pending
-      //    item the customer may have from another flow.
-      const draft = await stripe.invoices.create(
-        {
-          customer,
-          collection_method: "charge_automatically",
-          auto_advance: false,
-          currency,
-          description,
-          pending_invoice_items_behavior: "exclude",
-          metadata: invoiceMetadata,
-          ...(payment_method
-            ? { default_payment_method: payment_method }
-            : {}),
+      const paid = await chargeViaStripeInvoice({
+        stripe,
+        orgId,
+        customerId: row[0].id,
+        amount,
+        currency,
+        description,
+        payment_method,
+        metadata,
+        idempotencyKey,
+        onPaid: (invoice) => {
+          res.locals.stripeObjectId = invoice.id;
         },
-        { idempotencyKey: `${idempotencyKey}:invoice` }
-      );
-
-      const invoiceId = draft.id;
-      if (!invoiceId) {
-        throw new Error(
-          "[stripe-service] Stripe returned an invoice with no id"
-        );
-      }
-
-      // 2. Single line item, explicitly bound to this invoice.
-      await stripe.invoiceItems.create(
-        { customer, invoice: invoiceId, amount, currency, description },
-        { idempotencyKey: `${idempotencyKey}:item` }
-      );
-
-      // 3. Finalize (draft -> open; generates the hosted invoice URL + PDF).
-      await stripe.invoices.finalizeInvoice(
-        invoiceId,
-        {},
-        { idempotencyKey: `${idempotencyKey}:finalize` }
-      );
-
-      // 4. Pay off-session against the customer's stored card. `expand:
-      //    ["payments"]` because the paid invoice's `payments` list is the ONLY
-      //    reference to the PaymentIntent Stripe creates for it — on this API
-      //    version the PaymentIntent has no `invoice` field at all.
-      const paid = await stripe.invoices.pay(
-        invoiceId,
-        {
-          off_session: true,
-          expand: ["payments"],
-          ...(payment_method ? { payment_method } : {}),
-        },
-        { idempotencyKey: `${idempotencyKey}:pay` }
-      );
-
-      res.locals.stripeObjectId = paid.id;
-
-      // 5. Carry the caller's provenance onto the PaymentIntent, then mirror it.
-      //
-      //    Stripe does not copy invoice metadata to the PaymentIntent, so
-      //    without this the charge lands as an anonymous `succeeded` payment and
-      //    a consumer summing PaymentIntents (billing-service) cannot tell an
-      //    automatic platform-initiated charge from a customer-initiated
-      //    top-up — the property the pre-invoice bare-PaymentIntent path had.
-      //
-      //    Fail loud on both steps. The metadata update is the caller's own
-      //    data, and the snapshot is the ONLY path that carries it into silver:
-      //    Stripe emits no event for a metadata update, so a swallowed failure
-      //    here would silently drop the provenance for good (the
-      //    `payment_intent.succeeded` webhook already landed, carrying the empty
-      //    metadata the PI was born with). Failing is safe precisely because
-      //    every Stripe step above is idempotency-keyed: the caller retries the
-      //    same logical top-up, each Stripe call replays from its idempotency
-      //    record, and we reach this step again with no double charge.
-      const piId = paymentIntentIdFromInvoice(paid);
-      if (!piId) {
-        throw new Error(
-          `[stripe-service] Paid invoice ${paid.id} references no PaymentIntent — cannot attach provenance`
-        );
-      }
-      //    The SAME update also carries the caller's `description` onto the
-      //    PaymentIntent. Stripe does not copy that either: it stamps its own
-      //    generic fallback ("Payment for Invoice") on the PaymentIntent an
-      //    invoice creates, and that string — not the invoice's description —
-      //    is what a customer reads in a billing history rendered from
-      //    payments. The caller already wrote a human description for the
-      //    invoice + its line item; this is the same string, on the object
-      //    consumers actually read.
-      const pi = await stripe.paymentIntents.update(
-        piId,
-        {
-          metadata: paymentIntentProvenance(invoiceMetadata, invoiceId),
-          description,
-        },
-        // Distinct from the historical `:pi-metadata` key on purpose — Stripe
-        // rejects a replayed idempotency key whose params changed, and this
-        // call's params now include `description`.
-        { idempotencyKey: `${idempotencyKey}:pi-provenance` }
-      );
-      await recordApiSnapshot(pi, "payment_intent", orgId);
+      });
 
       return res.json(paid);
     } catch (err) {
