@@ -24,7 +24,10 @@ import {
   chargeViaRevolut,
   NoChargeablePaymentMethod,
 } from "../lib/charge-org";
-import { createCustomer } from "../lib/revolut-client";
+import {
+  createCustomer,
+  listCustomerPaymentMethods,
+} from "../lib/revolut-client";
 import {
   revolutTotalsByCurrency,
   mergeCurrencyTotals,
@@ -618,6 +621,32 @@ router.get(
       res.locals.orgId = orgId;
       const type =
         typeof req.query.type === "string" ? req.query.type : undefined;
+
+      // Whichever acquirer holds this org's card is the one that can answer
+      // "does it have a chargeable one". A caller asks about the ORG, so it must
+      // get the org's real answer rather than Stripe's answer about an org that
+      // has moved — which would read as "no card" and stop the charge before it
+      // was ever attempted.
+      const pin = await resolveAcquirer(orgId);
+      if (pin.acquirer === "revolut") {
+        if (!pin.customerId) {
+          return res.status(404).json({ error: "Customer not found" });
+        }
+        const methods = await listCustomerPaymentMethods(pin.customerId);
+        res.locals.stripeObjectId = pin.customerId;
+        // Returned in the same list envelope as the Stripe answer, but the
+        // METHODS are Revolut's own objects, verbatim. Card brand and last4 are
+        // simply absent rather than invented — a consumer that renders them
+        // shows nothing, which is true, instead of something plausible.
+        return res.json({
+          object: "list",
+          data: type
+            ? methods.filter((m) => m.type === type)
+            : methods,
+          has_more: false,
+          url: `/internal/payment_methods/by-org/${orgId}`,
+        });
+      }
 
       const row = await db
         .select({ id: customers.id })
