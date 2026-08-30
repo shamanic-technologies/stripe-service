@@ -212,3 +212,93 @@ export const apiCallLog = pgTable(
     index("idx_api_call_log_stripe_object_id").on(table.stripeObjectId),
   ]
 );
+
+// ===== Revolut mirror =====
+// A SECOND acquirer, mirrored beside Stripe rather than projected into Stripe's
+// shapes. Its objects are its own: ids are bare UUIDs with no prefix, there is
+// no `object` field (the discriminator is `type`), and one collection —
+// `GET /orders` — holds BOTH payments and refunds, told apart by that `type`.
+// A refund is a top-level order of `type: "refund"` carrying `related_order_id`,
+// which is the direct analogue of Stripe's `refund.payment_intent`.
+//
+// Verified against a real production transaction on 2026-08-30, not against
+// documentation: the shapes below are the fields that transaction actually
+// returned.
+
+// Bronze. Append-only snapshots of whatever we fetched from Revolut, verbatim.
+//
+// Keyed on a content HASH rather than on a vendor event id, because we never
+// trust a webhook's body: a delivery only tells us WHICH order changed, and we
+// then GET that order and store the authoritative answer. So a row is "this
+// object, exactly as Revolut described it, at the moment we asked" — and an
+// identical re-fetch collapses onto the same row instead of piling up.
+//
+// `object_updated_at` is Revolut's own `updated_at`, which is monotonic per
+// object across state transitions. It plays the role Stripe's `event.created`
+// plays for us: the projection orders by it, so an older snapshot arriving
+// after a newer one can never clobber silver back to a stale state.
+export const revolutObjectSnapshots = pgTable(
+  "revolut_object_snapshots",
+  {
+    id: text("id").primaryKey(), // sha256(kind|object_id|payload)
+    objectKind: text("object_kind").notNull(), // 'order' | 'dispute'
+    objectId: text("object_id").notNull(),
+    objectUpdatedAt: timestamp("object_updated_at", { withTimezone: true }),
+    payload: jsonb("payload").notNull(),
+    source: text("source").notNull(), // 'webhook' | 'poll' | 'backfill'
+    receivedAt: timestamp("received_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_revolut_snapshots_object").on(
+      table.objectKind,
+      table.objectId,
+      table.objectUpdatedAt
+    ),
+    index("idx_revolut_snapshots_received").on(table.receivedAt),
+  ]
+);
+
+// Silver. One row per Revolut order, projected from the latest bronze snapshot.
+//
+// Deliberately ONE table for both payments and refunds, because that is what
+// the vendor has — splitting them would be our invention, and the `type` column
+// is the vendor's own discriminator. Money returned is therefore
+// `type = 'refund' AND state = 'completed'`, joined to its payment through
+// `related_order_id`: the same "one row per return, keyed by its own id, summed
+// over current state" contract the Stripe mirror already guarantees.
+//
+// NO dispute table yet, on purpose. `GET /disputes` is listable and returns an
+// empty list on this account, so no dispute payload has ever been observed —
+// typed columns for it would be guessed. Disputes are captured in bronze and
+// projected once a real one exists.
+export const revolutOrders = pgTable(
+  "revolut_orders",
+  {
+    id: text("id").primaryKey(), // bare UUID — Revolut ids carry no prefix
+    type: text("type").notNull(), // 'payment' | 'refund'
+    state: text("state"), // pending | completed | failed | cancelled | ...
+    orgId: text("org_id"), // from metadata.org_id; null when unattributable
+    relatedOrderId: text("related_order_id"), // set on a refund
+    amount: bigint("amount", { mode: "number" }),
+    currency: text("currency"),
+    outstandingAmount: bigint("outstanding_amount", { mode: "number" }),
+    refundedAmount: bigint("refunded_amount", { mode: "number" }),
+    // Net of the acquiring fee, as Revolut settles it. Stripe puts this on a
+    // separate balance_transaction; Revolut puts it on the payment itself.
+    settledAmount: bigint("settled_amount", { mode: "number" }),
+    feeAmount: bigint("fee_amount", { mode: "number" }),
+    paymentMethodType: text("payment_method_type"),
+    description: text("description"),
+    metadata: jsonb("metadata"),
+    createdAtStripe: timestamp("created_at_revolut", { withTimezone: true }),
+    updatedAtRevolut: timestamp("updated_at_revolut", { withTimezone: true }),
+    rawJson: jsonb("raw_json"),
+    syncedAt: timestamp("synced_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_revolut_orders_org").on(table.orgId),
+    index("idx_revolut_orders_type_state").on(table.type, table.state),
+    index("idx_revolut_orders_related").on(table.relatedOrderId),
+  ]
+);
+
