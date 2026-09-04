@@ -389,22 +389,27 @@ export const PublicStatsBillingResponseSchema = z
   .object({
     total_paid_cents: z.string().openapi({
       description:
-        "GROSS paid in across all orgs, minor units: SUM(amount_received) over `succeeded` PaymentIntents. Unchanged meaning — report this as revenue.",
+        "GROSS paid in across all orgs AND ALL ACQUIRERS, minor units: SUM(amount_received) over `succeeded` Stripe PaymentIntents plus every Revolut `payment` order at state `completed`. Unchanged meaning — report this as revenue. Currencies are summed together into one scalar (see the endpoint description).",
     }),
     total_refunded_cents: z.string().openapi({
-      description: "Minor units returned via Refunds in status `succeeded`, across all orgs.",
+      description:
+        "Minor units returned across all orgs and all acquirers: Stripe Refunds in status `succeeded` plus Revolut `refund` orders in state `completed`, each attributed to a payment we mirrored. Revolut refunds count here rather than under disputes because that acquirer has no dispute mirror yet.",
     }),
     total_disputed_lost_cents: z.string().openapi({
-      description: "Minor units lost to Disputes in status `lost`, across all orgs.",
+      description:
+        "Minor units lost to Stripe Disputes in status `lost`, across all orgs. Stripe-only: no Revolut dispute payload has ever been observed, so there is nothing to project or sum.",
     }),
     total_returned_cents: z.string().openapi({
       description: "total_refunded_cents + total_disputed_lost_cents — total money given back.",
     }),
     total_net_cents: z.string().openapi({
       description:
-        "total_paid_cents − total_returned_cents — report this as credited. Equals the sum of every org's `amount_net` from GET /internal/payment_summary/by-org/{orgId}: both count only settled Refunds and LOST Disputes attributed to a mirrored PaymentIntent.",
+        "total_paid_cents − total_returned_cents — report this as credited. Same settled-only rule as the per-org read (GET /internal/payment_summary/by-org/{orgId}) and the same acquirer coverage, but NOT a figure you can equate to it row for row: this one merges every currency into a single scalar, and that read never merges currencies.",
     }),
-    accounts_with_payment_method: z.number().int().nonnegative(),
+    accounts_with_payment_method: z.number().int().nonnegative().openapi({
+      description:
+        "STRIPE-ONLY, deliberately: mirrored customers carrying a default Stripe payment method. Revolut mirrors no saved payment methods, and answering for it means one live acquirer call per org, which does not belong behind an unauthenticated public route. Read this as a Stripe-card count, not as a platform-wide 'can be charged' count.",
+    }),
     monthly_growth: z.array(PublicStatsBucketSchema),
     weekly_growth: z.array(PublicStatsBucketSchema),
   })
@@ -875,7 +880,7 @@ registry.registerPath({
   path: "/public/stats/billing",
   summary: "Public aggregate billing stats (no auth, cross-org)",
   description:
-    "Aggregate Stripe-side money movement across all orgs. Public endpoint — no X-API-Key, no identity headers. GROSS (`*paid_cents`) and NET (`*net_cents`) are both published and must not be conflated: report gross as revenue and net as credited. Net subtracts settled Refunds and LOST Disputes, the same rule the per-payment and per-org reads apply, so this total equals the sum of the per-org `amount_net`. Buckets carry the same distinction; a return is attributed to the period it happened in.",
+    "Aggregate money movement across all orgs AND EVERY ACQUIRER this service takes money through (Stripe and Revolut). Public endpoint — no X-API-Key, no identity headers. GROSS (`*paid_cents`) and NET (`*net_cents`) are both published and must not be conflated: report gross as revenue and net as credited. Money in is a `succeeded` Stripe PaymentIntent or a `completed` Revolut `payment` order; money out is a `succeeded` Stripe Refund, a `lost` Stripe Dispute, or a `completed` Revolut `refund` order attributed to the payment it reverses — the same settled-only rule every other read here applies, so a return that failed drops out on its own. Nothing is excluded for looking like a test.\n\nCURRENCIES ARE SUMMED TOGETHER into one scalar. That is deliberate: this is a single cross-org figure with no currency dimension, and it is why the totals here are NOT claimed to equal the sum of the per-org `amount_net` figures, which are per-currency. `accounts_with_payment_method` is Stripe-only — see its own description.\n\nBuckets carry the same gross/net distinction and sum to the all-time totals on both grains; a return is attributed to the period it happened in, so a period whose returns exceed its payments reports a negative `net_cents`.",
   tags: ["Public"],
   responses: {
     200: {

@@ -1,7 +1,7 @@
 import { and, eq, isNotNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "../db";
-import { disputes, paymentIntents, refunds } from "../db/schema";
+import { disputes, paymentIntents, refunds, revolutOrders } from "../db/schema";
 
 /**
  * Platform-wide money movement for `GET /public/stats/billing`.
@@ -26,9 +26,23 @@ import { disputes, paymentIntents, refunds } from "../db/schema";
  * and never a stored accumulator, all of those flip on their own with nothing
  * to unwind.
  *
- * Currencies are summed together here, exactly as the pre-existing gross total
- * already did — this endpoint is a single cross-org scalar by design. The
- * per-currency truth lives on the per-org summary, which never merges them.
+ * EVERY ACQUIRER, not just the first one. Revolut has taken real customer money
+ * through this service since 2026-08-30, and a platform cash figure that counts
+ * one acquirer answers a question nobody asked. Revolut's half applies the same
+ * settled-only rule the Stripe half does — money in is a `payment` order that
+ * reached `completed`, money out is a `refund` order that reached `completed`,
+ * attributed to the payment it reverses through `related_order_id` — so a
+ * refund that failed (eleven have) is simply not `completed` and drops out of
+ * the sum on its own. Nothing is excluded for looking like a test: this
+ * endpoint has never filtered Stripe test charges and inventing that rule for
+ * one acquirer would make the two answer differently.
+ *
+ * CURRENCY POLICY, stated rather than inherited: every acquirer's minor-unit
+ * amounts are summed into ONE scalar, exactly as the pre-existing gross total
+ * already summed currencies together. This endpoint is a single cross-org
+ * figure by design and there is no currency dimension in its response to widen
+ * without breaking consumers. The per-currency truth lives on the per-org
+ * summary, which never merges currencies and now also spans both acquirers.
  */
 
 /** A refund/dispute roll-up: platform total plus the two time grains. */
@@ -138,17 +152,128 @@ async function settledReturnBuckets(
     .groupBy(month, week)) as ReturnedBucketRow[];
 }
 
-/** Platform-wide settled refunds + lost disputes, per grain. */
+/** The ONLY Revolut order state under which the money has actually moved. */
+const REVOLUT_SETTLED_STATE = "completed";
+
+/**
+ * Revolut payments taken, grouped by (month, week).
+ *
+ * The vendor keeps payments and refunds in ONE collection discriminated by
+ * `type`, so money in is `type = 'payment' AND state = 'completed'` — the same
+ * "settled only" rule as the Stripe half, expressed in the vendor's own words.
+ *
+ * No purpose filter: a card-verification hold never reaches `completed` (it is
+ * authorised and then cancelled), and the payments this service DID take are
+ * real money the platform received whatever they were for. Filtering by intent
+ * here would also silently diverge from the per-org summary, which does not.
+ */
+async function revolutPaidBuckets(): Promise<ReturnedBucketRow[]> {
+  const month = sql<Date>`date_trunc('month', ${revolutOrders.createdAtRevolut})`;
+  const week = sql<Date>`date_trunc('week', ${revolutOrders.createdAtRevolut})`;
+
+  return (await db
+    .select({
+      month,
+      week,
+      cents: sql<string>`SUM(${revolutOrders.amount})::text`,
+    })
+    .from(revolutOrders)
+    .where(
+      and(
+        eq(revolutOrders.type, "payment"),
+        eq(revolutOrders.state, REVOLUT_SETTLED_STATE)
+      )
+    )
+    .groupBy(month, week)) as ReturnedBucketRow[];
+}
+
+/**
+ * Revolut money returned, grouped by (month, week).
+ *
+ * A refund is a top-level order of its own carrying `related_order_id` — the
+ * direct analogue of a Stripe Refund's `payment_intent` — and Revolut mints it
+ * with no metadata, so it can answer for no tenant by itself. Joining to its
+ * parent is therefore both the attribution and the guard that only returns
+ * against a payment we actually mirrored are counted, which is exactly what the
+ * Stripe half does with its PaymentIntent join.
+ *
+ * Grouping is over the refund rows themselves, so the parent join can never
+ * multiply a return.
+ */
+async function revolutReturnBuckets(): Promise<ReturnedBucketRow[]> {
+  const parent = alias(revolutOrders, "parent_order");
+  const month = sql<Date>`date_trunc('month', ${revolutOrders.createdAtRevolut})`;
+  const week = sql<Date>`date_trunc('week', ${revolutOrders.createdAtRevolut})`;
+
+  return (await db
+    .select({
+      month,
+      week,
+      cents: sql<string>`SUM(${revolutOrders.amount})::text`,
+    })
+    .from(revolutOrders)
+    .innerJoin(parent, eq(parent.id, revolutOrders.relatedOrderId))
+    .where(
+      and(
+        eq(revolutOrders.type, "refund"),
+        eq(revolutOrders.state, REVOLUT_SETTLED_STATE)
+      )
+    )
+    .groupBy(month, week)) as ReturnedBucketRow[];
+}
+
+/** Add one roll-up into another, per grain. Neither input is mutated. */
+export function addSums(a: ReturnedSums, b: ReturnedSums): ReturnedSums {
+  const merged: ReturnedSums = {
+    total: a.total + b.total,
+    byMonth: new Map(a.byMonth),
+    byWeek: new Map(a.byWeek),
+  };
+  for (const [period, cents] of b.byMonth) addTo(merged.byMonth, period, cents);
+  for (const [period, cents] of b.byWeek) addTo(merged.byWeek, period, cents);
+  return merged;
+}
+
+/**
+ * Platform-wide money returned, ACROSS ACQUIRERS, per grain.
+ *
+ * Stripe splits a return into a Refund and a lost Dispute; Revolut has only the
+ * refund (no dispute payload has ever been observed on that account, so there
+ * is no dispute silver to sum — zero here means "none exist", and it becomes
+ * real the moment one does). Revolut refunds therefore land in `refunded`,
+ * which keeps `returned = refunded + disputedLost` true on both sides.
+ */
 export async function platformReturns(): Promise<PlatformReturns> {
-  const [refundRows, disputeRows] = await Promise.all([
+  const [refundRows, disputeRows, revolutRefundRows] = await Promise.all([
     settledReturnBuckets("refund"),
     settledReturnBuckets("dispute"),
+    revolutReturnBuckets(),
   ]);
 
   return {
-    refunded: foldReturnedRows(refundRows),
+    refunded: addSums(
+      foldReturnedRows(refundRows),
+      foldReturnedRows(revolutRefundRows)
+    ),
     disputedLost: foldReturnedRows(disputeRows),
   };
+}
+
+/** Platform-wide Revolut payments taken, per grain. */
+export async function revolutPlatformPaid(): Promise<ReturnedSums> {
+  return foldReturnedRows(await revolutPaidBuckets());
+}
+
+/**
+ * Turn a per-period roll-up back into the row shape `mergeGrowth` consumes, so
+ * a second acquirer's payments join the series through the same merge as the
+ * first one's rather than through a parallel code path.
+ */
+export function sumsToPaidRows(byPeriod: Map<string, bigint>): PaidBucketRow[] {
+  return [...byPeriod].map(([period, cents]) => ({
+    period,
+    paid_cents: cents.toString(),
+  }));
 }
 
 /** A gross bucket as it comes back from the payments query. */

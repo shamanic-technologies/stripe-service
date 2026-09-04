@@ -8,9 +8,12 @@ const { dbMock } = vi.hoisted(() => {
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
 
 import {
+  addSums,
   foldReturnedRows,
   mergeGrowth,
   platformReturns,
+  revolutPlatformPaid,
+  sumsToPaidRows,
   type PaidBucketRow,
   type ReturnedBucketRow,
 } from "../../src/lib/platform-billing-stats";
@@ -243,5 +246,99 @@ describe("mergeGrowth", () => {
     const out = mergeGrowth([paid("2026-05-01", null)], new Map(), new Map());
 
     expect(out[0]).toMatchObject({ paid_cents: "0", net_cents: "0" });
+  });
+});
+
+
+describe("addSums", () => {
+  it("adds two roll-ups per grain without mutating either", () => {
+    const a = foldReturnedRows([bucket("2026-08-01", "2026-08-24", "1000")]);
+    const b = foldReturnedRows([
+      bucket("2026-08-01", "2026-08-31", "500"),
+      bucket("2026-09-01", "2026-09-07", "250"),
+    ]);
+
+    const merged = addSums(a, b);
+
+    expect(merged.total).toBe(1750n);
+    // Same month from both sides collapses; the weeks stay apart.
+    expect(merged.byMonth.get("2026-08-01")).toBe(1500n);
+    expect(merged.byMonth.get("2026-09-01")).toBe(250n);
+    expect(merged.byWeek.get("2026-08-24")).toBe(1000n);
+    expect(merged.byWeek.get("2026-08-31")).toBe(500n);
+    // Inputs untouched.
+    expect(a.total).toBe(1000n);
+    expect(a.byMonth.get("2026-08-01")).toBe(1000n);
+  });
+});
+
+describe("platformReturns across acquirers", () => {
+  it("folds Revolut refunds into the same refunded roll-up as Stripe's", async () => {
+    queueReturns([bucket("2026-08-01", "2026-08-24", "1500")], []);
+    dbMock.queueSelect("revolut_orders", [
+      bucket("2026-08-01", "2026-08-31", "50000"),
+    ]);
+
+    const returns = await platformReturns();
+
+    expect(returns.refunded.total).toBe(51500n);
+    expect(returns.refunded.byMonth.get("2026-08-01")).toBe(51500n);
+    expect(returns.refunded.byWeek.get("2026-08-24")).toBe(1500n);
+    expect(returns.refunded.byWeek.get("2026-08-31")).toBe(50000n);
+    // Revolut has no dispute silver yet, so lost disputes stay Stripe-only.
+    expect(returns.disputedLost.total).toBe(0n);
+  });
+
+  it("only counts a Revolut order in the settled state", async () => {
+    queueReturns([], []);
+    dbMock.queueSelect("revolut_orders", []);
+
+    await platformReturns();
+
+    const params = sqlParams(dbMock.lastSelectWhere("revolut_orders"));
+    expect(params).toContain("refund");
+    expect(params).toContain("completed");
+  });
+});
+
+describe("revolutPlatformPaid", () => {
+  it("sums completed payment orders per grain", async () => {
+    dbMock.queueSelect("revolut_orders", [
+      bucket("2026-08-01", "2026-08-24", "50000"),
+      bucket("2026-08-01", "2026-08-31", "600"),
+    ]);
+
+    const paid = await revolutPlatformPaid();
+
+    expect(paid.total).toBe(50600n);
+    expect(paid.byMonth.get("2026-08-01")).toBe(50600n);
+    expect(paid.byWeek.get("2026-08-24")).toBe(50000n);
+
+    const params = sqlParams(dbMock.lastSelectWhere("revolut_orders"));
+    expect(params).toContain("payment");
+    expect(params).toContain("completed");
+  });
+});
+
+describe("sumsToPaidRows", () => {
+  it("feeds a second acquirer's payments through the same merge as the first", () => {
+    const revolut = new Map<string, bigint>([["2026-08-01", 50000n]]);
+
+    const merged = mergeGrowth(
+      [paid("2026-08-01", "12500"), ...sumsToPaidRows(revolut)],
+      new Map(),
+      new Map()
+    );
+
+    expect(merged).toEqual([
+      {
+        period: "2026-08-01",
+        paid_cents: "62500",
+        refunded_cents: "0",
+        disputed_lost_cents: "0",
+        returned_cents: "0",
+        net_cents: "62500",
+      },
+    ]);
   });
 });

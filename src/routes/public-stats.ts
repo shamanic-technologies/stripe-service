@@ -5,6 +5,8 @@ import { paymentIntents, customers } from "../db/schema";
 import {
   mergeGrowth,
   platformReturns,
+  revolutPlatformPaid,
+  sumsToPaidRows,
   type PaidBucketRow,
 } from "../lib/platform-billing-stats";
 
@@ -25,13 +27,31 @@ const router = Router();
  *    should report as "credited". Summing payments alone counts money we gave
  *    back as money we still hold.
  *
- * Returns follow the same "money is really gone" rule as every other read in
- * this service: settled (`succeeded`) Refunds plus LOST Disputes, attributed to
- * a mirrored PaymentIntent — so this total is exactly the sum of the per-org
- * `GET /internal/payment_summary/by-org/:orgId` totals.
+ * EVERY ACQUIRER is counted, on both sides. Stripe and Revolut have each taken
+ * real customer money through this service, and the per-org reads already sum
+ * across acquirers on the same principle: the money is the money whichever
+ * acquirer took it. Returns follow the same "money is really gone" rule as
+ * every other read here — a settled (`succeeded`) Stripe Refund, a LOST Stripe
+ * Dispute, or a `completed` Revolut refund order, each attributed to a mirrored
+ * payment of ours. Nothing is excluded for looking like a test.
+ *
+ * CURRENCIES ARE SUMMED TOGETHER into one scalar, as the pre-existing gross
+ * total already did. That is a deliberate property of this endpoint, which is a
+ * single cross-org figure with no currency dimension to widen; per-currency
+ * truth lives on `GET /internal/payment_summary/by-org/:orgId`, which never
+ * merges currencies and also spans both acquirers.
+ *
+ * `accounts_with_payment_method` is STRIPE-ONLY and stays that way. It counts
+ * mirrored customers carrying a default Stripe payment method. Revolut exposes
+ * no mirror of its saved methods — answering for it means one live API call per
+ * org, which does not belong behind an unauthenticated public route. The figure
+ * is a Stripe-card count, not a platform-wide "can be charged" count; a
+ * consumer needing the latter should ask the per-org surfaces.
  *
  * Buckets attribute a return to the period it HAPPENED in, not to the period of
- * the payment it reverses — see `mergeGrowth`.
+ * the payment it reverses — see `mergeGrowth`. Every acquirer's payments and
+ * returns go through that same merge, so `sum(buckets) === all-time total`
+ * still holds on both grains.
  */
 router.get("/public/stats/billing", async (_req: Request, res: Response, next: NextFunction) => {
   try {
@@ -79,25 +99,32 @@ router.get("/public/stats/billing", async (_req: Request, res: Response, next: N
         sql`date_trunc('week', to_timestamp(${paymentIntents.createdStripe}))`
       )) as PaidBucketRow[];
 
-    const returns = await platformReturns();
+    const [returns, revolutPaid] = await Promise.all([
+      platformReturns(),
+      revolutPlatformPaid(),
+    ]);
     const totalRefundedCents = returns.refunded.total;
     const totalDisputedLostCents = returns.disputedLost.total;
     const totalReturnedCents = totalRefundedCents + totalDisputedLostCents;
 
     return res.json({
-      total_paid_cents: totalPaidCents.toString(),
+      total_paid_cents: (totalPaidCents + revolutPaid.total).toString(),
       total_refunded_cents: totalRefundedCents.toString(),
       total_disputed_lost_cents: totalDisputedLostCents.toString(),
       total_returned_cents: totalReturnedCents.toString(),
-      total_net_cents: (totalPaidCents - totalReturnedCents).toString(),
+      total_net_cents: (
+        totalPaidCents +
+        revolutPaid.total -
+        totalReturnedCents
+      ).toString(),
       accounts_with_payment_method: accountsWithPaymentMethod,
       monthly_growth: mergeGrowth(
-        monthlyRows,
+        [...monthlyRows, ...sumsToPaidRows(revolutPaid.byMonth)],
         returns.refunded.byMonth,
         returns.disputedLost.byMonth
       ),
       weekly_growth: mergeGrowth(
-        weeklyRows,
+        [...weeklyRows, ...sumsToPaidRows(revolutPaid.byWeek)],
         returns.refunded.byWeek,
         returns.disputedLost.byWeek
       ),

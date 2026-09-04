@@ -207,6 +207,123 @@ describe("GET /public/stats/billing", () => {
     ]);
   });
 
+  /**
+   * Queue the two Revolut reads in the order they are consumed.
+   *
+   * Both hit `revolut_orders`, so the mock serves them FIFO. The route awaits
+   * `platformReturns()` (whose own Promise.all fires the refund read first) and
+   * `revolutPlatformPaid()` together, so returns come out before payments.
+   */
+  function queueRevolut(
+    refundRows: ReturnType<typeof returnRow>[],
+    paymentRows: ReturnType<typeof returnRow>[]
+  ) {
+    dbMock.queueSelect("revolut_orders", refundRows);
+    dbMock.queueSelect("revolut_orders", paymentRows);
+  }
+
+  it("counts money taken through EVERY acquirer, not only the first one", async () => {
+    // Stripe: 12500 gross, of which 1500 came back as a settled refund.
+    dbMock.queueSelect("payment_intents", [{ total: "12500" }]);
+    dbMock.queueSelect("customers", [{ count: "3" }]);
+    dbMock.queueSelect("payment_intents", [
+      { period: new Date("2026-08-01T00:00:00Z"), paid_cents: "12500" },
+    ]);
+    dbMock.queueSelect("payment_intents", [
+      { period: new Date("2026-08-24T00:00:00Z"), paid_cents: "12500" },
+    ]);
+    dbMock.queueSelect("refunds", [returnRow("2026-08-01", "2026-08-24", "1500")]);
+    dbMock.queueSelect("disputes", []);
+    // Revolut: a 50000 completed payment in the same month, no return.
+    queueRevolut([], [returnRow("2026-08-01", "2026-08-31", "50000")]);
+
+    const res = await request(app).get("/public/stats/billing");
+
+    expect(res.status).toBe(200);
+    // Gross spans both acquirers; the Revolut money is no longer invisible.
+    expect(res.body.total_paid_cents).toBe("62500");
+    expect(res.body.total_refunded_cents).toBe("1500");
+    expect(res.body.total_returned_cents).toBe("1500");
+    expect(res.body.total_net_cents).toBe("61000");
+
+    // Buckets still sum to the all-time totals, on both grains.
+    const sum = (rows: { paid_cents: string }[]) =>
+      rows.reduce((acc, r) => acc + BigInt(r.paid_cents), 0n).toString();
+    expect(sum(res.body.monthly_growth)).toBe("62500");
+    expect(sum(res.body.weekly_growth)).toBe("62500");
+
+    // Both acquirers' August payments land in the SAME month bucket.
+    expect(res.body.monthly_growth).toEqual([
+      {
+        period: "2026-08-01",
+        paid_cents: "62500",
+        refunded_cents: "1500",
+        disputed_lost_cents: "0",
+        returned_cents: "1500",
+        net_cents: "61000",
+      },
+    ]);
+    expect(res.body.weekly_growth).toEqual([
+      {
+        period: "2026-08-24",
+        paid_cents: "12500",
+        refunded_cents: "1500",
+        disputed_lost_cents: "0",
+        returned_cents: "1500",
+        net_cents: "11000",
+      },
+      {
+        period: "2026-08-31",
+        paid_cents: "50000",
+        refunded_cents: "0",
+        disputed_lost_cents: "0",
+        returned_cents: "0",
+        net_cents: "50000",
+      },
+    ]);
+  });
+
+  it("gives a period with a second-acquirer return and no payment a negative net", async () => {
+    dbMock.queueSelect("payment_intents", [{ total: "0" }]);
+    dbMock.queueSelect("customers", [{ count: "0" }]);
+    dbMock.queueSelect("payment_intents", []);
+    dbMock.queueSelect("payment_intents", []);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", []);
+    // August took 50000 through Revolut; September gave 20000 of it back, and
+    // took nothing. A return belongs to the month it HAPPENED in.
+    queueRevolut(
+      [returnRow("2026-09-01", "2026-09-07", "20000")],
+      [returnRow("2026-08-01", "2026-08-31", "50000")]
+    );
+
+    const res = await request(app).get("/public/stats/billing");
+
+    expect(res.status).toBe(200);
+    expect(res.body.total_paid_cents).toBe("50000");
+    expect(res.body.total_refunded_cents).toBe("20000");
+    expect(res.body.total_returned_cents).toBe("20000");
+    expect(res.body.total_net_cents).toBe("30000");
+    expect(res.body.monthly_growth).toEqual([
+      {
+        period: "2026-08-01",
+        paid_cents: "50000",
+        refunded_cents: "0",
+        disputed_lost_cents: "0",
+        returned_cents: "0",
+        net_cents: "50000",
+      },
+      {
+        period: "2026-09-01",
+        paid_cents: "0",
+        refunded_cents: "20000",
+        disputed_lost_cents: "0",
+        returned_cents: "20000",
+        net_cents: "-20000",
+      },
+    ]);
+  });
+
   it("returns zero values when no data", async () => {
     dbMock.queueSelect("payment_intents", [{ total: null }]);
     dbMock.queueSelect("customers", [{ count: "0" }]);
