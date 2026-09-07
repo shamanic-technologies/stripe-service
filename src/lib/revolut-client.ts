@@ -92,6 +92,11 @@ export interface RevolutOrder {
   related_order_id?: string | null;
   created_at?: string;
   updated_at?: string;
+  /** Hosted checkout page for this order. Present from the moment it is created. */
+  checkout_url?: string;
+  token?: string;
+  /** Echoed back only when the customer was attached with `customer: { id }`. */
+  customer?: { id?: string; email?: string; full_name?: string };
   payments?: Array<{
     id?: string;
     state?: string;
@@ -185,21 +190,50 @@ export async function listCustomerPaymentMethods(
  * comes back without echoing it. Verified against production. So a typo here
  * does not fail, it just does not do the thing — never assume a field took
  * effect because the call succeeded; check the effect instead.
+ *
+ * ⚠️ That is exactly what `customer_id` was: the field is `customer: { id }`,
+ * and an order created with `customer_id` comes back with NO customer on it.
+ * Probed against the live API on 2026-09-07 — the same call with `customer: {
+ * id }` echoes the full customer, the one with `customer_id` echoes nothing.
+ * This is why saving a card had never worked here: the card was being saved
+ * against an order that belonged to nobody.
  */
 export function createOrder(body: {
   amount: number;
   currency: string;
   description?: string;
-  customer_id?: string;
+  /**
+   * The Revolut customer this order belongs to. Sent as `customer: { id }` —
+   * see the warning above: `customer_id` is NOT a field on this endpoint, and
+   * an order sent with it comes back with no customer at all.
+   */
+  customerId?: string;
   /**
    * `manual` authorises without capturing, so the order can be cancelled and
    * the hold released. Unlike most fields here it is VALIDATED and echoed back,
    * which is how you can tell it takes effect.
    */
   capture_mode?: "automatic" | "manual";
+  /**
+   * Save the card the customer pays with, for MERCHANT-initiated use — i.e.
+   * chargeable later with nobody on the page, which is what auto-topup needs.
+   * Requires a customer on the order; without one there is nothing to save it
+   * against.
+   *
+   * ⚠️ Revolut neither echoes this field on create nor on retrieve, so its
+   * effect can only be confirmed by reading the customer's saved-method list
+   * after a real card has paid.
+   */
+  save_payment_method_for?: "merchant" | "customer";
+  /** Where the hosted checkout page returns the customer to when it is done. */
+  redirect_url?: string;
   metadata?: Record<string, string>;
 }): Promise<RevolutOrder> {
-  return request<RevolutOrder>("POST", "/orders", body);
+  const { customerId, ...rest } = body;
+  return request<RevolutOrder>("POST", "/orders", {
+    ...rest,
+    ...(customerId ? { customer: { id: customerId } } : {}),
+  });
 }
 
 /**

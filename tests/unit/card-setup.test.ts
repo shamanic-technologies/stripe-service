@@ -73,7 +73,7 @@ describe("buildCardSetup", () => {
       expect.objectContaining({
         capture_mode: "manual",
         amount: VERIFICATION_AMOUNT,
-        customer_id: "cus-rev-1",
+        customerId: "cus-rev-1",
       })
     );
   });
@@ -104,9 +104,13 @@ describe("buildCardSetup", () => {
     );
   });
 
-  it("does NOT put the save flag on the order, because that API drops it silently", async () => {
-    // Verified against production: a real card paid a real order carrying this
-    // flag and no method was saved. It only takes effect in the browser SDK.
+  it("attaches the customer AND asks for the card to be saved for merchant use", async () => {
+    // The order used to be created with `customer_id`, which is not a field on
+    // that endpoint: it was dropped in silence and the order belonged to
+    // nobody, so there was never anywhere for a card to be saved. Probed
+    // against the live API on 2026-09-07 — `customer: { id }` is echoed back,
+    // `customer_id` is not. That is why the save flag looked like it did
+    // nothing, and why both are sent now.
     dbMock.queueSelect("org_acquirers", [
       { acquirer: "revolut", customerId: "cus-rev-1" },
     ]);
@@ -115,7 +119,10 @@ describe("buildCardSetup", () => {
     await buildCardSetup(base);
 
     expect(createOrder).toHaveBeenCalledWith(
-      expect.not.objectContaining({ save_payment_method_for: expect.anything() })
+      expect.objectContaining({
+        customerId: "cus-rev-1",
+        save_payment_method_for: "merchant",
+      })
     );
   });
 

@@ -568,6 +568,29 @@
           "nullable": true
         }
       },
+      "AcquirerRolloutRequest": {
+        "type": "object",
+        "properties": {
+          "acquirer": {
+            "type": "string",
+            "enum": [
+              "stripe",
+              "revolut"
+            ],
+            "description": "Which acquirer NEW orgs are sent to. Naming the default is the same as switching the rollout off."
+          },
+          "percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Share of eligible new orgs routed there. 0 sends everybody back to the default immediately; orgs already pinned are never moved."
+          }
+        },
+        "required": [
+          "acquirer",
+          "percent"
+        ]
+      },
       "CreatePaymentIntentRequest": {
         "type": "object",
         "properties": {
@@ -1708,7 +1731,7 @@
     },
     "/v1/checkout/sessions": {
       "post": {
-        "summary": "Create a Checkout Session",
+        "summary": "Create a checkout. A Stripe org gets its verbatim Checkout Session; an org the rollout has moved to another acquirer gets a neutral checkout carrying the same `url`.",
         "tags": [
           "Checkout"
         ],
@@ -1914,6 +1937,73 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StripeList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/acquirer_rollout": {
+      "get": {
+        "summary": "Read the acquirer rollout (share of NEW orgs sent to a second acquirer)",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rollout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StripeObject"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Set the acquirer rollout. percent 0 reverses it with no deploy.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcquirerRolloutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rollout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StripeObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }

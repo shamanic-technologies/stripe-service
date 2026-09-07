@@ -64,6 +64,13 @@
       "when": 1788093988961,
       "tag": "0008_org_acquirers",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789000000000,
+      "tag": "0009_acquirer_rollout",
+      "breakpoints": true
     }
   ]
 }
