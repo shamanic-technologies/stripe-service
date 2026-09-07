@@ -25,6 +25,9 @@ describe("resolveAcquirer", () => {
     expect(await resolveAcquirer("org-1")).toEqual({
       acquirer: "stripe",
       customerId: null,
+      // Not pinned: an org that took the default and one explicitly pinned to
+      // it read the same acquirer, and only the first is a rollout candidate.
+      pinned: false,
     });
     expect(DEFAULT_ACQUIRER).toBe("stripe");
   });
@@ -36,6 +39,7 @@ describe("resolveAcquirer", () => {
     expect(await resolveAcquirer("org-1")).toEqual({
       acquirer: "revolut",
       customerId: "cus-rev-1",
+      pinned: true,
     });
   });
 

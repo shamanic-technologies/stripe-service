@@ -245,7 +245,7 @@ export const revolutObjectSnapshots = pgTable(
     objectId: text("object_id").notNull(),
     objectUpdatedAt: timestamp("object_updated_at", { withTimezone: true }),
     payload: jsonb("payload").notNull(),
-    source: text("source").notNull(), // 'webhook' | 'poll' | 'backfill'
+    source: text("source").notNull(), // 'webhook' | 'poll' | 'backfill' | 'api'
     receivedAt: timestamp("received_at").defaultNow().notNull(),
   },
   (table) => [
@@ -320,5 +320,25 @@ export const orgAcquirers = pgTable("org_acquirers", {
   // The acquirer's own customer id, so a charge does not have to re-resolve it.
   acquirerCustomerId: text("acquirer_customer_id"),
   pinnedAt: timestamp("pinned_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// How much of the NEW business goes to a second acquirer. One row, id = 1.
+//
+// A rollout control rather than a per-org decision: the owner's requirement is
+// that Stripe's share can be reduced deliberately and put back in seconds if
+// the other acquirer misbehaves, without a deploy per org. So the share is
+// DATA, written through an internal route, and the row is absent until someone
+// sets it — absent means 0%, which is the behaviour every org has today.
+//
+// It selects only orgs that have NO saved payment method yet. That is enforced
+// where the selection happens (a live read at the acquirer), not remembered
+// here: a card lives with one acquirer and cannot move, so an org that already
+// has one must stay where it is or its next automatic reload fails against an
+// acquirer that has never seen its card.
+export const acquirerRollout = pgTable("acquirer_rollout", {
+  id: integer("id").primaryKey(), // always 1 — a single row of config
+  acquirer: text("acquirer").notNull(), // the acquirer new orgs are sent to
+  percent: integer("percent").notNull(), // 0-100 share of eligible new orgs
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

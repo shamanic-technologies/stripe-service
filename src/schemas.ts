@@ -121,6 +121,19 @@ export const CardSetupRequestSchema = z
   })
   .openapi("CardSetupRequest");
 
+export const AcquirerRolloutRequestSchema = z
+  .object({
+    acquirer: z.enum(["stripe", "revolut"]).openapi({
+      description:
+        "Which acquirer NEW orgs are sent to. Naming the default is the same as switching the rollout off.",
+    }),
+    percent: z.number().int().min(0).max(100).openapi({
+      description:
+        "Share of eligible new orgs routed there. 0 sends everybody back to the default immediately; orgs already pinned are never moved.",
+    }),
+  })
+  .openapi("AcquirerRolloutRequest");
+
 export const PinAcquirerRequestSchema = z
   .object({
     acquirer: z.enum(["stripe", "revolut"]),
@@ -760,7 +773,8 @@ registry.registerPath({
 registry.registerPath({
   method: "post",
   path: "/v1/checkout/sessions",
-  summary: "Create a Checkout Session",
+  summary:
+    "Create a checkout. A Stripe org gets its verbatim Checkout Session; an org the rollout has moved to another acquirer gets a neutral checkout carrying the same `url`.",
   tags: ["Checkout"],
   security: apiKeySec,
   request: {
@@ -769,6 +783,32 @@ registry.registerPath({
   },
   responses: {
     200: { description: "Session created", content: { "application/json": { schema: StripeObjectSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/acquirer_rollout",
+  summary: "Read the acquirer rollout (share of NEW orgs sent to a second acquirer)",
+  tags: ["Internal"],
+  security: apiKeySec,
+  responses: {
+    200: { description: "Rollout", content: { "application/json": { schema: StripeObjectSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/internal/acquirer_rollout",
+  summary: "Set the acquirer rollout. percent 0 reverses it with no deploy.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    body: { content: { "application/json": { schema: AcquirerRolloutRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Rollout", content: { "application/json": { schema: StripeObjectSchema } } },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });
 

@@ -10,14 +10,55 @@ import {
 import { buildContext, stripeRequestOptions } from "../lib/request-context";
 import { recordApiSnapshot } from "../lib/event-processor";
 import { isResourceMissing } from "../lib/stripe-client";
+import { selectAcquirerForCheckout } from "../lib/acquirer-rollout";
+import { checkoutViaRevolut, UnsupportedCheckout } from "../lib/checkout-org";
 
 const router = Router();
 
+/**
+ * Create a checkout the org's customer can pay on.
+ *
+ * This is the one moment a NEW customer chooses to pay us, so it is where the
+ * acquirer rollout applies: an org with no pin and no saved payment method may
+ * be selected for a second acquirer here, and every other org is left exactly
+ * where it is. An org on Stripe takes the unchanged path below and gets its
+ * verbatim Stripe Session, byte for byte — a rollout at 0% costs one extra DB
+ * read and nothing else.
+ *
+ * An org on an acquirer with no Checkout Session object gets the neutral
+ * checkout instead: same `url` to send the buyer to, without a Stripe object
+ * fabricated around it. The shape differs because the capability differs, which
+ * is the same rule the neutral charge follows.
+ */
 router.post("/v1/checkout/sessions", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = CreateCheckoutSessionRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
+    }
+
+    const orgId = res.locals.orgId as string;
+    const pin = await selectAcquirerForCheckout(orgId);
+    if (pin.acquirer === "revolut") {
+      if (!pin.customerId) {
+        return res.status(409).json({
+          error: `Org ${orgId} is pinned to an acquirer it has no customer on; there is nothing to check out against`,
+        });
+      }
+      try {
+        const checkout = await checkoutViaRevolut({
+          orgId,
+          customerId: pin.customerId,
+          body: parsed.data as Stripe.Checkout.SessionCreateParams,
+        });
+        res.locals.stripeObjectId = checkout.id;
+        return res.json(checkout);
+      } catch (err) {
+        if (err instanceof UnsupportedCheckout) {
+          return res.status(422).json({ error: err.message });
+        }
+        throw err;
+      }
     }
 
     const ctx = await buildContext(req, res);
