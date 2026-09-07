@@ -23,6 +23,13 @@ export interface AcquirerPin {
   acquirer: Acquirer;
   /** The acquirer's own customer id, when one has been established. */
   customerId: string | null;
+  /**
+   * Whether a row actually exists for this org, as opposed to it taking the
+   * default. `acquirer` alone cannot say: an org explicitly pinned to Stripe
+   * and one that was never pinned both read `stripe`, and only the second is a
+   * candidate for a rollout to move.
+   */
+  pinned: boolean;
 }
 
 export async function resolveAcquirer(orgId: string): Promise<AcquirerPin> {
@@ -36,7 +43,7 @@ export async function resolveAcquirer(orgId: string): Promise<AcquirerPin> {
     .limit(1);
 
   if (rows.length === 0) {
-    return { acquirer: DEFAULT_ACQUIRER, customerId: null };
+    return { acquirer: DEFAULT_ACQUIRER, customerId: null, pinned: false };
   }
   const stored = rows[0].acquirer;
   if (stored !== "stripe" && stored !== "revolut") {
@@ -47,7 +54,7 @@ export async function resolveAcquirer(orgId: string): Promise<AcquirerPin> {
       `Org ${orgId} is pinned to an unknown acquirer "${stored}"`
     );
   }
-  return { acquirer: stored, customerId: rows[0].customerId };
+  return { acquirer: stored, customerId: rows[0].customerId, pinned: true };
 }
 
 /**

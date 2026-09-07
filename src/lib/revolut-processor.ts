@@ -5,7 +5,7 @@ import { revolutObjectSnapshots, revolutOrders } from "../db/schema";
 import { cancelOrder, getOrder, type RevolutOrder } from "./revolut-client";
 
 export type RevolutObjectKind = "order" | "dispute";
-export type RevolutSource = "webhook" | "poll" | "backfill";
+export type RevolutSource = "webhook" | "poll" | "backfill" | "api";
 
 /**
  * Bronze -> silver for Revolut, on exactly the contract the Stripe mirror uses:

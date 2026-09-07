@@ -77,7 +77,7 @@ describe("chargeViaRevolut", () => {
       expect.objectContaining({
         amount: 50000,
         currency: "USD",
-        customer_id: "cus-rev-1",
+        customerId: "cus-rev-1",
         metadata: { reason: "auto_reload", org_id: "org-1" },
       })
     );

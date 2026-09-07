@@ -39,7 +39,9 @@ import {
   revolutTotalsByCurrency,
   mergeCurrencyTotals,
 } from "../lib/revolut-money";
+import { readRollout, writeRollout } from "../lib/acquirer-rollout";
 import {
+  AcquirerRolloutRequestSchema,
   CreateInvoiceByOrgRequestSchema,
   UpdateCustomerMetadataRequestSchema,
   PinAcquirerRequestSchema,
@@ -566,6 +568,54 @@ router.post(
       if (err instanceof Error && /has no (acquirer )?customer/.test(err.message)) {
         return res.status(409).json({ error: err.message });
       }
+      return next(err);
+    }
+  }
+);
+
+/**
+ * GET /internal/acquirer_rollout — how much of the NEW business goes elsewhere.
+ *
+ * PUT sets it. Absent means 0%, i.e. everybody on the default acquirer, which
+ * is the behaviour every org had before this existed. Setting `percent` to 0 is
+ * the reverse gear: every subsequent org goes back to the default immediately,
+ * with no deploy and nothing to undo. Orgs already pinned are NOT moved — a
+ * saved card cannot follow them, so unwinding one is the explicit
+ * DELETE /internal/acquirer/by-org/:orgId, which refuses exactly when it should.
+ */
+router.get(
+  "/internal/acquirer_rollout",
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rollout = await readRollout();
+      return res.json({
+        object: "acquirer_rollout",
+        acquirer: rollout.acquirer,
+        percent: rollout.percent,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+router.put(
+  "/internal/acquirer_rollout",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = AcquirerRolloutRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid request", details: parsed.error.flatten() });
+      }
+      await writeRollout(parsed.data);
+      return res.json({
+        object: "acquirer_rollout",
+        acquirer: parsed.data.acquirer,
+        percent: parsed.data.percent,
+      });
+    } catch (err) {
       return next(err);
     }
   }

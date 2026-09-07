@@ -96,7 +96,10 @@ export async function buildCardSetup(params: {
       // customer is never charged for updating a card.
       capture_mode: "manual",
       description: "Card verification (released immediately, not charged)",
-      customer_id: pin.customerId,
+      customerId: pin.customerId,
+      // Without this the card is never stored for merchant-initiated use, which
+      // is the entire point of setting one up.
+      save_payment_method_for: "merchant",
       metadata: { org_id: params.orgId, purpose: "card-setup" },
     });
     const { key } = await resolvePlatformKey("revolut-public", {

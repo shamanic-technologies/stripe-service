@@ -115,7 +115,7 @@ export async function chargeViaRevolut(params: {
         amount: params.amount,
         currency: params.currency,
         description: params.description,
-        customer_id: params.customerId,
+        customerId: params.customerId,
         metadata: {
           ...(params.metadata ?? {}),
           org_id: params.orgId,
