@@ -51,6 +51,36 @@ export interface SavedMethodRef {
   saved_for: string | null;
 }
 
+/**
+ * The acquirer told us, definitively, that this customer is not there.
+ *
+ * That is the SECOND of the three answers, not the third: the acquirer was
+ * reachable, it answered, and its answer was that the customer does not exist —
+ * so it holds no card for the org and there is nothing that could be stranded.
+ * Reading it as "we could not ask" makes such an org permanently unmovable: the
+ * guard it must pass to be pinned anywhere can never come back clean, so it can
+ * never be pinned anywhere. Observed in production 2026-09-08 on an org whose
+ * mirrored `cus_…` no longer exists at Stripe — its pin returned a 400 carrying
+ * `No such customer`.
+ *
+ * ⚠️ This does NOT weaken the never-fail-soft rule. A timeout, a network error,
+ * a 5xx, an auth failure — anything that is not the acquirer stating the
+ * customer's absence — still propagates and still refuses the move. Only this
+ * one specific, definitive answer is reclassified.
+ *
+ * Stripe states it as `resource_missing`; the only resource named on the call
+ * this wraps (`paymentMethods.list({ customer })`) is the customer itself.
+ * Revolut states it as a 404 on the customer's own payment-methods collection.
+ */
+function acquirerSaysCustomerIsGone(err: unknown): boolean {
+  const e = err as { name?: unknown; status?: unknown; code?: unknown } | null;
+  // Read by NAME rather than by `instanceof`: the error crosses a module the
+  // tests mock, and an identity check there answers false for the very error
+  // it is meant to recognise.
+  if (e?.name === "RevolutApiError") return e.status === 404;
+  return e?.code === "resource_missing";
+}
+
 /** Why there is no saved method. Never used to describe a failure to ask. */
 export type NotSavedReason =
   /** The org has no customer at the acquirer, so nothing could be saved. */
@@ -112,8 +142,23 @@ export async function confirmSavedPaymentMethod(
         reason: "no_customer",
       };
     }
-    // Throws if the acquirer cannot be reached. That is the point.
-    const methods = await listCustomerPaymentMethods(pin.customerId);
+    // Throws if the acquirer cannot be reached. That is the point — except for
+    // the acquirer telling us the customer is gone, which is an ANSWER.
+    let methods;
+    try {
+      methods = await listCustomerPaymentMethods(pin.customerId);
+    } catch (err) {
+      if (acquirerSaysCustomerIsGone(err)) {
+        return {
+          object: "saved_payment_method",
+          acquirer: pin.acquirer,
+          saved: false,
+          method: null,
+          reason: "no_customer",
+        };
+      }
+      throw err;
+    }
     const withId = methods.filter((m) => m.id);
     const usable = withId.find((m) => usableForMerchant(m.saved_for));
     if (!usable) {
@@ -173,6 +218,20 @@ export async function confirmSavedPaymentMethod(
         saved: false,
         method: null,
         reason: "no_saved_method",
+      };
+    }
+    // The mirror names a customer the acquirer no longer has. It answered, and
+    // its answer is that there is no card here to lose. The mirror row STAYS —
+    // it is what historical payments made against that customer resolve
+    // through, and deleting it to make this read work would drop that money
+    // from every surface that reads it.
+    if (acquirerSaysCustomerIsGone(err)) {
+      return {
+        object: "saved_payment_method",
+        acquirer: pin.acquirer,
+        saved: false,
+        method: null,
+        reason: "no_customer",
       };
     }
     // Anything else is "we could not ask" — propagate.

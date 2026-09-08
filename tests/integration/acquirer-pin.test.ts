@@ -143,6 +143,52 @@ describe("PUT /internal/acquirer/by-org/:orgId — a pin may not strand a card",
     expect(stripeMock.paymentMethods.list).not.toHaveBeenCalled();
   });
 
+  it("allows the move when the acquirer says that customer is GONE", async () => {
+    // The acquirer was reachable, it answered, and its answer was definitive:
+    // that customer is not there, so it holds no card and nothing can be
+    // stranded. Reading it as an outage made such an org permanently
+    // unmovable — the guard it must pass could never come back clean.
+    // Production, 2026-09-08: the pin answered 400 with `No such customer`.
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_gone" }]);
+    stripeMock.paymentMethods.list.mockRejectedValueOnce(
+      Object.assign(new Error("No such customer: 'cus_gone'"), {
+        type: "StripeInvalidRequestError",
+        code: "resource_missing",
+        statusCode: 400,
+      })
+    );
+    revolutMock.createCustomer.mockResolvedValueOnce({ id: "cus-rev-new" });
+
+    const res = await request(app)
+      .put(`/internal/acquirer/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly())
+      .send({ acquirer: "revolut", email: "a@b.com", full_name: "A B" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ acquirer: "revolut", customer_id: "cus-rev-new" });
+    // The mirror row is NOT touched: historical payments resolve through it.
+    expect(dbMock.lastInsertValues("customers")).toBeUndefined();
+  });
+
+  it("allows the move when REVOLUT says that customer is gone (404)", async () => {
+    dbMock.queueSelect("org_acquirers", [
+      { acquirer: "revolut", customerId: "cus-rev-gone" },
+    ]);
+    const { RevolutApiError } = await import("../../src/lib/revolut-client");
+    revolutMock.listCustomerPaymentMethods.mockRejectedValueOnce(
+      new RevolutApiError(404, "{}", "Revolut GET /customers/x failed: 404 {}")
+    );
+
+    const res = await request(app)
+      .put(`/internal/acquirer/by-org/${TEST_ORG_ID}`)
+      .set(apiKeyOnly())
+      .send({ acquirer: "stripe" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ acquirer: "stripe" });
+  });
+
   it("does not check anything when the pin is not a MOVE (same acquirer)", async () => {
     dbMock.queueSelect("org_acquirers", [
       { acquirer: "revolut", customerId: "cus-rev-1" },

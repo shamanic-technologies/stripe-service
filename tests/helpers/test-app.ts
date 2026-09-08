@@ -3,6 +3,7 @@ import cors from "cors";
 import { serviceAuth } from "../../src/middleware/serviceAuth";
 import { requireIdentityHeaders } from "../../src/middleware/identityHeaders";
 import { callLog } from "../../src/middleware/callLog";
+import { errorHandler } from "../../src/middleware/errorHandler";
 import healthRoutes from "../../src/routes/health";
 import customersRoutes from "../../src/routes/customers";
 import internalRoutes from "../../src/routes/internal";
@@ -33,5 +34,6 @@ export function createTestApp() {
   app.use("/", publicStatsRoutes);
   app.use("/", webhooksRoutes);
   app.use("/", revolutWebhooksRoutes);
+  app.use(errorHandler);
   return app;
 }
