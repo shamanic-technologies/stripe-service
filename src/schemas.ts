@@ -786,6 +786,113 @@ registry.registerPath({
   },
 });
 
+// --- Internal: adding a card, and confirming one is actually there ---
+//
+// The two halves of the same job. `card_setup` DESCRIBES how this org's
+// customer adds a card (the acquirers genuinely do not do it the same way);
+// `saved_payment_method` answers whether one is now saved, keeping "no card"
+// and "we could not ask" apart; `recurring_charges/.../authorize` is the gate a
+// caller passes before it starts charging with nobody present.
+
+export const CardSetupSchema = z
+  .object({
+    object: z.literal("card_setup"),
+    mode: z.enum(["hosted_redirect", "embedded_widget"]).openapi({
+      description:
+        "Which MECHANISM this org's acquirer offers. `hosted_redirect` — send the customer to `url`. `embedded_widget` — load `script_url`, initialise the SDK with `token`, mount its card field, and pass `save_payment_method_for` when submitting it.",
+    }),
+    url: z.string().optional().openapi({
+      description: "hosted_redirect only. Where to send the customer.",
+    }),
+    script_url: z.string().optional().openapi({
+      description:
+        "embedded_widget only. The acquirer's browser SDK to load in the page.",
+    }),
+    environment: z.enum(["prod", "sandbox"]).optional().openapi({
+      description: "embedded_widget only. The SDK's environment argument.",
+    }),
+    token: z.string().optional().openapi({
+      description:
+        "embedded_widget only. The PER-ORDER PUBLIC identifier the SDK is initialised with. Scoped to this one setup attempt and safe to put in a page — it is not a merchant key and grants nothing beyond this order.",
+    }),
+    save_payment_method_for: z.literal("merchant").optional().openapi({
+      description:
+        "embedded_widget only. Pass this when submitting the card field. Saving for MERCHANT use is what makes the card chargeable later with nobody present; a card saved for the customer's own checkouts cannot be used by automatic top-up.",
+    }),
+  })
+  .openapi("CardSetup");
+
+export const SavedPaymentMethodSchema = z
+  .object({
+    object: z.literal("saved_payment_method"),
+    org_id: z.string(),
+    acquirer: z.enum(["stripe", "revolut"]),
+    saved: z.boolean().openapi({
+      description:
+        "Whether a card is saved AND chargeable with nobody present. `false` means the acquirer answered and there is none — it never means we failed to ask, which is a non-2xx.",
+    }),
+    method: z
+      .object({
+        id: z.string(),
+        type: z.string(),
+        saved_for: z.string().nullable(),
+      })
+      .nullable(),
+    reason: z
+      .enum(["no_customer", "no_saved_method", "not_saved_for_merchant"])
+      .optional()
+      .openapi({ description: "Present only when `saved` is false." }),
+  })
+  .openapi("SavedPaymentMethod");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/card_setup/by-org/{orgId}",
+  summary: "How this org's customer adds a card (described, not performed)",
+  description:
+    "Server-to-server. Returns a DESCRIPTOR of the mechanism the org's acquirer offers, because the acquirers genuinely differ: one hosts a portal we redirect to, the other has no portal at all and saves a card only through a browser card field the page mounts itself. The caller switches on `mode` — a UI concern it owns anyway — and never names an acquirer, never resolves a key and never receives a secret: the only credential handed over is a PER-ORDER public token scoped to this one setup attempt. Card details are entered inside an iframe the acquirer hosts, so they never touch the calling page or this service. The widget flow AUTHORISES a small amount with capture disabled and the poller releases the hold ten minutes later; nobody is charged for adding a card. 409 when the org has no customer at its acquirer — there would be nothing to attach a card to. X-API-Key only — no identity headers (orgId is in the path).",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+    body: { content: { "application/json": { schema: CardSetupRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Card-setup descriptor", content: { "application/json": { schema: CardSetupSchema } } },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorResponseSchema } } },
+    409: { description: "The org has no customer at its acquirer", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/saved_payment_method/by-org/{orgId}",
+  summary: "Is a chargeable card saved for this org, on whichever acquirer holds it",
+  description:
+    "Server-to-server. Answers whether the org has a card that can be charged LATER with nobody present, read LIVE from whichever acquirer holds its cards (never cached — a method can be removed or made ineligible with no event we would see). THREE answers, kept apart on purpose: `200 {saved:true, method}` there is one; `200 {saved:false, reason}` the acquirer answered and there is none; a NON-2XX when we could not ask at all. The last two are never merged — a caller that cannot tell them apart would arm automatic top-up off a timeout, for an org that cannot be charged. X-API-Key only — no identity headers (orgId is in the path).",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: { params: z.object({ orgId: z.string() }) },
+  responses: {
+    200: { description: "Saved-method confirmation", content: { "application/json": { schema: SavedPaymentMethodSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/recurring_charges/by-org/{orgId}/authorize",
+  summary: "May automatic charges be armed for this org?",
+  description:
+    "Server-to-server. The gate a caller passes through BEFORE it starts charging an org with nobody present. `200` yes, with the method that will be charged; `409 {code:\"no_saved_payment_method\", reason}` no, the acquirer holds no card we could charge; a non-2xx when the acquirer could not be asked, in which case nothing may be armed — an unknown answer is not a yes. Writes nothing and takes no money: it confirms, or it refuses. An org that pays once and then cannot be charged again is worse than one we never routed to that acquirer, because its campaigns stop with nothing reporting why. X-API-Key only — no identity headers (orgId is in the path).",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: { params: z.object({ orgId: z.string() }) },
+  responses: {
+    200: { description: "Authorized — a saved, chargeable method exists", content: { "application/json": { schema: StripeObjectSchema } } },
+    409: { description: "Refused — no saved payment method", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
 registry.registerPath({
   method: "get",
   path: "/internal/acquirer_rollout",

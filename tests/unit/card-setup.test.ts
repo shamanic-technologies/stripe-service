@@ -9,12 +9,12 @@ const createOrder = vi.fn();
 vi.mock("../../src/lib/revolut-client", () => ({
   createOrder: (...a: unknown[]) => createOrder(...a),
 }));
-vi.mock("../../src/lib/key-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/lib/key-client")>();
-  return { ...actual, resolvePlatformKey: vi.fn().mockResolvedValue({ key: "pk_test" }) };
-});
 
-import { buildCardSetup, VERIFICATION_AMOUNT } from "../../src/lib/card-setup";
+import {
+  buildCardSetup,
+  REVOLUT_SDK_SCRIPT_URL,
+  VERIFICATION_AMOUNT,
+} from "../../src/lib/card-setup";
 
 const hostedSession = vi.fn().mockResolvedValue("https://portal.example/session");
 
@@ -49,10 +49,17 @@ describe("buildCardSetup", () => {
     ]);
     createOrder.mockResolvedValue({ id: "ord-1", token: "tok-1" });
 
+    // What the browser gets, and NOTHING else. The SDK is initialised with the
+    // ORDER's public token — verified against @revolut/checkout 1.1.25, whose
+    // loader documents its first argument as the `public_id` of the created
+    // order. No merchant key is on this path: the publishable key belongs to
+    // the entry points that cannot save a card, so handing it over would be
+    // shipping a credential the flow has no use for.
     expect(await buildCardSetup(base)).toEqual({
       object: "card_setup",
       mode: "embedded_widget",
-      public_key: "pk_test",
+      script_url: REVOLUT_SDK_SCRIPT_URL,
+      environment: "prod",
       token: "tok-1",
       // Without this the card is stored for the customer's own checkouts and
       // cannot be charged off-session — which is the entire purpose.
@@ -134,5 +141,16 @@ describe("buildCardSetup", () => {
     await expect(
       buildCardSetup({ ...base, defaultCustomerId: null })
     ).rejects.toThrow(/no customer/i);
+  });
+
+  it("refuses a descriptor the browser could not mount", async () => {
+    // A token-less descriptor would fail inside the customer's browser, where
+    // nobody of ours can read the reason.
+    dbMock.queueSelect("org_acquirers", [
+      { acquirer: "revolut", customerId: "cus-rev-1" },
+    ]);
+    createOrder.mockResolvedValue({ id: "ord-1" });
+
+    await expect(buildCardSetup(base)).rejects.toThrow(/no order token/i);
   });
 });
