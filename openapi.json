@@ -568,6 +568,136 @@
           "nullable": true
         }
       },
+      "CardSetup": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "card_setup"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hosted_redirect",
+              "embedded_widget"
+            ],
+            "description": "Which MECHANISM this org's acquirer offers. `hosted_redirect` — send the customer to `url`. `embedded_widget` — load `script_url`, initialise the SDK with `token`, mount its card field, and pass `save_payment_method_for` when submitting it."
+          },
+          "url": {
+            "type": "string",
+            "description": "hosted_redirect only. Where to send the customer."
+          },
+          "script_url": {
+            "type": "string",
+            "description": "embedded_widget only. The acquirer's browser SDK to load in the page."
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "prod",
+              "sandbox"
+            ],
+            "description": "embedded_widget only. The SDK's environment argument."
+          },
+          "token": {
+            "type": "string",
+            "description": "embedded_widget only. The PER-ORDER PUBLIC identifier the SDK is initialised with. Scoped to this one setup attempt and safe to put in a page — it is not a merchant key and grants nothing beyond this order."
+          },
+          "save_payment_method_for": {
+            "type": "string",
+            "enum": [
+              "merchant"
+            ],
+            "description": "embedded_widget only. Pass this when submitting the card field. Saving for MERCHANT use is what makes the card chargeable later with nobody present; a card saved for the customer's own checkouts cannot be used by automatic top-up."
+          }
+        },
+        "required": [
+          "object",
+          "mode"
+        ]
+      },
+      "CardSetupRequest": {
+        "type": "object",
+        "properties": {
+          "return_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where a hosted flow returns the customer to. Ignored by an acquirer whose flow is embedded rather than hosted."
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3,
+            "description": "Currency for the verification authorisation an acquirer may need to place. Never captured."
+          }
+        },
+        "required": [
+          "return_url"
+        ]
+      },
+      "SavedPaymentMethod": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "saved_payment_method"
+            ]
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "acquirer": {
+            "type": "string",
+            "enum": [
+              "stripe",
+              "revolut"
+            ]
+          },
+          "saved": {
+            "type": "boolean",
+            "description": "Whether a card is saved AND chargeable with nobody present. `false` means the acquirer answered and there is none — it never means we failed to ask, which is a non-2xx."
+          },
+          "method": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "saved_for": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "saved_for"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "no_customer",
+              "no_saved_method",
+              "not_saved_for_merchant"
+            ],
+            "description": "Present only when `saved` is false."
+          }
+        },
+        "required": [
+          "object",
+          "org_id",
+          "acquirer",
+          "saved",
+          "method"
+        ]
+      },
       "AcquirerRolloutRequest": {
         "type": "object",
         "properties": {
@@ -1937,6 +2067,153 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StripeList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/card_setup/by-org/{orgId}": {
+      "post": {
+        "summary": "How this org's customer adds a card (described, not performed)",
+        "description": "Server-to-server. Returns a DESCRIPTOR of the mechanism the org's acquirer offers, because the acquirers genuinely differ: one hosts a portal we redirect to, the other has no portal at all and saves a card only through a browser card field the page mounts itself. The caller switches on `mode` — a UI concern it owns anyway — and never names an acquirer, never resolves a key and never receives a secret: the only credential handed over is a PER-ORDER public token scoped to this one setup attempt. Card details are entered inside an iframe the acquirer hosts, so they never touch the calling page or this service. The widget flow AUTHORISES a small amount with capture disabled and the poller releases the hold ten minutes later; nobody is charged for adding a card. 409 when the org has no customer at its acquirer — there would be nothing to attach a card to. X-API-Key only — no identity headers (orgId is in the path).",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CardSetupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Card-setup descriptor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CardSetup"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The org has no customer at its acquirer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/saved_payment_method/by-org/{orgId}": {
+      "get": {
+        "summary": "Is a chargeable card saved for this org, on whichever acquirer holds it",
+        "description": "Server-to-server. Answers whether the org has a card that can be charged LATER with nobody present, read LIVE from whichever acquirer holds its cards (never cached — a method can be removed or made ineligible with no event we would see). THREE answers, kept apart on purpose: `200 {saved:true, method}` there is one; `200 {saved:false, reason}` the acquirer answered and there is none; a NON-2XX when we could not ask at all. The last two are never merged — a caller that cannot tell them apart would arm automatic top-up off a timeout, for an org that cannot be charged. X-API-Key only — no identity headers (orgId is in the path).",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Saved-method confirmation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedPaymentMethod"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/recurring_charges/by-org/{orgId}/authorize": {
+      "post": {
+        "summary": "May automatic charges be armed for this org?",
+        "description": "Server-to-server. The gate a caller passes through BEFORE it starts charging an org with nobody present. `200` yes, with the method that will be charged; `409 {code:\"no_saved_payment_method\", reason}` no, the acquirer holds no card we could charge; a non-2xx when the acquirer could not be asked, in which case nothing may be armed — an unknown answer is not a yes. Writes nothing and takes no money: it confirms, or it refuses. An org that pays once and then cannot be charged again is worse than one we never routed to that acquirer, because its campaigns stop with nothing reporting why. X-API-Key only — no identity headers (orgId is in the path).",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorized — a saved, chargeable method exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StripeObject"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Refused — no saved payment method",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }

@@ -22,6 +22,11 @@ import {
   DEFAULT_ACQUIRER,
 } from "../lib/acquirer";
 import { hasChargeablePaymentMethod } from "../lib/chargeable-method";
+import {
+  authorizeRecurringCharges,
+  confirmSavedPaymentMethod,
+  NoSavedPaymentMethod,
+} from "../lib/saved-method";
 import { buildCardSetup } from "../lib/card-setup";
 import { listOrgPayments } from "../lib/payments-list";
 import {
@@ -521,9 +526,17 @@ router.delete(
  * still never names an acquirer, never resolves a key, and never learns which
  * vendor it is dealing with.
  *
- * The widget flow creates a ZERO-amount order, so storing a card costs the
- * customer nothing: charging a token amount purely to capture a mandate would
- * be a real debit on a real card for no service.
+ * The widget flow AUTHORISES a small amount and never captures it, because
+ * that acquirer cannot store a card without a payment and a zero-amount order
+ * can never be paid. The hold is released by the poller once the card is saved,
+ * so storing a card still costs the customer nothing.
+ *
+ * The widget is the acquirer's CARD FIELD specifically, and that is not a
+ * preference: it is the only surface of theirs that can save a card. The hosted
+ * page cannot (proved in production — a completed, captured, 3-D-Secure-verified
+ * payment left the customer's saved-method list empty), and their newer unified
+ * widget exposes no card field at all. Card details are entered inside an iframe
+ * the acquirer hosts, so nothing sensitive reaches this page or this service.
  *
  * Fail loud: an org with no customer on its acquirer -> 409. There is nothing
  * to attach a card to, and answering with a session that cannot work would move
@@ -567,6 +580,91 @@ router.post(
     } catch (err) {
       if (err instanceof Error && /has no (acquirer )?customer/.test(err.message)) {
         return res.status(409).json({ error: err.message });
+      }
+      return next(err);
+    }
+  }
+);
+
+/**
+ * GET /internal/saved_payment_method/by-org/:orgId
+ *
+ * Is there a card saved for this org that we can charge LATER, with nobody
+ * present? Asked of whichever acquirer actually holds the org's cards.
+ *
+ * THREE answers, kept apart, which is the entire reason this route exists:
+ *
+ *   200 `{ saved: true, method }`            — there is one, and this is it
+ *   200 `{ saved: false, reason }`           — the acquirer answered: there is none
+ *   5xx                                      — we could not ASK
+ *
+ * The last two are never merged. The failure this closes is a card that was
+ * requested, accepted, and never stored, with nothing anywhere saying so; a
+ * caller that cannot tell "no card" from "no answer" reproduces it the first
+ * time the acquirer is slow. Live read, never cached — a method can be removed
+ * or made ineligible at the acquirer with no event we would see.
+ */
+router.get(
+  "/internal/saved_payment_method/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+      const confirmation = await confirmSavedPaymentMethod(orgId);
+      if (confirmation.saved) res.locals.stripeObjectId = confirmation.method.id;
+      return res.json({ ...confirmation, org_id: orgId });
+    } catch (err) {
+      // Fail loud. "We could not ask" must not be answerable as "no card".
+      return next(err);
+    }
+  }
+);
+
+/**
+ * POST /internal/recurring_charges/by-org/:orgId/authorize
+ *
+ * May automatic top-up be armed for this org? The gate a caller passes through
+ * before it starts charging an org with nobody present.
+ *
+ *   200 — yes, and here is the method that will be charged
+ *   409 — no: the acquirer holds no card we could charge (with the reason)
+ *   5xx — we could not ask, so the answer is unknown and nothing may be armed
+ *
+ * It is a separate route from the read above because it is a DIFFERENT
+ * question. The read reports a fact; this one refuses. A consumer that wants to
+ * display "card on file" reads; a consumer that wants to arm recurring charges
+ * asks here and is refused when it must be, without having to decide for itself
+ * which reasons are safe to proceed on.
+ *
+ * Structurally, the permission is a value only `authorizeRecurringCharges` can
+ * mint, and it cannot mint one from anything but a confirmation that came back
+ * saved — so inside this service there is no path to an armed state that
+ * skipped the check.
+ */
+router.post(
+  "/internal/recurring_charges/by-org/:orgId/authorize",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+      const authorization = await authorizeRecurringCharges(orgId);
+      res.locals.stripeObjectId = authorization.method.id;
+      return res.json({
+        object: "recurring_charge_authorization",
+        org_id: orgId,
+        acquirer: authorization.acquirer,
+        authorized: true,
+        method: authorization.method,
+      });
+    } catch (err) {
+      if (err instanceof NoSavedPaymentMethod) {
+        return res.status(409).json({
+          error: err.message,
+          code: "no_saved_payment_method",
+          reason: err.reason,
+          acquirer: err.acquirer,
+          authorized: false,
+        });
       }
       return next(err);
     }
