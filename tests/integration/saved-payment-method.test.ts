@@ -125,6 +125,90 @@ describe("GET /internal/saved_payment_method/by-org/:orgId", () => {
     expect(revolutMock.listCustomerPaymentMethods).not.toHaveBeenCalled();
   });
 
+  it("reads a customer the acquirer no longer has as NO CARD, not as an outage", async () => {
+    // The acquirer answered, and its answer was definitive. An org whose
+    // mirrored customer is gone therefore has no card and nothing to strand.
+    // Production, 2026-09-08: this read (and the pin that depends on it) came
+    // back 400 `No such customer`, which made the org unmovable forever.
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_gone" }]);
+    stripeMock.paymentMethods.list.mockRejectedValueOnce(
+      Object.assign(new Error("No such customer: 'cus_gone'"), {
+        type: "StripeInvalidRequestError",
+        code: "resource_missing",
+        statusCode: 400,
+      })
+    );
+
+    const res = await request(app)
+      .get(`/internal/saved_payment_method/by-org/${TEST_ORG_ID}`)
+      .set(headers);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      acquirer: "stripe",
+      saved: false,
+      method: null,
+      reason: "no_customer",
+    });
+  });
+
+  it("reads a Revolut 404 on the customer the same way", async () => {
+    pinnedToRevolut();
+    const { RevolutApiError } = await import("../../src/lib/revolut-client");
+    revolutMock.listCustomerPaymentMethods.mockRejectedValue(
+      new RevolutApiError(404, "{}", "Revolut GET /customers/x failed: 404 {}")
+    );
+
+    const res = await request(app)
+      .get(`/internal/saved_payment_method/by-org/${TEST_ORG_ID}`)
+      .set(headers);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ saved: false, reason: "no_customer" });
+  });
+
+  it("still refuses to answer when the acquirer is genuinely down", async () => {
+    // The never-fail-soft rule is untouched: only the ONE definitive answer
+    // above was reclassified. A 500 that is not `resource_missing` is still an
+    // unknown, and an unknown is never reported as 'no card'.
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    stripeMock.paymentMethods.list.mockRejectedValueOnce(
+      Object.assign(new Error("Stripe is down"), {
+        type: "StripeAPIError",
+        statusCode: 503,
+      })
+    );
+
+    const res = await request(app)
+      .get(`/internal/saved_payment_method/by-org/${TEST_ORG_ID}`)
+      .set(headers);
+
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(res.body.saved).toBeUndefined();
+  });
+
+  it("answers an unanswerable read as JSON, with no stack and no file paths", async () => {
+    // What production returned instead: Express's default HTML error page,
+    // carrying a stack with container paths, under the VENDOR's 400 — which
+    // told the caller its own request was malformed when it was fine.
+    pinnedToRevolut();
+    revolutMock.listCustomerPaymentMethods.mockRejectedValue(
+      new Error("socket hang up\n    at Foo (/app/node_modules/x/y.js:11:20)")
+    );
+
+    const res = await request(app)
+      .get(`/internal/saved_payment_method/by-org/${TEST_ORG_ID}`)
+      .set(headers);
+
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(res.headers["content-type"]).toMatch(/application\/json/);
+    expect(typeof res.body.error).toBe("string");
+    expect(res.text).not.toMatch(/node_modules/);
+    expect(res.text).not.toMatch(/\bat \w+ \(/);
+  });
+
   it("is server-to-server: X-API-Key, no end-user identity", async () => {
     const res = await request(app).get(
       `/internal/saved_payment_method/by-org/${TEST_ORG_ID}`

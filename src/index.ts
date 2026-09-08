@@ -9,6 +9,7 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { serviceAuth } from "./middleware/serviceAuth";
 import { requireIdentityHeaders } from "./middleware/identityHeaders";
 import { callLog } from "./middleware/callLog";
+import { errorHandler } from "./middleware/errorHandler";
 import { db } from "./db";
 import healthRoutes from "./routes/health";
 import customersRoutes from "./routes/customers";
@@ -98,6 +99,10 @@ app.use("/", billingPortalSessionsRoutes);
 app.use("/", publicStatsRoutes);
 app.use("/", webhooksRoutes);
 app.use("/", revolutWebhooksRoutes);
+
+// Last, so a route that threw answers as JSON with a status of OURS — never the
+// vendor's status, never a stack. See middleware/errorHandler.ts.
+app.use(errorHandler);
 
 if (process.env.NODE_ENV !== "test") {
   migrate(db, { migrationsFolder: "./drizzle" })
