@@ -7,6 +7,9 @@ const { dbMock, stripeMock } = vi.hoisted(() => {
 });
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
+vi.mock("../../src/lib/billing-client", () => ({
+  reportPaymentMethodLost: vi.fn(async () => {}),
+}));
 vi.mock("../../src/lib/transactional-email-client", () => ({
   PAYMENT_METHOD_REMOVED_EVENT_TYPE: "payment_method_removed",
   sendStaffEmail: vi.fn(async () => {}),
@@ -18,6 +21,7 @@ import {
   describePaymentMethod,
 } from "../../src/lib/notify-payment-method-removed";
 import { sendStaffEmail } from "../../src/lib/transactional-email-client";
+import { reportPaymentMethodLost } from "../../src/lib/billing-client";
 
 const ORG_ID = "a2bc915a-7430-4842-a911-a29d3430d4ea";
 const CUSTOMER_ID = "cus_Uv6pJnKE15nmHB";
@@ -317,5 +321,62 @@ describe("describePaymentMethod", () => {
         billing_details: { email: "a@b.com" },
       } as never)
     ).toBe("Sepa Debit (a@b.com)");
+  });
+});
+
+/**
+ * The immediate "this org can no longer be collected from" signal. billing
+ * rediscovers the same fact within the hour on its own scan; this is what makes
+ * it immediate, and it must never be able to fail the webhook.
+ */
+describe("telling billing-service the org has no chargeable method left", () => {
+  it("fires once with the internal org id when the detach leaves zero cards", async () => {
+    stripeMock.paymentMethods.list.mockReturnValue(asyncIter(cards(0)));
+
+    expect(await notifyPaymentMethodRemoved(detachedEvent(), resolveStripe)).toBe(
+      true
+    );
+
+    expect(reportPaymentMethodLost).toHaveBeenCalledTimes(1);
+    expect(reportPaymentMethodLost).toHaveBeenCalledWith(ORG_ID);
+  });
+
+  it("does not fire while a chargeable card is still on file", async () => {
+    stripeMock.paymentMethods.list.mockReturnValue(asyncIter(cards(1)));
+
+    await notifyPaymentMethodRemoved(detachedEvent(), resolveStripe);
+
+    expect(reportPaymentMethodLost).not.toHaveBeenCalled();
+  });
+
+  it("swallows a billing-service failure, logs it, and still notifies staff", async () => {
+    stripeMock.paymentMethods.list.mockReturnValue(asyncIter(cards(0)));
+    vi.mocked(reportPaymentMethodLost).mockRejectedValueOnce(
+      new Error("billing-service POST /internal/payment-methods/lost failed: 500 - ")
+    );
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Resolving true is what keeps the webhook 2xx: processEvent never sees a
+    // throw, so Stripe is never told to redeliver.
+    expect(await notifyPaymentMethodRemoved(detachedEvent(), resolveStripe)).toBe(
+      true
+    );
+
+    expect(logged).toHaveBeenCalled();
+    expect(sendStaffEmail).toHaveBeenCalledTimes(1);
+    logged.mockRestore();
+  });
+
+  it("still signals billing when the staff email is what fails", async () => {
+    stripeMock.paymentMethods.list.mockReturnValue(asyncIter(cards(0)));
+    vi.mocked(sendStaffEmail).mockRejectedValueOnce(new Error("email down"));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(await notifyPaymentMethodRemoved(detachedEvent(), resolveStripe)).toBe(
+      false
+    );
+
+    expect(reportPaymentMethodLost).toHaveBeenCalledWith(ORG_ID);
+    logged.mockRestore();
   });
 });

@@ -2,6 +2,7 @@ import type Stripe from "stripe";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { customers } from "../db/schema";
+import { reportPaymentMethodLost } from "./billing-client";
 import { extractString } from "./event-processor";
 import {
   PAYMENT_METHOD_REMOVED_EVENT_TYPE,
@@ -110,6 +111,10 @@ async function notify(
     throw err;
   }
 
+  if (cardsRemaining === 0) {
+    await signalPaymentMethodLost(owner.orgId, event.id);
+  }
+
   const orgLabel = owner.name || owner.email || owner.orgId;
   const customerLabel = owner.name || owner.email || "no name on file";
 
@@ -136,6 +141,41 @@ async function notify(
     `[stripe-service] Staff notified: org ${owner.orgId} removed ${pm.id} from ${customerId}, ${cardsRemaining} chargeable card(s) left`
   );
   return true;
+}
+
+/**
+ * Tell billing-service, immediately, that this organisation has no chargeable
+ * payment method left.
+ *
+ * Fired UNCONDITIONALLY on that condition — whether it means anything is
+ * billing's business (it no-ops for an org that owes nothing, and is idempotent
+ * per episode, so redelivery is safe). Sent BEFORE the staff email on purpose:
+ * the email reaches a human within the hour either way, this is the signal that
+ * stops spend on an org we can no longer collect from, so an email-service
+ * failure must not be able to eat it.
+ *
+ * Swallows everything, for exactly the reason the staff email does: Stripe
+ * retries a non-2xx, so a billing-service that is down would become an endless
+ * webhook redelivery loop. billing-service rediscovers the same fact on its own
+ * hourly scan, so the cost of a swallowed failure is bounded by that hour — the
+ * cost of a retry loop is not. The failure is logged loud, including the case
+ * where the service is not configured at all.
+ */
+async function signalPaymentMethodLost(
+  orgId: string,
+  eventId: string
+): Promise<void> {
+  try {
+    await reportPaymentMethodLost(orgId);
+    console.log(
+      `[stripe-service] billing-service told org ${orgId} has no chargeable payment method left (${eventId})`
+    );
+  } catch (err) {
+    console.error(
+      `[stripe-service] Telling billing-service that org ${orgId} lost its last payment method (${eventId}) failed and was swallowed so Stripe does not retry:`,
+      err
+    );
+  }
 }
 
 /**
