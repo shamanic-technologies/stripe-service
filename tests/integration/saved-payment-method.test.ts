@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
 import { TEST_API_KEY, TEST_ORG_ID } from "../helpers/mocks";
 
@@ -36,6 +36,7 @@ vi.mock("../../src/lib/revolut-client", async (importOriginal) => {
 });
 
 import { createTestApp } from "../helpers/test-app";
+import { CARD_UPDATE_CONFIGURATION_ENV } from "../../src/lib/portal-session";
 
 const app = createTestApp();
 const headers = { "X-API-Key": TEST_API_KEY };
@@ -301,6 +302,53 @@ describe("POST /internal/recurring_charges/by-org/:orgId/authorize", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ acquirer: "stripe", authorized: true });
+  });
+});
+
+describe("POST /internal/card_setup/by-org/:orgId — the hosted flow cannot remove a card", () => {
+  beforeEach(() => {
+    vi.stubEnv(CARD_UPDATE_CONFIGURATION_ENV, "bpc_card_update");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("scopes the hosted session to the add/replace-a-card flow", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    dbMock.queueSelect("org_acquirers", []);
+    stripeMock.billingPortal.sessions.create.mockResolvedValueOnce({
+      id: "bps_1",
+      object: "billing_portal.session",
+      url: "https://billing.stripe.com/flow",
+    });
+
+    const res = await request(app)
+      .post(`/internal/card_setup/by-org/${TEST_ORG_ID}`)
+      .set(headers)
+      .send({ return_url: "https://dashboard.example/billing" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      object: "card_setup",
+      mode: "hosted_redirect",
+      url: "https://billing.stripe.com/flow",
+    });
+    const params = stripeMock.billingPortal.sessions.create.mock.calls[0][0];
+    expect(params.configuration).toBe("bpc_card_update");
+    expect(params.flow_data.type).toBe("payment_method_update");
+  });
+
+  it("fails loud when the pinned configuration is missing", async () => {
+    vi.stubEnv(CARD_UPDATE_CONFIGURATION_ENV, "");
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    dbMock.queueSelect("org_acquirers", []);
+
+    const res = await request(app)
+      .post(`/internal/card_setup/by-org/${TEST_ORG_ID}`)
+      .set(headers)
+      .send({ return_url: "https://dashboard.example/billing" });
+
+    expect(res.status).toBeGreaterThanOrEqual(500);
   });
 });
 

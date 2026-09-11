@@ -28,6 +28,7 @@ import {
   NoSavedPaymentMethod,
 } from "../lib/saved-method";
 import { buildCardSetup } from "../lib/card-setup";
+import { cardUpdatePortalParams } from "../lib/portal-session";
 import { listOrgPayments } from "../lib/payments-list";
 import {
   chargeViaRevolut,
@@ -569,10 +570,15 @@ router.post(
         defaultCustomerId: row.length > 0 ? row[0].id : null,
         hostedSession: async (customerId) => {
           const stripe = await getPlatformStripe();
-          const session = await stripe.billingPortal.sessions.create({
-            customer: customerId,
-            return_url: parsed.data.return_url,
-          });
+          // Scoped to the add/replace-a-card flow: the customer never reaches
+          // the portal screen that can DETACH the card we collect on. See
+          // src/lib/portal-session.ts.
+          const session = await stripe.billingPortal.sessions.create(
+            cardUpdatePortalParams({
+              customer: customerId,
+              return_url: parsed.data.return_url,
+            })
+          );
           return session.url;
         },
       });
