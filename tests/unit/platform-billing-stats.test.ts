@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 const { dbMock } = vi.hoisted(() => {
   const { makeDbMock } = require("../helpers/mocks-factory.cjs");
@@ -9,12 +10,15 @@ vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
 
 import {
   addSums,
+  foldPayingAccountRows,
   foldReturnedRows,
   mergeGrowth,
+  payingAccounts,
   platformReturns,
   revolutPlatformPaid,
   sumsToPaidRows,
   type PaidBucketRow,
+  type PayingAccountRow,
   type ReturnedBucketRow,
 } from "../../src/lib/platform-billing-stats";
 
@@ -127,6 +131,7 @@ describe("mergeGrowth", () => {
     const out = mergeGrowth(
       [paid("2026-04-01", "5000"), paid("2026-05-01", "7500")],
       new Map(),
+      new Map(),
       new Map()
     );
 
@@ -138,6 +143,8 @@ describe("mergeGrowth", () => {
         disputed_lost_cents: "0",
         returned_cents: "0",
         net_cents: "5000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
       {
         period: "2026-05-01",
@@ -146,6 +153,8 @@ describe("mergeGrowth", () => {
         disputed_lost_cents: "0",
         returned_cents: "0",
         net_cents: "7500",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
     ]);
   });
@@ -154,6 +163,7 @@ describe("mergeGrowth", () => {
     const out = mergeGrowth(
       [paid("2026-04-01", "5000"), paid("2026-05-01", "7500")],
       new Map([["2026-05-01", 5000n]]),
+      new Map(),
       new Map()
     );
 
@@ -171,6 +181,7 @@ describe("mergeGrowth", () => {
     const out = mergeGrowth(
       [paid("2026-05-01", "7500")],
       new Map([["2026-05-01", 1500n]]),
+      new Map(),
       new Map()
     );
 
@@ -185,7 +196,8 @@ describe("mergeGrowth", () => {
     const out = mergeGrowth(
       [paid("2026-05-01", "7500")],
       new Map([["2026-05-01", 1000n]]),
-      new Map([["2026-05-01", 2000n]])
+      new Map([["2026-05-01", 2000n]]),
+      new Map()
     );
 
     expect(out[0]).toEqual({
@@ -195,6 +207,8 @@ describe("mergeGrowth", () => {
       disputed_lost_cents: "2000",
       returned_cents: "3000",
       net_cents: "4500",
+      paying_accounts: 0,
+      first_time_paying_accounts: 0,
     });
   });
 
@@ -204,6 +218,7 @@ describe("mergeGrowth", () => {
     const out = mergeGrowth(
       [paid("2026-04-01", "5000")],
       new Map([["2026-05-01", 5000n]]),
+      new Map(),
       new Map()
     );
 
@@ -215,6 +230,8 @@ describe("mergeGrowth", () => {
         disputed_lost_cents: "0",
         returned_cents: "0",
         net_cents: "5000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
       {
         period: "2026-05-01",
@@ -223,6 +240,8 @@ describe("mergeGrowth", () => {
         disputed_lost_cents: "0",
         returned_cents: "5000",
         net_cents: "-5000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
     ]);
   });
@@ -233,7 +252,7 @@ describe("mergeGrowth", () => {
       ["2026-05-01", 1500n],
       ["2026-06-01", 1000n],
     ]);
-    const out = mergeGrowth(paidRows, refunded, new Map());
+    const out = mergeGrowth(paidRows, refunded, new Map(), new Map());
 
     const grossTotal = 5000n + 7500n;
     const returnedTotal = 1500n + 1000n;
@@ -243,7 +262,12 @@ describe("mergeGrowth", () => {
   });
 
   it("treats a null gross sum as zero", () => {
-    const out = mergeGrowth([paid("2026-05-01", null)], new Map(), new Map());
+    const out = mergeGrowth(
+      [paid("2026-05-01", null)],
+      new Map(),
+      new Map(),
+      new Map()
+    );
 
     expect(out[0]).toMatchObject({ paid_cents: "0", net_cents: "0" });
   });
@@ -327,6 +351,7 @@ describe("sumsToPaidRows", () => {
     const merged = mergeGrowth(
       [paid("2026-08-01", "12500"), ...sumsToPaidRows(revolut)],
       new Map(),
+      new Map(),
       new Map()
     );
 
@@ -338,7 +363,184 @@ describe("sumsToPaidRows", () => {
         disputed_lost_cents: "0",
         returned_cents: "0",
         net_cents: "62500",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
     ]);
+  });
+});
+
+
+/**
+ * Compile a drizzle `sql` template to the text Postgres would actually receive
+ * plus its bound params, so an assertion reads the real query rather than a
+ * reconstruction of it.
+ */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function compiled(query: any): { sql: string; params: unknown[] } {
+  const { sql: text, params } = new PgDialect().sqlToQuery(query);
+  return { sql: text, params };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+/** A row of the grouped paying-account query, as Postgres yields it. */
+function accountRow(
+  grain: string,
+  period: string | null,
+  paying: number,
+  firstTime: number
+): PayingAccountRow {
+  return {
+    grain,
+    period: period === null ? null : new Date(`${period}T00:00:00Z`),
+    paying,
+    first_time: firstTime,
+  };
+}
+
+describe("foldPayingAccountRows", () => {
+  it("splits the three grain arms into the total and both grains", () => {
+    const out = foldPayingAccountRows([
+      accountRow("total", null, 33, 33),
+      accountRow("month", "2026-08-01", 9, 2),
+      accountRow("week", "2026-08-24", 4, 1),
+      accountRow("week", "2026-08-31", 5, 0),
+    ]);
+
+    expect(out.total).toBe(33);
+    expect(out.byMonth.get("2026-08-01")).toEqual({ paying: 9, firstTime: 2 });
+    expect(out.byWeek.get("2026-08-24")).toEqual({ paying: 4, firstTime: 1 });
+    expect(out.byWeek.get("2026-08-31")).toEqual({ paying: 5, firstTime: 0 });
+  });
+
+  it("reads the total from its own arm rather than summing first-timers", () => {
+    // Summing in TypeScript would make sum(firstTime) === total an identity we
+    // imposed; querying it separately keeps it a real check on the data.
+    const out = foldPayingAccountRows([
+      accountRow("total", null, 3, 3),
+      accountRow("month", "2026-08-01", 2, 1),
+    ]);
+
+    expect(out.total).toBe(3);
+  });
+
+  it("throws rather than dropping a bucket with no period", () => {
+    expect(() =>
+      foldPayingAccountRows([accountRow("week", null, 4, 1)])
+    ).toThrow(/no period/);
+  });
+
+  it("throws on a grain it does not know", () => {
+    expect(() =>
+      foldPayingAccountRows([accountRow("day", "2026-08-24", 1, 1)])
+    ).toThrow(/unknown grain/);
+  });
+
+  it("reads counts that arrive as strings", () => {
+    const out = foldPayingAccountRows([
+      { grain: "total", period: null, paying: "7", first_time: "7" },
+      {
+        grain: "week",
+        period: "2026-09-07T00:00:00.000Z",
+        paying: "2",
+        first_time: "1",
+      },
+    ]);
+
+    expect(out.total).toBe(7);
+    expect(out.byWeek.get("2026-09-07")).toEqual({ paying: 2, firstTime: 1 });
+  });
+});
+
+describe("payingAccounts", () => {
+  beforeEach(() => {
+    dbMock.clearQueues();
+  });
+
+  it("counts who PAID across both acquirers, excluding unattributable rows", async () => {
+    dbMock.queueExecute([
+      accountRow("total", null, 33, 33),
+      accountRow("month", "2026-08-01", 9, 2),
+      accountRow("week", "2026-08-24", 4, 1),
+    ]);
+
+    const out = await payingAccounts();
+
+    expect(out.total).toBe(33);
+    expect(out.byWeek.get("2026-08-24")).toEqual({ paying: 4, firstTime: 1 });
+
+    const query = compiled(dbMock.db.execute.mock.calls[0][0]);
+
+    // Both acquirers, settled only, and the same predicates the money uses.
+    expect(query.sql).toContain('"payment_intents"');
+    expect(query.sql).toContain('"revolut_orders"');
+    expect(query.sql).toContain("'succeeded'");
+    expect(query.sql).toContain("'payment'");
+    expect(query.params).toContain("completed");
+    // The unattributable sentinel is excluded from the counts (its money is
+    // still counted by the figures next to it).
+    expect(query.params).toContain("unknown");
+    // Both grains come off the SAME settled set as each other.
+    expect(query.sql).toContain("date_trunc('month'");
+    expect(query.sql).toContain("date_trunc('week'");
+  });
+});
+
+describe("mergeGrowth account counts", () => {
+  it("carries the counts on the same buckets as the money", () => {
+    const out = mergeGrowth(
+      [paid("2026-08-01", "50000")],
+      new Map(),
+      new Map(),
+      new Map([["2026-08-01", { paying: 9, firstTime: 2 }]])
+    );
+
+    expect(out[0]).toMatchObject({
+      paid_cents: "50000",
+      paying_accounts: 9,
+      first_time_paying_accounts: 2,
+    });
+  });
+
+  it("emits real zeros for a period with money but no attributable account", () => {
+    const out = mergeGrowth(
+      [paid("2026-08-01", "50000")],
+      new Map(),
+      new Map(),
+      new Map()
+    );
+
+    expect(out[0]).toMatchObject({
+      paying_accounts: 0,
+      first_time_paying_accounts: 0,
+    });
+  });
+
+  it("keeps sum(first_time_paying_accounts) equal to the platform total", () => {
+    const accounts = new Map([
+      ["2026-06-01", { paying: 8, firstTime: 5 }],
+      ["2026-07-01", { paying: 9, firstTime: 3 }],
+      ["2026-08-01", { paying: 9, firstTime: 2 }],
+    ]);
+    const out = mergeGrowth(
+      [
+        paid("2026-06-01", "1000"),
+        paid("2026-07-01", "2000"),
+        paid("2026-08-01", "3000"),
+      ],
+      new Map(),
+      new Map(),
+      accounts
+    );
+
+    const firstTimeSum = out.reduce(
+      (acc, b) => acc + b.first_time_paying_accounts,
+      0
+    );
+
+    expect(firstTimeSum).toBe(10);
+    // Distinct-account counts are NOT additive the way money is: an account
+    // that pays every month is in every month's paying_accounts.
+    expect(out.reduce((acc, b) => acc + b.paying_accounts, 0)).toBe(26);
   });
 });
