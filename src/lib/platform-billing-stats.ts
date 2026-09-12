@@ -294,6 +294,8 @@ export type GrowthBucket = {
   disputed_lost_cents: string;
   returned_cents: string;
   net_cents: string;
+  paying_accounts: number;
+  first_time_paying_accounts: number;
 };
 
 /**
@@ -309,11 +311,20 @@ export type GrowthBucket = {
  *
  * A period present on one side only is emitted with real zeros on the other —
  * a month with a refund and no payments genuinely took in nothing.
+ *
+ * The account counts ride the SAME periods as the money rather than a series of
+ * their own, so a consumer reads "how much came in" and "from how many
+ * accounts" off one row and can never line two series up wrongly. They are
+ * counts of distinct accounts, so they do NOT sum to the platform total the way
+ * the money does — an account that pays every month is in every month's
+ * `paying_accounts`. `first_time_paying_accounts` is the one that does sum, to
+ * the number of accounts that have ever paid.
  */
 export function mergeGrowth(
   paid: PaidBucketRow[],
   refunded: Map<string, bigint>,
-  disputedLost: Map<string, bigint>
+  disputedLost: Map<string, bigint>,
+  accounts: Map<string, AccountBucket>
 ): GrowthBucket[] {
   const paidByPeriod = new Map<string, bigint>();
   for (const row of paid) {
@@ -328,6 +339,7 @@ export function mergeGrowth(
     ...paidByPeriod.keys(),
     ...refunded.keys(),
     ...disputedLost.keys(),
+    ...accounts.keys(),
   ]);
 
   return [...periods]
@@ -337,6 +349,7 @@ export function mergeGrowth(
       const refundedCents = refunded.get(period) ?? 0n;
       const disputedCents = disputedLost.get(period) ?? 0n;
       const returnedCents = refundedCents + disputedCents;
+      const bucket = accounts.get(period) ?? emptyAccountBucket();
       return {
         period,
         paid_cents: paidCents.toString(),
@@ -344,6 +357,185 @@ export function mergeGrowth(
         disputed_lost_cents: disputedCents.toString(),
         returned_cents: returnedCents.toString(),
         net_cents: (paidCents - returnedCents).toString(),
+        paying_accounts: bucket.paying,
+        first_time_paying_accounts: bucket.firstTime,
       };
     });
+}
+
+// ===== Who paid, and who paid for the first time =====
+//
+// The money above says how much came in. It does not say how many CUSTOMERS it
+// came from, and a consumer that needs that has historically had to guess:
+// the staff metrics console derived its paid-user timeline by listing SAVED
+// CARDS per customer and dating each customer by when its card was attached.
+// That answers a different question and gets three things wrong at once — a
+// customer who pays through a wallet has no saved card, a customer who pays on
+// the second acquirer has no Stripe card at all, and a customer who pays in
+// September on a card attached in June is dated to June. This service is the
+// only place that sees every acquirer and already mirrors the payments
+// themselves, so the count belongs beside the money it already buckets.
+//
+// IDENTITY — an account is the ORG, not the acquirer's customer. That is the
+// mapping this service owns (`payment_intents.org_id` /
+// `revolut_orders.org_id`), it is what every other org-scoped read here keys
+// on, and it is the only identity that spans acquirers: the org that pays us
+// on Revolut in August and on Stripe in March is ONE account that paid twice,
+// not two. Counting acquirer customers instead would also double-count the
+// four orgs that predate the idempotent `POST /v1/customers` and hold several
+// Stripe customers each.
+//
+// ACQUIRER COVERAGE — both, exactly like the money. Same predicates, verbatim:
+// a `succeeded` Stripe PaymentIntent, a `completed` Revolut `payment` order.
+// No purpose filter on the Revolut side, for the same reason the money half
+// has none: filtering by intent here would silently diverge from the figure
+// published next to it. (This is NOT the Stripe-only scope of
+// `accounts_with_payment_method`, which counts saved cards, not payments.)
+//
+// A REFUND NEVER UNCOUNTS A PAYER. The payment happened; the return is a
+// separate object in its own later period, exactly as `mergeGrowth` treats it,
+// and un-counting would retroactively rewrite a bucket a consumer has already
+// read. An org whose only payment was later refunded still paid us once.
+//
+// UNATTRIBUTABLE PAYMENTS ARE EXCLUDED, loudly here rather than silently: a
+// Stripe PaymentIntent stamped with the `unknown` org sentinel, or a Revolut
+// order carrying no `org_id`, belongs to no account we can name, so it cannot
+// be counted as one. Its MONEY still counts in every figure above — the totals
+// are unchanged — it simply has no account to attach to. Three such payments
+// exist in production today.
+
+/** The sentinel `org_id` the mirror stamps when no tenant is resolvable. */
+const UNATTRIBUTED_ORG = "unknown";
+
+/** Distinct accounts in one period, and how many of them were new. */
+export type AccountBucket = {
+  /** Accounts with at least one settled payment in this period. */
+  paying: number;
+  /** Of those, the ones with no settled payment on ANY acquirer before it. */
+  firstTime: number;
+};
+
+export type PayingAccounts = {
+  /** Distinct accounts that have EVER paid. Equals the sum of firstTime. */
+  total: number;
+  byMonth: Map<string, AccountBucket>;
+  byWeek: Map<string, AccountBucket>;
+};
+
+/** One row of the grouped counts query. `grain` discriminates the three arms. */
+export type PayingAccountRow = {
+  grain: string;
+  period: Date | string | null;
+  paying: number | string | null;
+  first_time: number | string | null;
+};
+
+export function emptyAccountBucket(): AccountBucket {
+  return { paying: 0, firstTime: 0 };
+}
+
+/**
+ * Fold the three grain arms into the platform total plus both grains.
+ *
+ * A period is emitted by exactly one arm, so nothing is added twice and the
+ * `total` arm is read straight through rather than summed — which is what
+ * makes `sum(firstTime) === total` a real check on the data instead of an
+ * identity we imposed in TypeScript.
+ */
+export function foldPayingAccountRows(rows: PayingAccountRow[]): PayingAccounts {
+  const accounts: PayingAccounts = {
+    total: 0,
+    byMonth: new Map(),
+    byWeek: new Map(),
+  };
+
+  for (const row of rows) {
+    const bucket: AccountBucket = {
+      paying: Number(row.paying ?? 0),
+      firstTime: Number(row.first_time ?? 0),
+    };
+
+    if (row.grain === "total") {
+      accounts.total = bucket.paying;
+      continue;
+    }
+
+    // A settled payment always carries a timestamp — both predicates require
+    // one — so a null period means the query changed under us. Fail loud
+    // rather than dropping an account into no bucket.
+    if (row.period == null) {
+      throw new Error(
+        `paying-account bucket row has grain '${row.grain}' and no period`
+      );
+    }
+    const period = formatPeriod(row.period);
+
+    if (row.grain === "month") accounts.byMonth.set(period, bucket);
+    else if (row.grain === "week") accounts.byWeek.set(period, bucket);
+    else throw new Error(`paying-account row has unknown grain '${row.grain}'`);
+  }
+
+  return accounts;
+}
+
+/**
+ * Count distinct paying accounts and first-time paying accounts, per grain.
+ *
+ * One round trip. `settled` is every settled payment across both acquirers
+ * reduced to (account, instant); `first_paid` is each account's earliest one.
+ * An account is FIRST-TIME in the period holding that earliest instant, which
+ * is why the equality test is against `first_paid_at` rather than against a
+ * period boundary — a first payment cannot be in two periods, so every account
+ * is first-time in exactly one bucket per grain and the sum is the total.
+ *
+ * Both grains are computed from the SAME `settled` set as the other, and from
+ * the same rows the money queries read, so a bucket can never count an account
+ * whose payment is absent from `paid_cents`.
+ */
+export async function payingAccounts(): Promise<PayingAccounts> {
+  const result = await db.execute(sql`
+    WITH settled AS (
+      SELECT ${paymentIntents.orgId} AS account_id,
+             to_timestamp(${paymentIntents.createdStripe}) AS paid_at
+        FROM ${paymentIntents}
+       WHERE ${paymentIntents.status} = 'succeeded'
+         AND ${paymentIntents.orgId} <> ${UNATTRIBUTED_ORG}
+         AND ${paymentIntents.createdStripe} IS NOT NULL
+      UNION ALL
+      SELECT ${revolutOrders.orgId},
+             ${revolutOrders.createdAtRevolut}
+        FROM ${revolutOrders}
+       WHERE ${revolutOrders.type} = 'payment'
+         AND ${revolutOrders.state} = ${REVOLUT_SETTLED_STATE}
+         AND ${revolutOrders.orgId} IS NOT NULL
+         AND ${revolutOrders.createdAtRevolut} IS NOT NULL
+    ),
+    first_paid AS (
+      SELECT account_id, MIN(paid_at) AS first_paid_at
+        FROM settled
+       GROUP BY account_id
+    )
+    SELECT 'total' AS grain,
+           NULL::timestamptz AS period,
+           (SELECT COUNT(*) FROM first_paid)::int AS paying,
+           (SELECT COUNT(*) FROM first_paid)::int AS first_time
+    UNION ALL
+    SELECT 'month',
+           date_trunc('month', s.paid_at),
+           COUNT(DISTINCT s.account_id)::int,
+           COUNT(DISTINCT s.account_id) FILTER (WHERE s.paid_at = f.first_paid_at)::int
+      FROM settled s
+      JOIN first_paid f ON f.account_id = s.account_id
+     GROUP BY 2
+    UNION ALL
+    SELECT 'week',
+           date_trunc('week', s.paid_at),
+           COUNT(DISTINCT s.account_id)::int,
+           COUNT(DISTINCT s.account_id) FILTER (WHERE s.paid_at = f.first_paid_at)::int
+      FROM settled s
+      JOIN first_paid f ON f.account_id = s.account_id
+     GROUP BY 2
+  `);
+
+  return foldPayingAccountRows(result.rows as unknown as PayingAccountRow[]);
 }

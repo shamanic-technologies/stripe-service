@@ -70,6 +70,11 @@ function makeDbMock(vi) {
     select: vi.fn(() => makeChain("select")),
     update: vi.fn((t) => makeChain("update", tableName(t))),
     delete: vi.fn((t) => makeChain("delete", tableName(t))),
+    // Raw SQL. Returns a pg QueryResult shape ({ rows }) because that is what
+    // drizzle's node-postgres `db.execute` resolves to; queue plain row arrays.
+    execute: vi.fn(() =>
+      Promise.resolve({ rows: nextResult("execute", undefined) })
+    ),
     query: {},
   };
 
@@ -79,6 +84,7 @@ function makeDbMock(vi) {
     queueInsert: (table, result) => setResult("insert", table, result),
     queueUpdate: (table, result) => setResult("update", table, result),
     queueDelete: (table, result) => setResult("delete", table, result),
+    queueExecute: (result) => setResult("execute", undefined, result),
     lastInsertValues: (table) => {
       const arr = captured.values.get(key("insert", table)) ?? [];
       return arr[arr.length - 1];
