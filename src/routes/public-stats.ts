@@ -4,6 +4,7 @@ import { db } from "../db";
 import { paymentIntents, customers } from "../db/schema";
 import {
   mergeGrowth,
+  payingAccounts,
   platformReturns,
   revolutPlatformPaid,
   sumsToPaidRows,
@@ -41,7 +42,18 @@ const router = Router();
  * truth lives on `GET /internal/payment_summary/by-org/:orgId`, which never
  * merges currencies and also spans both acquirers.
  *
- * `accounts_with_payment_method` is STRIPE-ONLY and stays that way. It counts
+ * HOW MANY ACCOUNTS PAID is published beside how much they paid, on the same
+ * periods and with the SAME acquirer coverage as the money: `paying_accounts`
+ * per bucket, `first_time_paying_accounts` for the ones with no earlier
+ * payment on any acquirer, and `total_paying_accounts` for the platform. An
+ * account is the ORG — the mapping this service owns — so an org that pays on
+ * both acquirers is one account, and the counts answer "who PAID", never "who
+ * has a card on file". A refund never un-counts a payer, and a payment we
+ * cannot attribute to an org is excluded from the counts while its money still
+ * counts in every figure here.
+ *
+ * ⚠️ `accounts_with_payment_method` does NOT share that coverage — it is
+ * STRIPE-ONLY and stays that way. It counts
  * mirrored customers carrying a default Stripe payment method. Revolut exposes
  * no mirror of its saved methods — answering for it means one live API call per
  * org, which does not belong behind an unauthenticated public route. The figure
@@ -99,9 +111,10 @@ router.get("/public/stats/billing", async (_req: Request, res: Response, next: N
         sql`date_trunc('week', to_timestamp(${paymentIntents.createdStripe}))`
       )) as PaidBucketRow[];
 
-    const [returns, revolutPaid] = await Promise.all([
+    const [returns, revolutPaid, accounts] = await Promise.all([
       platformReturns(),
       revolutPlatformPaid(),
+      payingAccounts(),
     ]);
     const totalRefundedCents = returns.refunded.total;
     const totalDisputedLostCents = returns.disputedLost.total;
@@ -118,15 +131,18 @@ router.get("/public/stats/billing", async (_req: Request, res: Response, next: N
         totalReturnedCents
       ).toString(),
       accounts_with_payment_method: accountsWithPaymentMethod,
+      total_paying_accounts: accounts.total,
       monthly_growth: mergeGrowth(
         [...monthlyRows, ...sumsToPaidRows(revolutPaid.byMonth)],
         returns.refunded.byMonth,
-        returns.disputedLost.byMonth
+        returns.disputedLost.byMonth,
+        accounts.byMonth
       ),
       weekly_growth: mergeGrowth(
         [...weeklyRows, ...sumsToPaidRows(revolutPaid.byWeek)],
         returns.refunded.byWeek,
-        returns.disputedLost.byWeek
+        returns.disputedLost.byWeek,
+        accounts.byWeek
       ),
     });
   } catch (err) {

@@ -67,6 +67,7 @@ describe("GET /public/stats/billing", () => {
       // Nothing returned: net is byte-identical to gross, no regression.
       total_net_cents: "12500",
       accounts_with_payment_method: 3,
+      total_paying_accounts: 0,
       monthly_growth: [
         {
           period: "2026-04-01",
@@ -75,6 +76,8 @@ describe("GET /public/stats/billing", () => {
           disputed_lost_cents: "0",
           returned_cents: "0",
           net_cents: "5000",
+          paying_accounts: 0,
+          first_time_paying_accounts: 0,
         },
         {
           period: "2026-05-01",
@@ -83,6 +86,8 @@ describe("GET /public/stats/billing", () => {
           disputed_lost_cents: "0",
           returned_cents: "0",
           net_cents: "7500",
+          paying_accounts: 0,
+          first_time_paying_accounts: 0,
         },
       ],
       weekly_growth: [
@@ -93,6 +98,8 @@ describe("GET /public/stats/billing", () => {
           disputed_lost_cents: "0",
           returned_cents: "0",
           net_cents: "2500",
+          paying_accounts: 0,
+          first_time_paying_accounts: 0,
         },
         {
           period: "2026-05-11",
@@ -101,6 +108,8 @@ describe("GET /public/stats/billing", () => {
           disputed_lost_cents: "0",
           returned_cents: "0",
           net_cents: "5000",
+          paying_accounts: 0,
+          first_time_paying_accounts: 0,
         },
       ],
     });
@@ -140,6 +149,8 @@ describe("GET /public/stats/billing", () => {
         disputed_lost_cents: "0",
         returned_cents: "0",
         net_cents: "5000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
       {
         period: "2026-05-01",
@@ -148,6 +159,8 @@ describe("GET /public/stats/billing", () => {
         disputed_lost_cents: "1000",
         returned_cents: "2500",
         net_cents: "5000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
     ]);
     expect(res.body.weekly_growth).toEqual([
@@ -158,6 +171,8 @@ describe("GET /public/stats/billing", () => {
         disputed_lost_cents: "1000",
         returned_cents: "1000",
         net_cents: "1500",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
       {
         period: "2026-05-11",
@@ -166,6 +181,8 @@ describe("GET /public/stats/billing", () => {
         disputed_lost_cents: "0",
         returned_cents: "1500",
         net_cents: "3500",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
     ]);
   });
@@ -195,6 +212,8 @@ describe("GET /public/stats/billing", () => {
         disputed_lost_cents: "0",
         returned_cents: "0",
         net_cents: "5000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
       {
         period: "2026-05-01",
@@ -203,6 +222,8 @@ describe("GET /public/stats/billing", () => {
         disputed_lost_cents: "0",
         returned_cents: "5000",
         net_cents: "-5000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
     ]);
   });
@@ -261,6 +282,8 @@ describe("GET /public/stats/billing", () => {
         disputed_lost_cents: "0",
         returned_cents: "1500",
         net_cents: "61000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
     ]);
     expect(res.body.weekly_growth).toEqual([
@@ -271,6 +294,8 @@ describe("GET /public/stats/billing", () => {
         disputed_lost_cents: "0",
         returned_cents: "1500",
         net_cents: "11000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
       {
         period: "2026-08-31",
@@ -279,6 +304,8 @@ describe("GET /public/stats/billing", () => {
         disputed_lost_cents: "0",
         returned_cents: "0",
         net_cents: "50000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
     ]);
   });
@@ -312,6 +339,8 @@ describe("GET /public/stats/billing", () => {
         disputed_lost_cents: "0",
         returned_cents: "0",
         net_cents: "50000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
       {
         period: "2026-09-01",
@@ -320,8 +349,115 @@ describe("GET /public/stats/billing", () => {
         disputed_lost_cents: "0",
         returned_cents: "20000",
         net_cents: "-20000",
+        paying_accounts: 0,
+        first_time_paying_accounts: 0,
       },
     ]);
+  });
+
+  /** A row of the grouped paying-account query, one per (grain, period). */
+  function accountRow(
+    grain: string,
+    period: string | null,
+    paying: number,
+    firstTime: number
+  ) {
+    return {
+      grain,
+      period: period === null ? null : new Date(`${period}T00:00:00Z`),
+      paying,
+      first_time: firstTime,
+    };
+  }
+
+  it("publishes how many accounts paid, and how many paid for the first time", async () => {
+    dbMock.queueSelect("payment_intents", [{ total: "62500" }]);
+    dbMock.queueSelect("customers", [{ count: "3" }]);
+    dbMock.queueSelect("payment_intents", [
+      { period: new Date("2026-07-01T00:00:00Z"), paid_cents: "12500" },
+      { period: new Date("2026-08-01T00:00:00Z"), paid_cents: "50000" },
+    ]);
+    dbMock.queueSelect("payment_intents", [
+      { period: new Date("2026-08-24T00:00:00Z"), paid_cents: "62500" },
+    ]);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", []);
+    // 5 accounts have ever paid; 3 of them paid for the first time in July,
+    // 2 more in August; the week of 2026-08-24 saw 4 of them, 2 new.
+    dbMock.queueExecute([
+      accountRow("total", null, 5, 5),
+      accountRow("month", "2026-07-01", 3, 3),
+      accountRow("month", "2026-08-01", 4, 2),
+      accountRow("week", "2026-08-24", 4, 2),
+    ]);
+
+    const res = await request(app).get("/public/stats/billing");
+
+    expect(res.status).toBe(200);
+    expect(res.body.total_paying_accounts).toBe(5);
+    // Who PAID is a different question from who has a Stripe card saved, and
+    // the two figures are published side by side without being conflated.
+    expect(res.body.accounts_with_payment_method).toBe(3);
+
+    expect(res.body.monthly_growth).toEqual([
+      {
+        period: "2026-07-01",
+        paid_cents: "12500",
+        refunded_cents: "0",
+        disputed_lost_cents: "0",
+        returned_cents: "0",
+        net_cents: "12500",
+        paying_accounts: 3,
+        first_time_paying_accounts: 3,
+      },
+      {
+        period: "2026-08-01",
+        paid_cents: "50000",
+        refunded_cents: "0",
+        disputed_lost_cents: "0",
+        returned_cents: "0",
+        net_cents: "50000",
+        paying_accounts: 4,
+        first_time_paying_accounts: 2,
+      },
+    ]);
+    expect(res.body.weekly_growth[0]).toMatchObject({
+      period: "2026-08-24",
+      paying_accounts: 4,
+      first_time_paying_accounts: 2,
+    });
+
+    // The AC the consumer checks: first-timers summed over every period are
+    // exactly the accounts that have ever paid, on either grain.
+    const firstTimers = (rows: { first_time_paying_accounts: number }[]) =>
+      rows.reduce((acc, r) => acc + r.first_time_paying_accounts, 0);
+    expect(firstTimers(res.body.monthly_growth)).toBe(5);
+    expect(firstTimers(res.body.weekly_growth)).toBe(res.body.total_paying_accounts - 3);
+  });
+
+  it("emits a bucket whose money has no attributable account with real zeros", async () => {
+    // A payment we cannot tie to an org still counts as MONEY — the totals are
+    // unchanged — but it is not an account we can name, so it counts as none.
+    dbMock.queueSelect("payment_intents", [{ total: "30000" }]);
+    dbMock.queueSelect("customers", [{ count: "0" }]);
+    dbMock.queueSelect("payment_intents", [
+      { period: new Date("2026-07-01T00:00:00Z"), paid_cents: "30000" },
+    ]);
+    dbMock.queueSelect("payment_intents", []);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", []);
+    dbMock.queueExecute([accountRow("total", null, 0, 0)]);
+
+    const res = await request(app).get("/public/stats/billing");
+
+    expect(res.status).toBe(200);
+    expect(res.body.total_paid_cents).toBe("30000");
+    expect(res.body.total_paying_accounts).toBe(0);
+    expect(res.body.monthly_growth[0]).toMatchObject({
+      paid_cents: "30000",
+      paying_accounts: 0,
+      first_time_paying_accounts: 0,
+    });
   });
 
   it("returns zero values when no data", async () => {
@@ -339,6 +475,7 @@ describe("GET /public/stats/billing", () => {
     expect(res.body.total_returned_cents).toBe("0");
     expect(res.body.total_net_cents).toBe("0");
     expect(res.body.accounts_with_payment_method).toBe(0);
+    expect(res.body.total_paying_accounts).toBe(0);
     expect(res.body.monthly_growth).toEqual([]);
     expect(res.body.weekly_growth).toEqual([]);
   });

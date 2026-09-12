@@ -395,6 +395,14 @@ const PublicStatsBucketSchema = z
       description:
         "paid_cents − returned_cents — report this as credited. NEGATIVE when a period's refunds exceed its payments: a return is attributed to the period it happened in, never back-dated to the payment it reverses, so an already-reported bucket is never rewritten.",
     }),
+    paying_accounts: z.number().int().nonnegative().openapi({
+      description:
+        "Distinct accounts with at least one SETTLED payment in this period, ACROSS EVERY ACQUIRER (a `succeeded` Stripe PaymentIntent or a `completed` Revolut `payment` order) — the same coverage and the same predicates as `paid_cents`, NOT the Stripe-only scope of `accounts_with_payment_method`. An account is the org, so an org that pays on both acquirers in the same period counts once. These are counts of DISTINCT accounts, so they do not sum to `total_paying_accounts` — an account that pays every month appears in every month.",
+    }),
+    first_time_paying_accounts: z.number().int().nonnegative().openapi({
+      description:
+        "Of `paying_accounts`, those with NO settled payment on ANY acquirer before this period — the numerator of a signup-to-paid conversion rate. Every account is first-time in exactly one period per grain, so summing this over all periods gives `total_paying_accounts`. A later refund never un-counts a payer: the payment happened, and the return lives in its own later period.",
+    }),
   })
   .openapi("PublicStatsBucket");
 
@@ -422,6 +430,10 @@ export const PublicStatsBillingResponseSchema = z
     accounts_with_payment_method: z.number().int().nonnegative().openapi({
       description:
         "STRIPE-ONLY, deliberately: mirrored customers carrying a default Stripe payment method. Revolut mirrors no saved payment methods, and answering for it means one live acquirer call per org, which does not belong behind an unauthenticated public route. Read this as a Stripe-card count, not as a platform-wide 'can be charged' count.",
+    }),
+    total_paying_accounts: z.number().int().nonnegative().openapi({
+      description:
+        "Distinct accounts that have EVER paid, ACROSS EVERY ACQUIRER — `succeeded` Stripe PaymentIntents plus `completed` Revolut `payment` orders. This is who PAID, which is a different question from `accounts_with_payment_method` (who has a Stripe card saved) and a different acquirer scope: a customer who pays through a wallet, or on the second acquirer, has no Stripe card and is counted here. An account is the ORG this service maps payments to, so an org holding several acquirer customers is one account, and an org that pays on both acquirers is one account. A payment we cannot attribute to an org is excluded from this count while its money still counts in every `*_cents` figure. Equals the sum of `first_time_paying_accounts` over all buckets, on either grain.",
     }),
     monthly_growth: z.array(PublicStatsBucketSchema),
     weekly_growth: z.array(PublicStatsBucketSchema),
@@ -1027,7 +1039,7 @@ registry.registerPath({
   path: "/public/stats/billing",
   summary: "Public aggregate billing stats (no auth, cross-org)",
   description:
-    "Aggregate money movement across all orgs AND EVERY ACQUIRER this service takes money through (Stripe and Revolut). Public endpoint — no X-API-Key, no identity headers. GROSS (`*paid_cents`) and NET (`*net_cents`) are both published and must not be conflated: report gross as revenue and net as credited. Money in is a `succeeded` Stripe PaymentIntent or a `completed` Revolut `payment` order; money out is a `succeeded` Stripe Refund, a `lost` Stripe Dispute, or a `completed` Revolut `refund` order attributed to the payment it reverses — the same settled-only rule every other read here applies, so a return that failed drops out on its own. Nothing is excluded for looking like a test.\n\nCURRENCIES ARE SUMMED TOGETHER into one scalar. That is deliberate: this is a single cross-org figure with no currency dimension, and it is why the totals here are NOT claimed to equal the sum of the per-org `amount_net` figures, which are per-currency. `accounts_with_payment_method` is Stripe-only — see its own description.\n\nBuckets carry the same gross/net distinction and sum to the all-time totals on both grains; a return is attributed to the period it happened in, so a period whose returns exceed its payments reports a negative `net_cents`.",
+    "Aggregate money movement across all orgs AND EVERY ACQUIRER this service takes money through (Stripe and Revolut). Public endpoint — no X-API-Key, no identity headers. GROSS (`*paid_cents`) and NET (`*net_cents`) are both published and must not be conflated: report gross as revenue and net as credited. Money in is a `succeeded` Stripe PaymentIntent or a `completed` Revolut `payment` order; money out is a `succeeded` Stripe Refund, a `lost` Stripe Dispute, or a `completed` Revolut `refund` order attributed to the payment it reverses — the same settled-only rule every other read here applies, so a return that failed drops out on its own. Nothing is excluded for looking like a test.\n\nCURRENCIES ARE SUMMED TOGETHER into one scalar. That is deliberate: this is a single cross-org figure with no currency dimension, and it is why the totals here are NOT claimed to equal the sum of the per-org `amount_net` figures, which are per-currency. `accounts_with_payment_method` is Stripe-only — see its own description.\n\nBuckets carry the same gross/net distinction and sum to the all-time totals on both grains; a return is attributed to the period it happened in, so a period whose returns exceed its payments reports a negative `net_cents`.\n\nHOW MANY ACCOUNTS PAID rides the same buckets as how much they paid: `paying_accounts` (distinct accounts with a settled payment in the period) and `first_time_paying_accounts` (those with no earlier settled payment on ANY acquirer), plus `total_paying_accounts` for the platform. ACQUIRER COVERAGE OF THE COUNTS IS BOTH ACQUIRERS, identical to the money and NOT the Stripe-only scope of `accounts_with_payment_method` — do not assume they share a scope. They count who PAID, never who has a card on file, so a wallet payment and a second-acquirer payment are both counted. An account is the ORG, so an org paying on both acquirers is one account. A refund never un-counts a payer. A payment with no resolvable org is excluded from the counts but still counted in the money.",
   tags: ["Public"],
   responses: {
     200: {
