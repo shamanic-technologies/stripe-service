@@ -395,19 +395,34 @@ function accountRow(
     period: period === null ? null : new Date(`${period}T00:00:00Z`),
     paying,
     first_time: firstTime,
+    first_paid_unix: null,
+  };
+}
+
+/** A row of the `first` arm: one account's first settled payment. */
+function firstRow(iso: string): PayingAccountRow {
+  return {
+    grain: "first",
+    period: null,
+    paying: null,
+    first_time: null,
+    first_paid_unix: Math.floor(new Date(iso).getTime() / 1000),
   };
 }
 
 describe("foldPayingAccountRows", () => {
   it("splits the three grain arms into the total and both grains", () => {
     const out = foldPayingAccountRows([
-      accountRow("total", null, 33, 33),
+      accountRow("total", null, 3, 3),
       accountRow("month", "2026-08-01", 9, 2),
       accountRow("week", "2026-08-24", 4, 1),
       accountRow("week", "2026-08-31", 5, 0),
+      firstRow("2026-08-25T00:00:00Z"),
+      firstRow("2026-08-01T00:00:00Z"),
+      firstRow("2026-08-31T12:00:00Z"),
     ]);
 
-    expect(out.total).toBe(33);
+    expect(out.total).toBe(3);
     expect(out.byMonth.get("2026-08-01")).toEqual({ paying: 9, firstTime: 2 });
     expect(out.byWeek.get("2026-08-24")).toEqual({ paying: 4, firstTime: 1 });
     expect(out.byWeek.get("2026-08-31")).toEqual({ paying: 5, firstTime: 0 });
@@ -419,9 +434,51 @@ describe("foldPayingAccountRows", () => {
     const out = foldPayingAccountRows([
       accountRow("total", null, 3, 3),
       accountRow("month", "2026-08-01", 2, 1),
+      firstRow("2026-08-01T00:00:00Z"),
+      firstRow("2026-08-02T00:00:00Z"),
+      firstRow("2026-08-03T00:00:00Z"),
     ]);
 
     expect(out.total).toBe(3);
+  });
+
+  it("returns every account's first payment, ascending, one per account", () => {
+    // The rolling-window answer: calendar buckets cannot produce it, so the
+    // instants themselves are what a consumer counts inside its own window.
+    const out = foldPayingAccountRows([
+      accountRow("total", null, 3, 3),
+      firstRow("2026-09-11T15:44:07Z"),
+      firstRow("2026-06-17T06:38:29Z"),
+      firstRow("2026-08-30T19:31:38Z"),
+    ]);
+
+    expect(out.firstPaymentTimes).toEqual([
+      Date.parse("2026-06-17T06:38:29Z") / 1000,
+      Date.parse("2026-08-30T19:31:38Z") / 1000,
+      Date.parse("2026-09-11T15:44:07Z") / 1000,
+    ]);
+    expect(out.firstPaymentTimes.length).toBe(out.total);
+  });
+
+  it("throws rather than publishing a first-payment row with no instant", () => {
+    expect(() =>
+      foldPayingAccountRows([
+        accountRow("total", null, 1, 1),
+        { ...firstRow("2026-08-01T00:00:00Z"), first_paid_unix: null },
+      ])
+    ).toThrow(/no instant/);
+  });
+
+  it("throws when the instants and the total disagree", () => {
+    // Only reachable if a later edit changes one arm's predicate and not the
+    // other's — which is exactly the drift that would make a consumer's window
+    // count and the platform total tell two different stories.
+    expect(() =>
+      foldPayingAccountRows([
+        accountRow("total", null, 4, 4),
+        firstRow("2026-08-01T00:00:00Z"),
+      ])
+    ).toThrow(/arms disagree/);
   });
 
   it("throws rather than dropping a bucket with no period", () => {
@@ -438,17 +495,26 @@ describe("foldPayingAccountRows", () => {
 
   it("reads counts that arrive as strings", () => {
     const out = foldPayingAccountRows([
-      { grain: "total", period: null, paying: "7", first_time: "7" },
+      { grain: "total", period: null, paying: "1", first_time: "1" },
       {
         grain: "week",
         period: "2026-09-07T00:00:00.000Z",
         paying: "2",
         first_time: "1",
+        first_paid_unix: null,
+      },
+      {
+        grain: "first",
+        period: null,
+        paying: null,
+        first_time: null,
+        first_paid_unix: "1757260800",
       },
     ]);
 
-    expect(out.total).toBe(7);
+    expect(out.total).toBe(1);
     expect(out.byWeek.get("2026-09-07")).toEqual({ paying: 2, firstTime: 1 });
+    expect(out.firstPaymentTimes).toEqual([1757260800]);
   });
 });
 
@@ -459,14 +525,16 @@ describe("payingAccounts", () => {
 
   it("counts who PAID across both acquirers, excluding unattributable rows", async () => {
     dbMock.queueExecute([
-      accountRow("total", null, 33, 33),
+      accountRow("total", null, 2, 2),
       accountRow("month", "2026-08-01", 9, 2),
       accountRow("week", "2026-08-24", 4, 1),
+      firstRow("2026-08-24T10:00:00Z"),
+      firstRow("2026-08-01T09:00:00Z"),
     ]);
 
     const out = await payingAccounts();
 
-    expect(out.total).toBe(33);
+    expect(out.total).toBe(2);
     expect(out.byWeek.get("2026-08-24")).toEqual({ paying: 4, firstTime: 1 });
 
     const query = compiled(dbMock.db.execute.mock.calls[0][0]);
@@ -483,6 +551,13 @@ describe("payingAccounts", () => {
     // Both grains come off the SAME settled set as each other.
     expect(query.sql).toContain("date_trunc('month'");
     expect(query.sql).toContain("date_trunc('week'");
+    // And the rolling-window arm comes off the same `first_paid` set as the
+    // total, in unix seconds, so a window count can never contradict it.
+    expect(query.sql).toContain("EXTRACT(EPOCH FROM f.first_paid_at)");
+    expect(out.firstPaymentTimes).toEqual([
+      Date.parse("2026-08-01T09:00:00Z") / 1000,
+      Date.parse("2026-08-24T10:00:00Z") / 1000,
+    ]);
   });
 });
 

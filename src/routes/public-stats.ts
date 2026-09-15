@@ -52,6 +52,18 @@ const router = Router();
  * cannot attribute to an org is excluded from the counts while its money still
  * counts in every figure here.
  *
+ * WHEN each account became a customer is published as `first_payment_times` —
+ * every account's first settled payment, unix seconds, ascending. The buckets
+ * above are calendar months and weeks, and a consumer asking "how many
+ * accounts became customers in the LAST 30 DAYS" is asking about a window
+ * anchored on an instant that aligns to neither: summing whole buckets is
+ * wrong by however much of the straddling bucket falls outside the window, and
+ * wrong by an amount that moves with where the edge happens to land. So the
+ * instants themselves are published and the consumer counts the ones inside
+ * its own window — exact for ANY window, with this service knowing none of
+ * them. Same identity and same acquirer coverage as every count above, so
+ * `first_payment_times.length === total_paying_accounts`.
+ *
  * ⚠️ `accounts_with_payment_method` does NOT share that coverage — it is
  * STRIPE-ONLY and stays that way. It counts
  * mirrored customers carrying a default Stripe payment method. Revolut exposes
@@ -132,6 +144,7 @@ router.get("/public/stats/billing", async (_req: Request, res: Response, next: N
       ).toString(),
       accounts_with_payment_method: accountsWithPaymentMethod,
       total_paying_accounts: accounts.total,
+      first_payment_times: accounts.firstPaymentTimes,
       monthly_growth: mergeGrowth(
         [...monthlyRows, ...sumsToPaidRows(revolutPaid.byMonth)],
         returns.refunded.byMonth,
