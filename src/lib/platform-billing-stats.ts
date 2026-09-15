@@ -420,14 +420,34 @@ export type PayingAccounts = {
   total: number;
   byMonth: Map<string, AccountBucket>;
   byWeek: Map<string, AccountBucket>;
+  /**
+   * Every account's FIRST settled payment, unix seconds, ascending — one entry
+   * per account that has ever paid, so `length === total`.
+   *
+   * This is the ROLLING-WINDOW answer the calendar buckets structurally cannot
+   * give. A consumer asking "how many accounts became customers in the last 30
+   * days" is asking about an instant-anchored window that aligns to no month
+   * and no week, and summing whole buckets straddling its edge is wrong by
+   * however much of that bucket falls outside — measured against production at
+   * 90 days it read 17 where the truth was 25. Publishing the instants
+   * themselves lets any consumer answer ANY window exactly, and lets this
+   * service stay ignorant of which windows exist.
+   *
+   * It is the count that is summable, and only that one. `paying` is distinct
+   * per period and cannot be added across periods (an account paying in two
+   * months is in both), so there is no finer grain of it worth publishing.
+   */
+  firstPaymentTimes: number[];
 };
 
-/** One row of the grouped counts query. `grain` discriminates the three arms. */
+/** One row of the grouped counts query. `grain` discriminates the four arms. */
 export type PayingAccountRow = {
   grain: string;
   period: Date | string | null;
   paying: number | string | null;
   first_time: number | string | null;
+  /** Set only on the `first` arm: one account's first settled payment, unix seconds. */
+  first_paid_unix: number | string | null;
 };
 
 export function emptyAccountBucket(): AccountBucket {
@@ -447,6 +467,7 @@ export function foldPayingAccountRows(rows: PayingAccountRow[]): PayingAccounts 
     total: 0,
     byMonth: new Map(),
     byWeek: new Map(),
+    firstPaymentTimes: [],
   };
 
   for (const row of rows) {
@@ -457,6 +478,17 @@ export function foldPayingAccountRows(rows: PayingAccountRow[]): PayingAccounts 
 
     if (row.grain === "total") {
       accounts.total = bucket.paying;
+      continue;
+    }
+
+    if (row.grain === "first") {
+      // Every account in `first_paid` has a first payment by construction, so
+      // a null here means the query changed under us. Fail loud rather than
+      // publishing a list that silently under-counts every window read off it.
+      if (row.first_paid_unix == null) {
+        throw new Error("paying-account row has grain 'first' and no instant");
+      }
+      accounts.firstPaymentTimes.push(Number(row.first_paid_unix));
       continue;
     }
 
@@ -475,6 +507,18 @@ export function foldPayingAccountRows(rows: PayingAccountRow[]): PayingAccounts 
     else throw new Error(`paying-account row has unknown grain '${row.grain}'`);
   }
 
+  accounts.firstPaymentTimes.sort((a, b) => a - b);
+
+  // Both figures come off the same `first_paid` set, so they can only disagree
+  // if a later edit changes one arm's predicate and not the other's — which is
+  // exactly the drift that would make a consumer's window count and the
+  // platform total tell two different stories. Fail loud here instead.
+  if (accounts.firstPaymentTimes.length !== accounts.total) {
+    throw new Error(
+      `paying-account arms disagree: ${accounts.firstPaymentTimes.length} first-payment instants for ${accounts.total} accounts`
+    );
+  }
+
   return accounts;
 }
 
@@ -491,6 +535,13 @@ export function foldPayingAccountRows(rows: PayingAccountRow[]): PayingAccounts 
  * Both grains are computed from the SAME `settled` set as the other, and from
  * the same rows the money queries read, so a bucket can never count an account
  * whose payment is absent from `paid_cents`.
+ *
+ * The fourth arm emits one row per account carrying that same earliest instant
+ * in unix seconds. It is the only shape that answers a ROLLING window exactly:
+ * a 30- or 90-day window is anchored on an instant, aligns to neither calendar
+ * grain, and no sum of whole buckets can reproduce it. Publishing the instants
+ * keeps the arithmetic with the consumer that owns the window, and keeps this
+ * service from having to know which windows anyone draws.
  */
 export async function payingAccounts(): Promise<PayingAccounts> {
   const result = await db.execute(sql`
@@ -518,12 +569,14 @@ export async function payingAccounts(): Promise<PayingAccounts> {
     SELECT 'total' AS grain,
            NULL::timestamptz AS period,
            (SELECT COUNT(*) FROM first_paid)::int AS paying,
-           (SELECT COUNT(*) FROM first_paid)::int AS first_time
+           (SELECT COUNT(*) FROM first_paid)::int AS first_time,
+           NULL::bigint AS first_paid_unix
     UNION ALL
     SELECT 'month',
            date_trunc('month', s.paid_at),
            COUNT(DISTINCT s.account_id)::int,
-           COUNT(DISTINCT s.account_id) FILTER (WHERE s.paid_at = f.first_paid_at)::int
+           COUNT(DISTINCT s.account_id) FILTER (WHERE s.paid_at = f.first_paid_at)::int,
+           NULL::bigint
       FROM settled s
       JOIN first_paid f ON f.account_id = s.account_id
      GROUP BY 2
@@ -531,10 +584,18 @@ export async function payingAccounts(): Promise<PayingAccounts> {
     SELECT 'week',
            date_trunc('week', s.paid_at),
            COUNT(DISTINCT s.account_id)::int,
-           COUNT(DISTINCT s.account_id) FILTER (WHERE s.paid_at = f.first_paid_at)::int
+           COUNT(DISTINCT s.account_id) FILTER (WHERE s.paid_at = f.first_paid_at)::int,
+           NULL::bigint
       FROM settled s
       JOIN first_paid f ON f.account_id = s.account_id
      GROUP BY 2
+    UNION ALL
+    SELECT 'first',
+           NULL::timestamptz,
+           NULL::int,
+           NULL::int,
+           FLOOR(EXTRACT(EPOCH FROM f.first_paid_at))::bigint
+      FROM first_paid f
   `);
 
   return foldPayingAccountRows(result.rows as unknown as PayingAccountRow[]);
