@@ -68,6 +68,7 @@ describe("GET /public/stats/billing", () => {
       total_net_cents: "12500",
       accounts_with_payment_method: 3,
       total_paying_accounts: 0,
+      first_payment_times: [],
       monthly_growth: [
         {
           period: "2026-04-01",
@@ -367,6 +368,18 @@ describe("GET /public/stats/billing", () => {
       period: period === null ? null : new Date(`${period}T00:00:00Z`),
       paying,
       first_time: firstTime,
+      first_paid_unix: null,
+    };
+  }
+
+  /** A row of the `first` arm: one account's first settled payment. */
+  function firstRow(iso: string) {
+    return {
+      grain: "first",
+      period: null,
+      paying: null,
+      first_time: null,
+      first_paid_unix: Math.floor(new Date(iso).getTime() / 1000),
     };
   }
 
@@ -389,6 +402,13 @@ describe("GET /public/stats/billing", () => {
       accountRow("month", "2026-07-01", 3, 3),
       accountRow("month", "2026-08-01", 4, 2),
       accountRow("week", "2026-08-24", 4, 2),
+      // One row per account, carrying the instant it became a customer. The
+      // arm is emitted unordered on purpose — the response is what sorts.
+      firstRow("2026-08-26T09:00:00Z"),
+      firstRow("2026-07-02T10:15:00Z"),
+      firstRow("2026-07-19T23:59:59Z"),
+      firstRow("2026-08-24T00:00:01Z"),
+      firstRow("2026-07-08T12:00:00Z"),
     ]);
 
     const res = await request(app).get("/public/stats/billing");
@@ -433,6 +453,25 @@ describe("GET /public/stats/billing", () => {
       rows.reduce((acc, r) => acc + r.first_time_paying_accounts, 0);
     expect(firstTimers(res.body.monthly_growth)).toBe(5);
     expect(firstTimers(res.body.weekly_growth)).toBe(res.body.total_paying_accounts - 3);
+
+    // The rolling-window AC: one entry per account that has ever paid, unix
+    // seconds, ascending — so counting the whole array reproduces the platform
+    // total the consumer reads right beside it.
+    const times: number[] = res.body.first_payment_times;
+    expect(times).toEqual([
+      Date.parse("2026-07-02T10:15:00Z") / 1000,
+      Date.parse("2026-07-08T12:00:00Z") / 1000,
+      Date.parse("2026-07-19T23:59:59Z") / 1000,
+      Date.parse("2026-08-24T00:00:01Z") / 1000,
+      Date.parse("2026-08-26T09:00:00Z") / 1000,
+    ]);
+    expect(times.length).toBe(res.body.total_paying_accounts);
+
+    // A rolling window aligned to NO calendar bucket is answered exactly: the
+    // 30 days before 2026-08-31 hold the two August first-payments and split
+    // the month of July, which no sum of whole buckets can reproduce.
+    const cutoff = Date.parse("2026-08-31T00:00:00Z") / 1000 - 30 * 86400;
+    expect(times.filter((t) => t >= cutoff).length).toBe(2);
   });
 
   it("emits a bucket whose money has no attributable account with real zeros", async () => {
@@ -476,6 +515,7 @@ describe("GET /public/stats/billing", () => {
     expect(res.body.total_net_cents).toBe("0");
     expect(res.body.accounts_with_payment_method).toBe(0);
     expect(res.body.total_paying_accounts).toBe(0);
+    expect(res.body.first_payment_times).toEqual([]);
     expect(res.body.monthly_growth).toEqual([]);
     expect(res.body.weekly_growth).toEqual([]);
   });
