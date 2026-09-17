@@ -26,7 +26,11 @@ vi.mock("../../src/lib/revolut-processor", () => ({
 
 import {
   chargeViaRevolut,
+  chargeViaStripeInvoice,
   chargeResultFromInvoice,
+  chargeResultFromDecline,
+  cardDeclineFrom,
+  CardDeclined,
   resolveStripeChargeablePaymentMethod,
   NoChargeablePaymentMethod,
 } from "../../src/lib/charge-org";
@@ -232,5 +236,121 @@ describe("resolveStripeChargeablePaymentMethod", () => {
     await expect(
       resolveStripeChargeablePaymentMethod(stripe, "org-1", "cus_x")
     ).rejects.toBeInstanceOf(NoChargeablePaymentMethod);
+  });
+});
+
+// A refused card and an acquirer we could not reach are different answers, and
+// the whole defect this covers was reporting the first as the second. The
+// production incident these are written from (2026-09-17): Stripe refused an
+// off-session invoice payment with `type: "card_error"`, `code:
+// "payment_intent_payment_attempt_failed"`, `decline_code: "generic_decline"`
+// on a `link` method — and billing-service received a 502 naming OUR
+// infrastructure, so the first diagnosis was an outage that never happened.
+describe("classifying an acquirer's refusal", () => {
+  const stripeThatRefusesPayment = (err: unknown) => ({
+    invoices: {
+      create: vi.fn().mockResolvedValue({ id: "in_1", status: "draft" }),
+      finalizeInvoice: vi.fn().mockResolvedValue({ id: "in_1", status: "open" }),
+      pay: vi.fn().mockRejectedValue(err),
+    },
+    invoiceItems: { create: vi.fn().mockResolvedValue({ id: "ii_1" }) },
+    paymentIntents: { update: vi.fn() },
+  });
+
+  const STRIPE_ARGS = {
+    orgId: "org-1",
+    customerId: "cus_1",
+    amount: 50000,
+    currency: "usd",
+    description: "Distribute credit top-up",
+    idempotencyKey: "topup_1",
+  };
+
+  it("reads the real production refusal as a decline, reason and all", () => {
+    const declined = cardDeclineFrom(
+      {
+        type: "StripeCardError",
+        rawType: "card_error",
+        code: "payment_intent_payment_attempt_failed",
+        decline_code: "generic_decline",
+        message: "The payment failed.",
+      },
+      "in_1"
+    );
+    expect(declined).toBeInstanceOf(CardDeclined);
+    // The BANK's reason wins over Stripe's generic attempt-failed code: it is
+    // what decides whether the customer is told "insufficient funds" or
+    // "expired card".
+    expect(declined?.toFailure()).toEqual({
+      type: "card_declined",
+      code: "generic_decline",
+      message: "The payment failed.",
+    });
+  });
+
+  it("falls back to `code` when the bank named no decline reason", () => {
+    const declined = cardDeclineFrom(
+      { type: "card_error", code: "expired_card", message: "Your card has expired." },
+      null
+    );
+    expect(declined?.code).toBe("expired_card");
+  });
+
+  it("is NOT a decline when the acquirer could not be reached", () => {
+    // The regression this file exists to stop, read from the other side: a
+    // connection error must stay an error, never be reported as a refused card.
+    expect(cardDeclineFrom(new Error("fetch failed"), null)).toBeNull();
+    expect(
+      cardDeclineFrom({ type: "StripeConnectionError", message: "connection" }, null)
+    ).toBeNull();
+    expect(cardDeclineFrom({ type: "StripeAPIError" }, null)).toBeNull();
+    expect(cardDeclineFrom(null, null)).toBeNull();
+  });
+
+  it("throws a declined card as CardDeclined, never as a bare acquirer error", async () => {
+    const stripe = stripeThatRefusesPayment({
+      type: "StripeCardError",
+      rawType: "card_error",
+      code: "card_declined",
+      decline_code: "insufficient_funds",
+      message: "Your card has insufficient funds.",
+    });
+
+    await expect(
+      chargeViaStripeInvoice({ ...STRIPE_ARGS, stripe: stripe as never })
+    ).rejects.toBeInstanceOf(CardDeclined);
+  });
+
+  it("keeps an unreachable acquirer an unreachable acquirer", async () => {
+    const boom = new Error("connection error");
+    const stripe = stripeThatRefusesPayment(boom);
+
+    await expect(
+      chargeViaStripeInvoice({ ...STRIPE_ARGS, stripe: stripe as never })
+    ).rejects.toBe(boom);
+  });
+
+  it("shapes a refusal as a completed request describing a failed charge", () => {
+    const declined = new CardDeclined({
+      code: "insufficient_funds",
+      declineMessage: "Your card has insufficient funds.",
+      reference: "in_7",
+    });
+
+    expect(chargeResultFromDecline("org-1", "stripe", declined, 50000, "usd")).toEqual({
+      object: "charge_result",
+      org_id: "org-1",
+      acquirer: "stripe",
+      reference: "in_7",
+      status: "failed",
+      amount: 50000,
+      currency: "usd",
+      hosted_document_url: null,
+      failure: {
+        type: "card_declined",
+        code: "insufficient_funds",
+        message: "Your card has insufficient funds.",
+      },
+    });
   });
 });
