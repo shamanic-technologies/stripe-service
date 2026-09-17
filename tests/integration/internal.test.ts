@@ -886,6 +886,52 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
     expect(stripeMock.invoices.pay).toHaveBeenCalled();
   });
 
+  it("names a REFUSED card as such (402 card_declined), apart from an acquirer we could not reach", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_1", status: "draft" });
+    stripeMock.invoiceItems.create.mockResolvedValueOnce({ id: "ii_1" });
+    stripeMock.invoices.finalizeInvoice.mockResolvedValueOnce({ id: "in_1", status: "open" });
+    stripeMock.invoices.pay.mockRejectedValueOnce({
+      type: "StripeCardError",
+      rawType: "card_error",
+      code: "card_declined",
+      decline_code: "insufficient_funds",
+      message: "Your card has insufficient funds.",
+    });
+
+    const res = await request(app)
+      .post(`/internal/invoices/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_declined_named" })
+      .send({ amount: 5000, currency: "usd", description: "Top-up" });
+
+    // The regression guard: a refused card is NOT `acquirer_unavailable`. The
+    // customer has to act, and the caller has to be able to say which.
+    expect(res.status).toBe(402);
+    expect(res.body.code).toBe("card_declined");
+    expect(res.body.decline_code).toBe("insufficient_funds");
+    expect(res.body.reference).toBe("in_1");
+  });
+
+  it("still reports an acquirer we could not reach as acquirer_unavailable", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_1", status: "draft" });
+    stripeMock.invoiceItems.create.mockResolvedValueOnce({ id: "ii_1" });
+    stripeMock.invoices.finalizeInvoice.mockResolvedValueOnce({ id: "in_1", status: "open" });
+    stripeMock.invoices.pay.mockRejectedValueOnce(
+      Object.assign(new Error("An error occurred with our connection to Stripe."), {
+        type: "StripeConnectionError",
+      })
+    );
+
+    const res = await request(app)
+      .post(`/internal/invoices/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_unreachable_inv" })
+      .send({ amount: 5000, currency: "usd", description: "Top-up" });
+
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe("acquirer_unavailable");
+  });
+
   it("fails loud when the provenance stamp fails — never silently drops it", async () => {
     dbMock.queueSelect("customers", [{ id: "cus_x" }]);
     stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_1", status: "draft" });
@@ -1280,6 +1326,102 @@ describe("POST /internal/charges/by-org/:orgId (vendor-neutral charge)", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/no chargeable saved payment method/i);
     expect(stripeMock.invoices.create).not.toHaveBeenCalled();
+  });
+
+  // The production incident, 2026-09-17: Stripe refused an off-session invoice
+  // payment (`type: "card_error"`, `decline_code: "generic_decline"`, on a
+  // `link` method) and billing-service received a 502 whose body named OUR
+  // acquirer as unavailable. Two costs, both real: an engineer went looking for
+  // an outage that never happened, and the caller — which mails the customer
+  // when a reload fails — could not tell "your card was declined" (the
+  // customer must act) from "our payments infrastructure is down" (say
+  // nothing, retry later).
+  function queueDeclinedStripeInvoice(err: Record<string, unknown>) {
+    queueSavedCard();
+    stripeMock.invoices.create.mockResolvedValueOnce({ id: "in_d", status: "draft" });
+    stripeMock.invoiceItems.create.mockResolvedValueOnce({ id: "ii_d" });
+    stripeMock.invoices.finalizeInvoice.mockResolvedValueOnce({ id: "in_d", status: "open" });
+    stripeMock.invoices.pay.mockRejectedValueOnce(err);
+  }
+
+  it("reports a REFUSED card as a completed request describing a failed charge, never as an acquirer problem", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    queueDeclinedStripeInvoice({
+      type: "StripeCardError",
+      rawType: "card_error",
+      code: "payment_intent_payment_attempt_failed",
+      decline_code: "generic_decline",
+      message: "The payment failed.",
+    });
+
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_decline" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    // THE regression guard: a decline must never come back as 502 /
+    // acquirer_unavailable again.
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBeUndefined();
+    expect(res.body).toEqual({
+      object: "charge_result",
+      org_id: TEST_ORG_ID,
+      acquirer: "stripe",
+      reference: "in_d",
+      status: "failed",
+      amount: 5000,
+      currency: "usd",
+      hosted_document_url: null,
+      failure: {
+        type: "card_declined",
+        // The reason reaches the caller: "insufficient funds" and "card
+        // expired" are different customer instructions.
+        code: "generic_decline",
+        message: "The payment failed.",
+      },
+    });
+  });
+
+  it("still reports an acquirer we could not reach as an acquirer problem", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    queueDeclinedStripeInvoice(
+      Object.assign(new Error("An error occurred with our connection to Stripe."), {
+        type: "StripeConnectionError",
+      })
+    );
+
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_unreachable" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe("acquirer_unavailable");
+    expect(res.body.failure).toBeUndefined();
+  });
+
+  it("leaves a SUCCESSFUL charge byte-identical — no failure key at all", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    queueHappyStripeInvoice();
+
+    const res = await request(app)
+      .post(`/internal/charges/by-org/${TEST_ORG_ID}`)
+      .set({ "X-API-Key": TEST_API_KEY, "Idempotency-Key": "topup_ok_shape" })
+      .send({ amount: 5000, currency: "usd", description: "Auto top-up" });
+
+    expect(Object.keys(res.body).sort()).toEqual([
+      "acquirer",
+      "amount",
+      "currency",
+      "hosted_document_url",
+      "object",
+      "org_id",
+      "reference",
+      "status",
+    ]);
   });
 
   it("rejects with 401 when X-API-Key is missing", async () => {

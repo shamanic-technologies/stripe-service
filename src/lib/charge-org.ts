@@ -49,6 +49,132 @@ export interface ChargeResult {
    * than be handed a fabricated one.
    */
   hosted_document_url: string | null;
+  /**
+   * Why the charge failed, when the acquirer gave a DEFINITIVE answer: it
+   * reached the customer's card and the card was refused.
+   *
+   * Present ONLY on a refusal, so a successful charge is byte-identical to what
+   * it has always been. Absent on a failure means the acquirer never said why.
+   *
+   * A refusal is not a failure of ours, and the two must never be confused: a
+   * problem on our side or the acquirer's is a 5xx (`acquirer_unavailable`),
+   * never a `charge_result`. That is the whole distinction a caller needs —
+   * a refusal means the CUSTOMER has to act (new card, call their bank), an
+   * unavailable acquirer means nobody's card is at fault and the right move is
+   * to retry later without telling the customer anything.
+   */
+  failure?: ChargeFailure;
+}
+
+/** The acquirer's own account of why it refused the card. */
+export interface ChargeFailure {
+  /**
+   * Always `card_declined` today — the acquirer reached the card and refused
+   * it. A named type rather than "the failure object is present" so a caller
+   * branches on a value, and so a second definitive refusal class can be added
+   * later without changing what this one means.
+   */
+  type: "card_declined";
+  /**
+   * The acquirer's own reason code — `insufficient_funds`, `expired_card`,
+   * `generic_decline`. This is the field that decides what a customer is told,
+   * because "insufficient funds" and "card expired" are different instructions.
+   * Null when the acquirer refused without naming a reason.
+   */
+  code: string | null;
+  /**
+   * The acquirer's own message for that refusal. Diagnostic: a caller writes
+   * its own customer-facing copy from `code`, it does not forward this.
+   */
+  message: string | null;
+}
+
+/**
+ * A charge the acquirer REFUSED. Distinct from every other error this file can
+ * throw, because it is an ANSWER: the acquirer was reachable, it read the card,
+ * and it said no. Nothing is retryable about it without the customer acting.
+ *
+ * Classified at the call site, never in the error handler — a Stripe SDK error
+ * is a `StripeCardError` here and an unreachable-acquirer error two lines away,
+ * and only the code that made the call knows which question was being asked.
+ */
+export class CardDeclined extends Error {
+  readonly code: string | null;
+  readonly declineMessage: string | null;
+  /** The acquirer object to quote back about this attempt, when we have one. */
+  readonly reference: string | null;
+
+  constructor(params: {
+    code: string | null;
+    declineMessage: string | null;
+    reference: string | null;
+  }) {
+    super(
+      `Card declined by the acquirer${params.code ? ` (${params.code})` : ""}`
+    );
+    this.name = "CardDeclined";
+    this.code = params.code;
+    this.declineMessage = params.declineMessage;
+    this.reference = params.reference;
+  }
+
+  /** The caller-facing account of the refusal. Never carries the vendor error. */
+  toFailure(): ChargeFailure {
+    return {
+      type: "card_declined",
+      code: this.code,
+      message: this.declineMessage,
+    };
+  }
+}
+
+/**
+ * Read a thrown acquirer error as a card refusal, or null when it is not one.
+ *
+ * Stripe states this on the error itself: an off-session payment the card
+ * refuses throws with `type: "StripeCardError"` (raw type `card_error`),
+ * carrying `decline_code` when the bank named a reason and `code` otherwise.
+ * Production, 2026-09-17: a real refusal on this path arrived as
+ * `code: "payment_intent_payment_attempt_failed"`, `decline_code:
+ * "generic_decline"`, `type: "card_error"` — so the reason is `decline_code`
+ * FIRST and `code` only as a fallback, and the discriminator is the TYPE,
+ * because `code` is not always a decline word.
+ *
+ * Read by SHAPE rather than by `instanceof Stripe.errors.StripeCardError`: the
+ * SDK is mocked in tests and constructed per request, so an identity check
+ * answers false for the very error it exists to recognise.
+ */
+export function cardDeclineFrom(
+  err: unknown,
+  reference: string | null
+): CardDeclined | null {
+  const e = err as
+    | {
+        type?: unknown;
+        rawType?: unknown;
+        code?: unknown;
+        decline_code?: unknown;
+        message?: unknown;
+        raw?: { type?: unknown; code?: unknown; decline_code?: unknown; message?: unknown };
+      }
+    | null
+    | undefined;
+  if (!e) return null;
+  const type = e.type ?? e.rawType ?? e.raw?.type;
+  const isCardError =
+    type === "StripeCardError" || type === "card_error" || e.rawType === "card_error";
+  if (!isCardError) return null;
+
+  const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+  return new CardDeclined({
+    code:
+      str(e.decline_code) ??
+      str(e.raw?.decline_code) ??
+      str(e.code) ??
+      str(e.raw?.code),
+    declineMessage: str(e.message) ?? str(e.raw?.message),
+    reference,
+  });
 }
 
 export class NoChargeablePaymentMethod extends Error {
@@ -263,15 +389,30 @@ export async function chargeViaStripeInvoice(params: {
   //    ["payments"]` because the paid invoice's `payments` list is the ONLY
   //    reference to the PaymentIntent Stripe creates for it — on this API
   //    version the PaymentIntent has no `invoice` field at all.
-  const paid = await stripe.invoices.pay(
-    invoiceId,
-    {
-      off_session: true,
-      expand: ["payments"],
-      ...(payment_method ? { payment_method } : {}),
-    },
-    { idempotencyKey: `${idempotencyKey}:pay` }
-  );
+  //    A refusal here is an ANSWER, not a failure to ask, so it is classified
+  //    at this call site into `CardDeclined`. Left unclassified it reaches the
+  //    error handler, which cannot tell a refused card from an unreachable
+  //    acquirer and reports the whole class as `acquirer_unavailable` — which
+  //    is what sent a real decline back to billing-service as a 502 naming our
+  //    own infrastructure (prod, 2026-09-17, `generic_decline` on a Link
+  //    method). The invoice id rides along so the caller still has an object to
+  //    quote back about the attempt.
+  let paid: Stripe.Invoice;
+  try {
+    paid = await stripe.invoices.pay(
+      invoiceId,
+      {
+        off_session: true,
+        expand: ["payments"],
+        ...(payment_method ? { payment_method } : {}),
+      },
+      { idempotencyKey: `${idempotencyKey}:pay` }
+    );
+  } catch (err) {
+    const declined = cardDeclineFrom(err, invoiceId);
+    if (declined) throw declined;
+    throw err;
+  }
   params.onPaid?.(paid);
 
   // 5. Carry the caller's provenance onto the PaymentIntent, then mirror it.
@@ -378,6 +519,36 @@ export function chargeResultFromInvoice(
     amount,
     currency,
     hosted_document_url: invoice.hosted_invoice_url ?? null,
+  };
+}
+
+/**
+ * Shape a refusal into the same neutral answer a completed charge gets.
+ *
+ * A refused card is a COMPLETED request describing a FAILED charge — the same
+ * house style the Revolut side already uses for an order that did not complete,
+ * and the reason a caller can tell it apart from an acquirer we could not reach
+ * (which is a 5xx and never a `charge_result`) without reading a log line.
+ */
+export function chargeResultFromDecline(
+  orgId: string,
+  acquirer: "stripe" | "revolut",
+  declined: CardDeclined,
+  amount: number,
+  currency: string
+): ChargeResult {
+  return {
+    object: "charge_result",
+    org_id: orgId,
+    acquirer,
+    reference: declined.reference ?? "",
+    status: "failed",
+    amount,
+    currency,
+    // A refused charge produced no document. Null here means the same thing it
+    // always means: there is no such thing to read, not that something failed.
+    hosted_document_url: null,
+    failure: declined.toFailure(),
   };
 }
 

@@ -35,6 +35,8 @@ import {
   chargeViaStripeInvoice,
   resolveStripeChargeablePaymentMethod,
   chargeResultFromInvoice,
+  CardDeclined,
+  chargeResultFromDecline,
   NoChargeablePaymentMethod,
 } from "../lib/charge-org";
 import {
@@ -750,12 +752,32 @@ router.put(
  * on the invoiced route. On Revolut it is stamped on the order, so a retry
  * resumes that order instead of creating a second one.
  *
- * Fail loud: missing key -> 400, no customer -> 404, no saved card -> 409, any
- * acquirer error propagates and the caller retries.
+ * A REFUSED card is not an error of ours. The acquirer was reachable, it read
+ * the card and it said no — a definitive answer — so it comes back 200 as a
+ * `charge_result` with `status: "failed"` and a `failure` object carrying the
+ * acquirer's own reason code, exactly as a Revolut order that did not complete
+ * already did. Anything that stopped us ASKING (the acquirer unreachable, a
+ * transport failure, a bug of ours) stays a 5xx and never produces a
+ * `charge_result`. That is the whole distinction a caller needs: a 200 that
+ * reports a refusal means the CUSTOMER must act; a 5xx means nobody's card is
+ * at fault and the right move is to retry later, telling the customer nothing.
+ *
+ * Fail loud: missing key -> 400, no customer -> 404, no saved card -> 409, an
+ * acquirer we could not reach -> 502 and the caller retries.
  */
 router.post(
   "/internal/charges/by-org/:orgId",
   async (req: Request, res: Response, next: NextFunction) => {
+    // What a refusal must be reported AS, captured on the way in so the catch
+    // never re-reads the org's pin: a second read to answer an error is another
+    // thing that can fail, and this path exists precisely to stop a failure
+    // being reported as the wrong kind of failure.
+    let attempt: {
+      orgId: string;
+      acquirer: "stripe" | "revolut";
+      amount: number;
+      currency: string;
+    } | null = null;
     try {
       const parsed = ChargeByOrgRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -778,6 +800,7 @@ router.post(
 
       const { amount, currency, description, metadata } = parsed.data;
       const pin = await resolveAcquirer(orgId);
+      attempt = { orgId, acquirer: pin.acquirer, amount, currency };
 
       if (pin.acquirer === "revolut") {
         if (!pin.customerId) {
@@ -844,6 +867,22 @@ router.post(
     } catch (err) {
       if (err instanceof NoChargeablePaymentMethod) {
         return res.status(409).json({ error: err.message });
+      }
+      // A refusal is an answer, so it is reported, not raised. Re-parsing the
+      // body keeps the reported amount the caller's own, and a body that failed
+      // validation could never have reached a charge.
+      // A refusal is an answer, so it is reported, not raised.
+      if (err instanceof CardDeclined && attempt) {
+        res.locals.stripeObjectId = err.reference ?? undefined;
+        return res.json(
+          chargeResultFromDecline(
+            attempt.orgId,
+            attempt.acquirer,
+            err,
+            attempt.amount,
+            attempt.currency
+          )
+        );
       }
       return next(err);
     }
@@ -1115,8 +1154,18 @@ router.get(
  * the payment reads as the caller wrote it instead of Stripe's generic
  * "Payment for Invoice" fallback in a customer-facing billing history.
  *
- * Fail loud: a customer-less org -> 404 (no Stripe call); any Stripe error
- * (e.g. card declined off_session) propagates -> non-2xx -> caller retries.
+ * Fail loud: a customer-less org -> 404 (no Stripe call); an acquirer we could
+ * not reach -> 502 `acquirer_unavailable` and the caller retries.
+ *
+ * A REFUSED card is reported apart from both: 402 `card_declined`, carrying the
+ * acquirer's own reason code, because the acquirer answered and the answer is
+ * that the customer must act. This route returns a verbatim Stripe Invoice on
+ * success and a refusal produces no invoice, so it says so in its status rather
+ * than in a `charge_result` the shape does not have room for — the neutral
+ * `POST /internal/charges/by-org/:orgId` is the surface that reports a refusal
+ * as a completed request. Either way the caller can tell a refused card from an
+ * acquirer problem without reading a log line.
+ *
  * Returns the paid Stripe Invoice object verbatim (with `payments` expanded).
  */
 router.post(
@@ -1199,6 +1248,15 @@ router.post(
     } catch (err) {
       if (err instanceof NoChargeablePaymentMethod) {
         return res.status(409).json({ error: err.message });
+      }
+      if (err instanceof CardDeclined) {
+        return res.status(402).json({
+          error: err.message,
+          code: "card_declined",
+          decline_code: err.code,
+          decline_message: err.declineMessage,
+          reference: err.reference,
+        });
       }
       return next(err);
     }
