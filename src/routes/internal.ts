@@ -28,6 +28,7 @@ import {
   NoSavedPaymentMethod,
 } from "../lib/saved-method";
 import { buildCardSetup } from "../lib/card-setup";
+import { detachAllPaymentMethods } from "../lib/remove-payment-methods";
 import { cardUpdatePortalParams } from "../lib/portal-session";
 import { listOrgPayments } from "../lib/payments-list";
 import {
@@ -1119,6 +1120,102 @@ router.get(
       if (type) params.type = type as Stripe.PaymentMethodListParams.Type;
       const list = await stripe.paymentMethods.list(params);
       return res.json(list);
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+/**
+ * DELETE /internal/payment_methods/by-org/:orgId
+ *
+ * Remove the card we hold for an organisation. This is the acquirer half of a
+ * customer-initiated "stop holding my card": billing-service orchestrates the
+ * removal — it owns the balance and attempts to collect what is owed BEFORE
+ * calling this — and this service does the one thing only it can do, which is
+ * detach the methods at the acquirer.
+ *
+ * ## Every method, never only the default
+ *
+ * See `detachAllPaymentMethods`. A customer who asked us to stop holding their
+ * card must not be left with a second one attached, and a method that survives
+ * without being the default reads downstream as "no card" while still sitting
+ * on file.
+ *
+ * ## Refused for nobody
+ *
+ * No balance, no debt state and no card state blocks it. Whether the
+ * collection billing attempted succeeded or failed is a fact it logs, not a
+ * veto it passes to us — nothing is forgiven either, the debt stays owed and
+ * stays owned by billing's existing sweeps and its uncollectable-debt flag.
+ *
+ * ## Not an error to have nothing to remove
+ *
+ * An org with no Stripe customer, or a customer with no attached method, is a
+ * 200 with an empty `detached` — the end state is the one the caller asked
+ * for. Same shape as the teardown route, and for the same reason: a removal
+ * that finds nothing to remove has succeeded.
+ *
+ * ## Scope is STRIPE
+ *
+ * Named on the response as `acquirer: "stripe"`, because it is the acquirer
+ * whose saved methods this detaches. Revolut is untouched: it saves a card
+ * only through its own browser widget and exposes no detach, so pretending to
+ * cover it would report a removal that did not happen. An org pinned there
+ * simply has nothing for this route to find.
+ *
+ * ## The after-state still runs, and is NOT this route's job
+ *
+ * Stripe emits `payment_method.detached` for a detach WE initiate exactly as
+ * for one a customer performs in the portal, so the existing side-effect
+ * (staff notification + the "no chargeable card left" signal to
+ * billing-service, which is what drives the credit floor, the customer notice
+ * and the unpaid-debt listing) fires off the webhook as it always has. It is
+ * deliberately NOT called inline here: one detach must stay one notification,
+ * and the bronze-insert idempotency on the event id is what guarantees that.
+ *
+ * Fails loud on any other Stripe error — a caller that cannot tell whether the
+ * card is gone must retry, and the detach is safe to repeat.
+ */
+router.delete(
+  "/internal/payment_methods/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+
+      const row = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.orgId, orgId))
+        .orderBy(desc(customers.syncedAt))
+        .limit(1);
+
+      if (row.length === 0) {
+        return res.json({
+          object: "payment_methods_removed",
+          org_id: orgId,
+          acquirer: "stripe",
+          customer: null,
+          detached: [],
+          already_detached: [],
+        });
+      }
+
+      const customer = row[0].id;
+      res.locals.stripeObjectId = customer;
+
+      const stripe = await getPlatformStripe();
+      const removal = await detachAllPaymentMethods(stripe, customer);
+
+      return res.json({
+        object: "payment_methods_removed",
+        org_id: orgId,
+        acquirer: "stripe",
+        customer,
+        detached: removal.detached,
+        already_detached: removal.alreadyDetached,
+      });
     } catch (err) {
       return next(err);
     }
