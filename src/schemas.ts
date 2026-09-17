@@ -750,6 +750,49 @@ registry.registerPath({
   },
 });
 
+export const PaymentMethodsRemovedSchema = z
+  .object({
+    object: z.literal("payment_methods_removed"),
+    org_id: z.string(),
+    acquirer: z.literal("stripe").openapi({
+      description:
+        "The acquirer whose saved methods were detached. Stripe only — Revolut saves a card through its own browser widget and exposes no detach, so it is untouched.",
+    }),
+    customer: z.string().nullable().openapi({
+      description:
+        "The Stripe customer the methods were removed from, null when the org has none mirrored (nothing to remove, still a success).",
+    }),
+    detached: z.array(z.string()).openapi({
+      description: "Payment method ids this call detached.",
+    }),
+    already_detached: z.array(z.string()).openapi({
+      description:
+        "Payment method ids Stripe reported as already gone. Counted apart from detached so a caller can tell a real removal from a replayed one; both mean the method is no longer held.",
+    }),
+  })
+  .openapi("PaymentMethodsRemoved");
+
+registry.registerPath({
+  method: "delete",
+  path: "/internal/payment_methods/by-org/{orgId}",
+  summary: "Remove every payment method the org's Stripe customer holds",
+  description:
+    "Server-to-server. Detaches EVERY payment method on the org's Stripe customer via the platform key — never only the default, because a surviving non-default method reads downstream as 'no card' while still being held. Refused for nobody: no balance, debt state or card state blocks it (billing-service attempts the collection BEFORE calling, and a failed collection is a logged fact, not a veto — nothing is forgiven). An org with no customer, or a customer with no method, is a 200 with an empty detached list. Stripe only; Revolut is untouched. Stripe emits payment_method.detached for these detaches exactly as for an out-of-band one, so the existing staff notification and the 'no chargeable card left' signal to billing-service still fire. Fails loud on any other Stripe error; the detach is safe to retry. X-API-Key only — no identity headers (orgId is in the path).",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Payment methods removed (or nothing was held)",
+      content: {
+        "application/json": { schema: PaymentMethodsRemovedSchema },
+      },
+    },
+  },
+});
+
 registry.registerPath({
   method: "get",
   path: "/internal/payment_methods/by-org/{orgId}",

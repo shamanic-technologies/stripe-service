@@ -109,6 +109,25 @@ describe("payment_method.detached — one detach, one staff email", () => {
     expect(notifyPaymentMethodRemoved).toHaveBeenCalledTimes(1);
   });
 
+  // A detach WE initiate (the customer asked us to stop holding their card,
+  // billing-service called DELETE /internal/payment_methods/by-org/:orgId)
+  // reaches us as the same Stripe event as an out-of-band one — Stripe states
+  // nothing about who called the API. The staff notification and the
+  // "no chargeable card left" signal to billing-service are what make the
+  // after-state work (credit floor, customer notice, unpaid-debt listing), so
+  // this asserts nothing may ever narrow the side-effect to out-of-band
+  // removals.
+  it("notifies for a detach WE initiated, exactly as for one done in Stripe's portal", async () => {
+    dbMock.queueInsert("events", [{ id: "evt_detach_1" }]);
+
+    expect(await processEvent(detached(), "webhook")).toBe(true);
+    expect(notifyPaymentMethodRemoved).toHaveBeenCalledTimes(1);
+    expect(
+      (notifyPaymentMethodRemoved as unknown as { mock: { calls: unknown[][] } })
+        .mock.calls[0][0]
+    ).toMatchObject({ id: "evt_detach_1", type: "payment_method.detached" });
+  });
+
   // Webhook delivery, webhook redelivery and the 5-minute poll all carry the
   // same `evt_…`, so the bronze insert conflicts and side-effects never run
   // again. This is what keeps one detach at one email.
