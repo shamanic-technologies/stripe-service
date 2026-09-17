@@ -68,6 +68,7 @@ describe("GET /public/stats/billing", () => {
       total_net_cents: "12500",
       accounts_with_payment_method: 3,
       total_paying_accounts: 0,
+      first_payment_times_unix: [],
       first_payment_times: [],
       monthly_growth: [
         {
@@ -457,7 +458,7 @@ describe("GET /public/stats/billing", () => {
     // The rolling-window AC: one entry per account that has ever paid, unix
     // seconds, ascending — so counting the whole array reproduces the platform
     // total the consumer reads right beside it.
-    const times: number[] = res.body.first_payment_times;
+    const times: number[] = res.body.first_payment_times_unix;
     expect(times).toEqual([
       Date.parse("2026-07-02T10:15:00Z") / 1000,
       Date.parse("2026-07-08T12:00:00Z") / 1000,
@@ -466,6 +467,9 @@ describe("GET /public/stats/billing", () => {
       Date.parse("2026-08-26T09:00:00Z") / 1000,
     ]);
     expect(times.length).toBe(res.body.total_paying_accounts);
+    // The pre-rename name carries the identical array for one more release, so a
+    // consumer that has not switched yet reads exactly the same answer.
+    expect(res.body.first_payment_times).toEqual(times);
 
     // A rolling window aligned to NO calendar bucket is answered exactly: the
     // 30 days before 2026-08-31 hold the two August first-payments and split
@@ -515,6 +519,7 @@ describe("GET /public/stats/billing", () => {
     expect(res.body.total_net_cents).toBe("0");
     expect(res.body.accounts_with_payment_method).toBe(0);
     expect(res.body.total_paying_accounts).toBe(0);
+    expect(res.body.first_payment_times_unix).toEqual([]);
     expect(res.body.first_payment_times).toEqual([]);
     expect(res.body.monthly_growth).toEqual([]);
     expect(res.body.weekly_growth).toEqual([]);

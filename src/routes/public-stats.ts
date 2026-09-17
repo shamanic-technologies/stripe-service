@@ -52,8 +52,14 @@ const router = Router();
  * cannot attribute to an org is excluded from the counts while its money still
  * counts in every figure here.
  *
- * WHEN each account became a customer is published as `first_payment_times` —
- * every account's first settled payment, unix seconds, ascending. The buckets
+ * WHEN each account became a customer is published as `first_payment_times_unix`
+ * — every account's first settled payment, unix seconds, ascending. THE UNIT IS
+ * IN THE NAME on purpose: `Date.now()` is MILLISECONDS, so a consumer comparing
+ * a milliseconds cutoff against a seconds array counts ZERO and renders a dash,
+ * which is the exact failure this array exists to kill. Every money field here
+ * already says `_cents`; this one said nothing. `first_payment_times` carries
+ * the identical array under the original name for one more release and is
+ * deprecated. The buckets
  * above are calendar months and weeks, and a consumer asking "how many
  * accounts became customers in the LAST 30 DAYS" is asking about a window
  * anchored on an instant that aligns to neither: summing whole buckets is
@@ -144,6 +150,9 @@ router.get("/public/stats/billing", async (_req: Request, res: Response, next: N
       ).toString(),
       accounts_with_payment_method: accountsWithPaymentMethod,
       total_paying_accounts: accounts.total,
+      first_payment_times_unix: accounts.firstPaymentTimes,
+      // DEPRECATED, served one more release so no consumer breaks on the rename.
+      // Identical array, same order. Read `first_payment_times_unix`.
       first_payment_times: accounts.firstPaymentTimes,
       monthly_growth: mergeGrowth(
         [...monthlyRows, ...sumsToPaidRows(revolutPaid.byMonth)],
