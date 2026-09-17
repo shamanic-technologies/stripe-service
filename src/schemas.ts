@@ -33,8 +33,36 @@ export const ErrorResponseSchema = z
   .object({
     error: z.string().openapi({ description: "Error message" }),
     details: z.any().optional(),
+    code: z
+      .string()
+      .optional()
+      .openapi({
+        description:
+          "A machine-readable class for the failure, when one applies. `acquirer_unavailable` (5xx) means WE could not reach or could not use the acquirer — nobody's card is at fault, no customer should be told anything, and the caller should retry later. A card the acquirer REFUSED is never reported this way: see `code: \"card_declined\"` (402) on the invoiced charge, or the `failure` object on a 200 charge_result.",
+      }),
   })
   .openapi("ErrorResponse");
+
+/** A charge the acquirer refused, on a route whose success shape is a vendor object. */
+export const CardDeclinedResponseSchema = z
+  .object({
+    error: z.string(),
+    code: z.literal("card_declined").openapi({
+      description:
+        "The acquirer reached the card and refused it. Distinct from `acquirer_unavailable`, which means we could not ask at all.",
+    }),
+    decline_code: z.string().nullable().openapi({
+      description:
+        "The acquirer's own reason code — e.g. `insufficient_funds`, `expired_card`, `generic_decline`. This is what decides the instruction the customer is given.",
+    }),
+    decline_message: z.string().nullable().openapi({
+      description: "The acquirer's own message. Diagnostic — write customer copy from `decline_code`.",
+    }),
+    reference: z.string().nullable().openapi({
+      description: "The acquirer object to quote back about the attempt (the invoice this charge was refused on).",
+    }),
+  })
+  .openapi("CardDeclinedResponse");
 
 export const StripeObjectSchema = z.record(z.string(), z.any()).openapi("StripeObject");
 export const StripeListSchema = z
@@ -157,6 +185,23 @@ export const ChargeByOrgRequestSchema = z
   })
   .openapi("ChargeByOrgRequest");
 
+export const ChargeFailureSchema = z
+  .object({
+    type: z.literal("card_declined").openapi({
+      description:
+        "Always `card_declined` today: the acquirer reached the card and refused it. A named type so a caller branches on a value rather than on the object's presence.",
+    }),
+    code: z.string().nullable().openapi({
+      description:
+        "The acquirer's own reason code — e.g. `insufficient_funds`, `expired_card`, `generic_decline`. This is the field that decides what the customer is told, because \"insufficient funds\" and \"card expired\" are different instructions. Null when the acquirer refused without naming a reason.",
+    }),
+    message: z.string().nullable().openapi({
+      description:
+        "The acquirer's own message for that refusal. Diagnostic: write customer-facing copy from `code`, do not forward this.",
+    }),
+  })
+  .openapi("ChargeFailure");
+
 export const ChargeResultSchema = z
   .object({
     object: z.literal("charge_result"),
@@ -175,6 +220,10 @@ export const ChargeResultSchema = z
     hosted_document_url: z.string().nullable().openapi({
       description:
         "A hosted document for this charge when the acquirer produces one (Stripe finalizes an invoice with a PDF). Null means this acquirer has no such thing — never that the charge failed.",
+    }),
+    failure: ChargeFailureSchema.optional().openapi({
+      description:
+        "Why the charge failed, when the acquirer gave a DEFINITIVE answer: it reached the customer's card and the card was refused. Present ONLY on a refusal — a successful charge carries no `failure` key at all — and absent on a failure means the acquirer never said why. A refusal means the CUSTOMER must act (new card, call their bank). It is NOT the same as a problem on our side or the acquirer's: that is a 5xx with `code: \"acquirer_unavailable\"` and never a charge_result, nobody's card is at fault, and the right move is to retry later without telling the customer anything.",
     }),
   })
   .openapi("ChargeResult");
@@ -737,7 +786,7 @@ registry.registerPath({
   path: "/internal/invoices/by-org/{orgId}",
   summary: "Create + pay an off-session invoice for an org's customer",
   description:
-    "Server-to-server. Creates a one-line Stripe invoice for the org's customer, finalizes it, and pays it OFF-SESSION against the customer's stored card (explicit `payment_method` or the customer default). The result is a finalized, paid Stripe invoice (hosted invoice + PDF, visible in the customer's billing portal). Requires the `Idempotency-Key` header — it is derived per Stripe step (invoice / item / finalize / pay) so a retry never double-charges or creates a duplicate invoice. Uses the platform Stripe key (single-account model). X-API-Key only — no identity headers (orgId is in the path). Returns the paid Stripe Invoice object verbatim (with `payments` expanded). Provenance: the `metadata` you send is stamped on the invoice AND, after payment, on the resulting PaymentIntent together with `org_id` and `invoice_id` — Stripe copies neither, and a consumer summing PaymentIntents (billing) needs it there to tell an automatic platform-initiated charge from a customer-initiated top-up. It is readable on the PaymentIntent reads (`GET /internal/payment_intents/by-org/{orgId}`, `GET /v1/payment_intents`).",
+    "Server-to-server. Creates a one-line Stripe invoice for the org's customer, finalizes it, and pays it OFF-SESSION against the customer's stored card (explicit `payment_method` or the customer default). The result is a finalized, paid Stripe invoice (hosted invoice + PDF, visible in the customer's billing portal). Requires the `Idempotency-Key` header — it is derived per Stripe step (invoice / item / finalize / pay) so a retry never double-charges or creates a duplicate invoice. Uses the platform Stripe key (single-account model). X-API-Key only — no identity headers (orgId is in the path). Returns the paid Stripe Invoice object verbatim (with `payments` expanded). A card the acquirer REFUSES answers 402 with `code: \"card_declined\"` plus the acquirer's own `decline_code`; an acquirer we could not reach answers 502 with `code: \"acquirer_unavailable\"`. The two are never conflated: the first means the customer must act, the second means nobody's card is at fault and the caller should retry later. Provenance: the `metadata` you send is stamped on the invoice AND, after payment, on the resulting PaymentIntent together with `org_id` and `invoice_id` — Stripe copies neither, and a consumer summing PaymentIntents (billing) needs it there to tell an automatic platform-initiated charge from a customer-initiated top-up. It is readable on the PaymentIntent reads (`GET /internal/payment_intents/by-org/{orgId}`, `GET /v1/payment_intents`).",
   tags: ["Internal"],
   security: apiKeySec,
   request: {
@@ -752,7 +801,10 @@ registry.registerPath({
   responses: {
     200: { description: "Finalized, paid Stripe Invoice", content: { "application/json": { schema: StripeObjectSchema } } },
     400: { description: "Invalid request or missing Idempotency-Key header", content: { "application/json": { schema: ErrorResponseSchema } } },
+    402: { description: "The acquirer REFUSED the card. Body: `code: \"card_declined\"`, `decline_code` (the acquirer's own reason, e.g. `insufficient_funds`), `decline_message`, `reference`. The customer must act; retrying the same card will not help.", content: { "application/json": { schema: CardDeclinedResponseSchema } } },
     404: { description: "No customer for org", content: { "application/json": { schema: ErrorResponseSchema } } },
+    409: { description: "No chargeable saved payment method", content: { "application/json": { schema: ErrorResponseSchema } } },
+    502: { description: "The acquirer could not be reached or could not complete the charge — nobody's card is at fault. Body carries `code: \"acquirer_unavailable\"`. Never returned for a refused card.", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });
 
@@ -767,7 +819,7 @@ registry.registerPath({
   path: "/internal/charges/by-org/{orgId}",
   summary: "Charge an org off-session, whichever acquirer holds its card",
   description:
-    "Server-to-server. Takes money from the org off-session and answers in ONE vendor-neutral shape whichever acquirer it resolved — the caller never names one. An org on Stripe gets the same finalized, paid invoice it always did, with its hosted invoice URL reported as `hosted_document_url`; an org on an acquirer with no invoice object gets `hosted_document_url: null`, which means \"this acquirer does not produce one\" and never \"the charge failed\" — `status` is the only thing that says whether the money moved. Requires the `Idempotency-Key` header: on Stripe it is derived per Stripe step, on Revolut it is stamped on the order so a retry resumes it instead of charging twice. X-API-Key only — no identity headers (orgId is in the path).",
+    "Server-to-server. Takes money from the org off-session and answers in ONE vendor-neutral shape whichever acquirer it resolved — the caller never names one. An org on Stripe gets the same finalized, paid invoice it always did, with its hosted invoice URL reported as `hosted_document_url`; an org on an acquirer with no invoice object gets `hosted_document_url: null`, which means \"this acquirer does not produce one\" and never \"the charge failed\" — `status` is the only thing that says whether the money moved. Requires the `Idempotency-Key` header: on Stripe it is derived per Stripe step, on Revolut it is stamped on the order so a retry resumes it instead of charging twice. X-API-Key only — no identity headers (orgId is in the path). A card the acquirer REFUSES is reported here, not raised: 200 with `status: \"failed\"` and a `failure` object carrying the acquirer's own reason code, because the acquirer answered and the answer is that the customer must act. Anything that stopped us ASKING — the acquirer unreachable, a transport failure — stays a 5xx carrying `code: \"acquirer_unavailable\"` and never produces a charge_result, so a caller can tell 'this customer's card was refused' from 'our payments infrastructure could not be reached' from the response alone.",
   tags: ["Internal"],
   security: apiKeySec,
   request: {
@@ -781,10 +833,11 @@ registry.registerPath({
     body: { content: { "application/json": { schema: ChargeByOrgRequestSchema } } },
   },
   responses: {
-    200: { description: "Charge result", content: { "application/json": { schema: ChargeResultSchema } } },
+    200: { description: "Charge result — the money moved (`status: \"succeeded\"`), or the acquirer refused the card (`status: \"failed\"` with `failure`).", content: { "application/json": { schema: ChargeResultSchema } } },
     400: { description: "Invalid request or missing Idempotency-Key header", content: { "application/json": { schema: ErrorResponseSchema } } },
     404: { description: "No customer for org on its acquirer", content: { "application/json": { schema: ErrorResponseSchema } } },
     409: { description: "No chargeable saved payment method", content: { "application/json": { schema: ErrorResponseSchema } } },
+    502: { description: "The acquirer could not be reached or could not complete the charge — nobody's card is at fault. Body carries `code: \"acquirer_unavailable\"`. Never returned for a refused card.", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });
 
