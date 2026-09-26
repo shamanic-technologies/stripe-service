@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import { RevolutApiError } from "../lib/revolut-client";
+import { isStripeRateLimit } from "../lib/payment-method-read";
 
 /**
  * The last word on every request that threw.
@@ -44,6 +45,15 @@ export function errorHandler(
       /^Stripe/.test((err as { type: string }).type));
 
   console.error("[stripe-service] Unhandled error:", err);
+
+  // Stripe throttled us. That is not "the acquirer is down" and not "no card":
+  // it is "ask again shortly", so it is said as such — a 503 with Retry-After
+  // and its own code, never folded into the generic acquirer failure.
+  if (isStripeRateLimit(err)) {
+    res.setHeader("Retry-After", "1");
+    res.status(503).json({ error: message, code: "acquirer_rate_limited" });
+    return;
+  }
 
   res.status(fromAcquirer ? 502 : 500).json({
     error: message,

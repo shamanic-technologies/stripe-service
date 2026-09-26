@@ -13,6 +13,10 @@ import { eq, desc, sql } from "drizzle-orm";
 import { resolvePlatformKey } from "./key-client";
 import { makeStripeClient } from "./stripe-client";
 import { promoteDefaultPaymentMethod } from "./promote-default-pm";
+import {
+  customerTouchedByEvent,
+  invalidatePaymentMethodReads,
+} from "./payment-method-read";
 import { declareFeesForEvent, isFeeEvent } from "./declare-fees";
 import {
   isChargeRefundEvent,
@@ -86,6 +90,11 @@ export async function processEvent(
   if (inserted.length === 0) {
     return false;
   }
+
+  // A card was added or removed: drop any remembered payment-method answer for
+  // that customer so the authorize path's next read goes to Stripe.
+  const touched = customerTouchedByEvent(event);
+  if (touched) invalidatePaymentMethodReads(touched);
 
   if (objectId) {
     const orgId = await resolveOrgIdForEvent(event, objectId);
