@@ -29,6 +29,10 @@ import {
 } from "../lib/saved-method";
 import { buildCardSetup } from "../lib/card-setup";
 import { detachAllPaymentMethods } from "../lib/remove-payment-methods";
+import {
+  invalidatePaymentMethodReads,
+  listPaymentMethodsForRead,
+} from "../lib/payment-method-read";
 import { cardUpdatePortalParams } from "../lib/portal-session";
 import { listOrgPayments } from "../lib/payments-list";
 import {
@@ -1115,10 +1119,11 @@ router.get(
       const customer = row[0].id;
       res.locals.stripeObjectId = customer;
 
+      // Coalesced + briefly remembered: this read sits on billing's spend
+      // AUTHORIZE path, so a burst of authorizes must not become a burst of
+      // Stripe calls (a 429 there refused paid work). See payment-method-read.ts.
       const stripe = await getPlatformStripe();
-      const params: Stripe.PaymentMethodListParams = { customer };
-      if (type) params.type = type as Stripe.PaymentMethodListParams.Type;
-      const list = await stripe.paymentMethods.list(params);
+      const list = await listPaymentMethodsForRead(stripe, customer, type);
       return res.json(list);
     } catch (err) {
       return next(err);
@@ -1206,7 +1211,14 @@ router.delete(
       res.locals.stripeObjectId = customer;
 
       const stripe = await getPlatformStripe();
-      const removal = await detachAllPaymentMethods(stripe, customer);
+      // Forget any remembered read for this customer even if a detach throws
+      // midway: some methods may already be gone.
+      let removal;
+      try {
+        removal = await detachAllPaymentMethods(stripe, customer);
+      } finally {
+        invalidatePaymentMethodReads(customer);
+      }
 
       return res.json({
         object: "payment_methods_removed",

@@ -30,6 +30,7 @@ vi.mock("../../src/lib/key-client", async (importOriginal) => {
 });
 
 import { createTestApp } from "../helpers/test-app";
+import { resetPaymentMethodReads } from "../../src/lib/payment-method-read";
 
 const app = createTestApp();
 
@@ -982,6 +983,52 @@ describe("GET /internal/payment_methods/by-org/:orgId (user-less)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     stripeMock.paymentMethods.list.mockReset();
+    resetPaymentMethodReads();
+  });
+
+  it("a burst of 100 authorize-path reads for one org answers 100 x 200 on ONE Stripe call", async () => {
+    for (let i = 0; i < 100; i++) dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    stripeMock.paymentMethods.list.mockResolvedValue({
+      object: "list",
+      data: [{ id: "pm_card", type: "card", customer: "cus_x" }],
+      has_more: false,
+      url: "/v1/payment_methods",
+    });
+
+    const responses = await Promise.all(
+      Array.from({ length: 100 }, () =>
+        request(app).get(`/internal/payment_methods/by-org/${TEST_ORG_ID}?type=card`).set(apiKeyOnly())
+      )
+    );
+
+    expect(responses.map((r) => r.status).filter((s) => s !== 200)).toEqual([]);
+    expect(responses.every((r) => r.body.data[0].id === "pm_card")).toBe(true);
+    expect(stripeMock.paymentMethods.list).toHaveBeenCalledTimes(1);
+  });
+
+  it("a Stripe rate limit that outlasts the backoff is a 503 acquirer_rate_limited, never a generic 502", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+      stripeMock.paymentMethods.list.mockRejectedValue(
+        Object.assign(new Error("Request rate limit exceeded"), {
+          type: "StripeRateLimitError",
+          rawType: "rate_limit_error",
+          statusCode: 429,
+        })
+      );
+      const pending = request(app)
+        .get(`/internal/payment_methods/by-org/${TEST_ORG_ID}?type=card`)
+        .set(apiKeyOnly())
+        .then((r) => r);
+      for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(500);
+      const res = await pending;
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe("acquirer_rate_limited");
+      expect(res.headers["retry-after"]).toBe("1");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("lists the org customer's PaymentMethods via the platform key, X-API-Key only", async () => {
