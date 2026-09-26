@@ -798,7 +798,7 @@ registry.registerPath({
   path: "/internal/payment_methods/by-org/{orgId}",
   summary: "List an org customer's PaymentMethods (user-less)",
   description:
-    "Server-to-server. Live Stripe paymentMethods.list for the org's customer via the platform key (single-account model). Customer resolved from the mirror; 404 when the org has none. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service hasAttachedCardPm.",
+    "Server-to-server. Stripe paymentMethods.list for the org's customer via the platform key (single-account model). Customer resolved from the mirror; 404 when the org has none. X-API-Key only — no identity headers (orgId is in the path). Backs billing-service's balance/authorize path. Concurrent identical reads (same customer + type) share ONE Stripe call, and a successful answer is reused for up to 15s, dropped immediately when a payment_method.*, setup_intent.succeeded or checkout.session.completed event (or our own detach) says the customer's methods changed. A Stripe rate limit is backed off once per shared call; if it outlasts the backoff the route answers 503 {code: \"acquirer_rate_limited\"} with Retry-After, never a generic 502.",
   tags: ["Internal"],
   security: apiKeySec,
   request: {
