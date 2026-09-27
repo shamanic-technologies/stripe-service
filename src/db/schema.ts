@@ -342,3 +342,18 @@ export const acquirerRollout = pgTable("acquirer_rollout", {
   percent: integer("percent").notNull(), // 0-100 share of eligible new orgs
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// Who last opened a billing-portal CARD UPDATE for a Stripe customer.
+//
+// The customer's contact email follows the last person who pays or saves a
+// card (src/lib/payer-email.ts). A Checkout session carries its opener in its
+// own metadata, but a portal session has no metadata and the SetupIntent it
+// creates carries nothing of ours — so the opener is remembered here at open
+// time and CONSUMED (deleted) when that SetupIntent succeeds. One row per
+// customer: the latest opener wins.
+export const cardUpdateOpeners = pgTable("card_update_openers", {
+  customerId: text("customer_id").primaryKey(),
+  orgId: text("org_id").notNull(),
+  userId: text("user_id").notNull(),
+  openedAt: timestamp("opened_at").defaultNow().notNull(),
+});

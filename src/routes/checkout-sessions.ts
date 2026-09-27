@@ -12,6 +12,7 @@ import { recordApiSnapshot } from "../lib/event-processor";
 import { isResourceMissing } from "../lib/stripe-client";
 import { selectAcquirerForCheckout } from "../lib/acquirer-rollout";
 import { checkoutViaRevolut, UnsupportedCheckout } from "../lib/checkout-org";
+import { payerMetadata } from "../lib/payer-email";
 
 const router = Router();
 
@@ -63,10 +64,22 @@ router.post("/v1/checkout/sessions", async (req: Request, res: Response, next: N
 
     const ctx = await buildContext(req, res);
     const body = parsed.data as Stripe.Checkout.SessionCreateParams;
-    const metadata = { ...(body.metadata ?? {}), org_id: ctx.orgId };
+    // `payer_user_id` names the person opening this checkout, so that when
+    // Stripe reports it PAID (or the card saved) the customer's contact email
+    // follows them — see src/lib/payer-email.ts. A setup session creates a
+    // SetupIntent, which is what reports the card saved, so it carries it too.
+    const payer = payerMetadata(ctx.userId);
+    const metadata = { ...(body.metadata ?? {}), ...payer, org_id: ctx.orgId };
+    const params: Stripe.Checkout.SessionCreateParams = { ...body, metadata };
+    if (body.mode === "setup") {
+      params.setup_intent_data = {
+        ...(body.setup_intent_data ?? {}),
+        metadata: { ...(body.setup_intent_data?.metadata ?? {}), ...payer },
+      };
+    }
 
     const session = await ctx.stripe.checkout.sessions.create(
-      { ...body, metadata },
+      params,
       stripeRequestOptions(ctx)
     );
 
