@@ -25,6 +25,18 @@ export type CardSetup =
     }
   | {
       object: "card_setup";
+      mode: "embedded_checkout";
+      /**
+       * Mount the acquirer's embedded checkout IN THE PAGE with this secret.
+       * It is a SETUP session: nothing is charged, the card is saved on the
+       * org's customer for off-session use, and completion does not redirect
+       * (the page is told through the SDK's completion callback), so a modal
+       * keeps its state. Scoped to this one session and safe in a page.
+       */
+      client_secret: string;
+    }
+  | {
+      object: "card_setup";
       mode: "embedded_widget";
       /**
        * The acquirer's browser SDK, to load in the page. Given rather than
@@ -122,11 +134,23 @@ export const REVOLUT_SDK_SCRIPT_URL = "https://merchant.revolut.com/embed.js";
 export async function buildCardSetup(params: {
   orgId: string;
   /** Where a hosted flow should return the customer to. */
-  returnUrl: string;
+  returnUrl?: string;
   /** Currency for the verification authorisation. */
   currency?: string;
+  /**
+   * How the caller wants the card form presented. `hosted` (the default, and
+   * what every caller predating this got) sends the customer away to a page;
+   * `embedded` asks for a form the caller mounts in its own page. An acquirer
+   * whose only mechanism is already in-page answers the same either way.
+   */
+  uiMode?: "hosted" | "embedded";
   /** Builds the hosted session for the default acquirer. */
   hostedSession: (customerId: string) => Promise<string>;
+  /**
+   * Builds the in-page, no-charge setup session for the default acquirer and
+   * returns its client secret. Required only when `uiMode` is `embedded`.
+   */
+  embeddedSession?: (customerId: string) => Promise<string>;
   /** The org's mirrored customer on the default acquirer. */
   defaultCustomerId: string | null;
 }): Promise<CardSetup> {
@@ -172,6 +196,24 @@ export async function buildCardSetup(params: {
 
   if (!params.defaultCustomerId) {
     throw new Error(`Org ${params.orgId} has no customer to set a card up for`);
+  }
+  if (params.uiMode === "embedded") {
+    if (!params.embeddedSession) {
+      throw new Error("An embedded card setup was asked for with no way to build one");
+    }
+    const clientSecret = await params.embeddedSession(params.defaultCustomerId);
+    if (typeof clientSecret !== "string" || clientSecret.length === 0) {
+      // Same reason as the token check above: a secret-less descriptor fails in
+      // the customer's browser, where nobody of ours can read why.
+      throw new Error(
+        `Org ${params.orgId}: acquirer returned no client secret to set a card up with`
+      );
+    }
+    return {
+      object: "card_setup",
+      mode: "embedded_checkout",
+      client_secret: clientSecret,
+    };
   }
   return {
     object: "card_setup",

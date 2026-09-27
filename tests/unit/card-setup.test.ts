@@ -43,6 +43,53 @@ describe("buildCardSetup", () => {
     expect(createOrder).not.toHaveBeenCalled();
   });
 
+  it("describes an in-page, no-charge checkout when the caller asks for embedded", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    const embeddedSession = vi.fn().mockResolvedValue("cs_secret_1");
+    expect(
+      await buildCardSetup({ ...base, uiMode: "embedded", embeddedSession })
+    ).toEqual({
+      object: "card_setup",
+      mode: "embedded_checkout",
+      client_secret: "cs_secret_1",
+    });
+    expect(embeddedSession).toHaveBeenCalledWith("cus_stripe_1");
+    expect(hostedSession).not.toHaveBeenCalled();
+    expect(createOrder).not.toHaveBeenCalled();
+  });
+
+  it("keeps the hosted answer when the caller asks for hosted explicitly", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    const embeddedSession = vi.fn();
+    expect(
+      await buildCardSetup({ ...base, uiMode: "hosted", embeddedSession })
+    ).toMatchObject({ mode: "hosted_redirect" });
+    expect(embeddedSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses an embedded descriptor with no secret to mount", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    await expect(
+      buildCardSetup({
+        ...base,
+        uiMode: "embedded",
+        embeddedSession: vi.fn().mockResolvedValue(""),
+      })
+    ).rejects.toThrow(/no client secret/i);
+  });
+
+  it("answers the in-page widget whichever presentation a pinned org asks for", async () => {
+    dbMock.queueSelect("org_acquirers", [
+      { acquirer: "revolut", customerId: "cus-rev-1" },
+    ]);
+    createOrder.mockResolvedValue({ id: "ord-1", token: "tok-1" });
+    const embeddedSession = vi.fn();
+    expect(
+      await buildCardSetup({ ...base, uiMode: "embedded", embeddedSession })
+    ).toMatchObject({ mode: "embedded_widget", token: "tok-1" });
+    expect(embeddedSession).not.toHaveBeenCalled();
+  });
+
   it("describes an embedded widget for an acquirer with no portal", async () => {
     dbMock.queueSelect("org_acquirers", [
       { acquirer: "revolut", customerId: "cus-rev-1" },

@@ -575,6 +575,32 @@ router.post(
         returnUrl: parsed.data.return_url,
         currency: parsed.data.currency,
         defaultCustomerId: row.length > 0 ? row[0].id : null,
+        uiMode: parsed.data.ui_mode,
+        embeddedSession: async (customerId) => {
+          const stripe = await getPlatformStripe();
+          // A SETUP-mode Checkout Session: it charges nothing, and the
+          // SetupIntent it creates is off_session by default, so the card is
+          // chargeable later with nobody present. Card-only because that is
+          // what automatic top-up charges and what the country gate reads.
+          // `redirect_on_completion: "never"` keeps the customer in the page:
+          // the caller learns of completion from the SDK's callback. Once it
+          // completes, the existing `checkout.session.completed` side-effect
+          // makes the card the customer's default when there is none yet.
+          const session = await stripe.checkout.sessions.create({
+            mode: "setup",
+            ui_mode: "embedded",
+            redirect_on_completion: "never",
+            customer: customerId,
+            payment_method_types: ["card"],
+            metadata: { org_id: orgId, purpose: "card-setup" },
+            setup_intent_data: {
+              metadata: { org_id: orgId, purpose: "card-setup" },
+            },
+          } as Stripe.Checkout.SessionCreateParams);
+          await recordApiSnapshot(session, "checkout_session", orgId);
+          // A missing secret is refused by buildCardSetup, loudly.
+          return session.client_secret ?? "";
+        },
         hostedSession: async (customerId) => {
           const stripe = await getPlatformStripe();
           // Scoped to the add/replace-a-card flow: the customer never reaches
