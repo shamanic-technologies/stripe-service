@@ -423,3 +423,57 @@ describe("POST /internal/card_setup/by-org/:orgId — what the browser gets", ()
     expect(JSON.stringify(res.body)).not.toContain("sk_test_platform");
   });
 });
+
+describe("POST /internal/card_setup/by-org/:orgId — an optional x-user-id names who sets the card up", () => {
+  beforeEach(() => {
+    vi.stubEnv(CARD_UPDATE_CONFIGURATION_ENV, "bpc_card_update");
+    dbMock.clearCaptured();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("names the person on the in-page setup session and its SetupIntent", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    dbMock.queueSelect("org_acquirers", []);
+    stripeMock.checkout.sessions.create.mockResolvedValueOnce({
+      id: "cs_setup_2", object: "checkout.session", mode: "setup", client_secret: "sec",
+    });
+    const res = await request(app)
+      .post(`/internal/card_setup/by-org/${TEST_ORG_ID}`)
+      .set({ ...headers, "x-user-id": "user_b" })
+      .send({ ui_mode: "embedded" });
+    expect(res.status).toBe(200);
+    const params = stripeMock.checkout.sessions.create.mock.calls[0][0];
+    expect(params.metadata).toEqual({ org_id: TEST_ORG_ID, purpose: "card-setup", payer_user_id: "user_b" });
+    expect(params.setup_intent_data.metadata).toEqual({
+      org_id: TEST_ORG_ID, purpose: "card-setup", payer_user_id: "user_b",
+    });
+  });
+
+  it("remembers the person who opened the hosted card update", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    dbMock.queueSelect("org_acquirers", []);
+    stripeMock.billingPortal.sessions.create.mockResolvedValueOnce({ id: "bps_2", url: "https://b/x" });
+    const res = await request(app)
+      .post(`/internal/card_setup/by-org/${TEST_ORG_ID}`)
+      .set({ ...headers, "x-user-id": "user_b" })
+      .send({ return_url: "https://dashboard.example/billing" });
+    expect(res.status).toBe(200);
+    expect(dbMock.lastInsertValues("card_update_openers")).toMatchObject({
+      customerId: "cus_x", orgId: TEST_ORG_ID, userId: "user_b",
+    });
+  });
+
+  it("without it, names nobody and remembers nothing", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    dbMock.queueSelect("org_acquirers", []);
+    stripeMock.billingPortal.sessions.create.mockResolvedValueOnce({ id: "bps_3", url: "https://b/x" });
+    const res = await request(app)
+      .post(`/internal/card_setup/by-org/${TEST_ORG_ID}`)
+      .set(headers)
+      .send({ return_url: "https://dashboard.example/billing" });
+    expect(res.status).toBe(200);
+    expect(dbMock.lastInsertValues("card_update_openers")).toBeUndefined();
+  });
+});

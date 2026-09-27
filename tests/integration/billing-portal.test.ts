@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
-import { authHeaders } from "../helpers/mocks";
+import { authHeaders, TEST_ORG_ID, TEST_USER_ID } from "../helpers/mocks";
 
 const { dbMock, stripeMock } = vi.hoisted(() => {
   const { makeDbMock, makeStripeMock } = require("../helpers/mocks-factory.cjs");
@@ -151,5 +151,42 @@ describe("POST /v1/billing_portal/sessions", () => {
       .set(authHeaders())
       .send({ return_url: "https://app.example.com" });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /v1/billing_portal/sessions — remembers who opened a card update", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock.clearCaptured();
+    stripeMock.billingPortal.sessions.create.mockReset();
+    vi.stubEnv(CARD_UPDATE_CONFIGURATION_ENV, "bpc_card_update");
+    vi.stubEnv(INVOICE_HISTORY_CONFIGURATION_ENV, "bpc_invoices");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("records the opener of a card-update session", async () => {
+    stripeMock.billingPortal.sessions.create.mockResolvedValueOnce(portalSession);
+    const res = await request(app)
+      .post("/v1/billing_portal/sessions")
+      .set(authHeaders())
+      .send({ customer: "cus_x", return_url: "https://app.example.com", flow_data: { type: "payment_method_update" } });
+    expect(res.status).toBe(200);
+    expect(dbMock.lastInsertValues("card_update_openers")).toMatchObject({
+      customerId: "cus_x",
+      orgId: TEST_ORG_ID,
+      userId: TEST_USER_ID,
+    });
+  });
+
+  it("records nothing for invoice history", async () => {
+    stripeMock.billingPortal.sessions.create.mockResolvedValueOnce(portalSession);
+    const res = await request(app)
+      .post("/v1/billing_portal/sessions")
+      .set(authHeaders())
+      .send({ customer: "cus_x", return_url: "https://app.example.com" });
+    expect(res.status).toBe(200);
+    expect(dbMock.lastInsertValues("card_update_openers")).toBeUndefined();
   });
 });

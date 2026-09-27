@@ -26,6 +26,7 @@ import {
   isPaymentMethodDetachedEvent,
   notifyPaymentMethodRemoved,
 } from "./notify-payment-method-removed";
+import { adoptPayerEmailForEvent, isPayerEmailEvent } from "./payer-email";
 
 type ProcessSource = "webhook" | "poll";
 type EventSource = ProcessSource | "api";
@@ -111,6 +112,14 @@ async function runSideEffects(event: Stripe.Event): Promise<void> {
   ) {
     const stripe = await getPlatformStripe();
     await promoteDefaultPaymentMethod(event, stripe);
+  }
+
+  // After the default-PM promotion so a failure here can never cost an org its
+  // chargeable default. Only SUCCESS events reach this: the customer's contact
+  // email follows the person who just paid or saved a card.
+  if (isPayerEmailEvent(event.type)) {
+    const stripe = await getPlatformStripe();
+    await adoptPayerEmailForEvent(event, stripe);
   }
 
   if (isChargeRefundEvent(event.type)) {

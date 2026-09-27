@@ -983,11 +983,17 @@ registry.registerPath({
   path: "/internal/card_setup/by-org/{orgId}",
   summary: "How this org's customer adds a card (described, not performed)",
   description:
-    "Server-to-server. Returns a DESCRIPTOR of the mechanism the org's acquirer offers, because the acquirers genuinely differ: one hosts a portal we redirect to, the other has no portal at all and saves a card only through a browser card field the page mounts itself. The caller switches on `mode` — a UI concern it owns anyway — and never names an acquirer, never resolves a key and never receives a secret: the only credential handed over is a PER-ORDER public token scoped to this one setup attempt. Card details are entered inside an iframe the acquirer hosts, so they never touch the calling page or this service. Send `ui_mode: \"embedded\"` to get a form mounted IN the calling page: the default acquirer then answers `embedded_checkout` (a setup session, nothing charged, no redirect); absent or `hosted` keeps the historical answer byte for byte. The widget flow AUTHORISES a small amount with capture disabled and the poller releases the hold ten minutes later; nobody is charged for adding a card. 409 when the org has no customer at its acquirer — there would be nothing to attach a card to. X-API-Key only — no identity headers (orgId is in the path).",
+    "Server-to-server. Returns a DESCRIPTOR of the mechanism the org's acquirer offers, because the acquirers genuinely differ: one hosts a portal we redirect to, the other has no portal at all and saves a card only through a browser card field the page mounts itself. The caller switches on `mode` — a UI concern it owns anyway — and never names an acquirer, never resolves a key and never receives a secret: the only credential handed over is a PER-ORDER public token scoped to this one setup attempt. Card details are entered inside an iframe the acquirer hosts, so they never touch the calling page or this service. Send `ui_mode: \"embedded\"` to get a form mounted IN the calling page: the default acquirer then answers `embedded_checkout` (a setup session, nothing charged, no redirect); absent or `hosted` keeps the historical answer byte for byte. The widget flow AUTHORISES a small amount with capture disabled and the poller releases the hold ten minutes later; nobody is charged for adding a card. 409 when the org has no customer at its acquirer — there would be nothing to attach a card to. X-API-Key only — orgId is in the path. An OPTIONAL `x-user-id` names the person setting the card up: once the card is saved, the Stripe customer's contact email becomes that person's (the last person who pays or saves a card for the org receives its receipts). Absent, nothing about the customer changes.",
   tags: ["Internal"],
   security: apiKeySec,
   request: {
     params: z.object({ orgId: z.string() }),
+    headers: z.object({
+      "x-user-id": z.string().optional().openapi({
+        description:
+          "The person setting the card up. When their card is saved, the Stripe customer's contact email becomes theirs.",
+      }),
+    }),
     body: { content: { "application/json": { schema: CardSetupRequestSchema } } },
   },
   responses: {
