@@ -352,6 +352,54 @@ describe("POST /internal/card_setup/by-org/:orgId — the hosted flow cannot rem
   });
 });
 
+describe("POST /internal/card_setup/by-org/:orgId — in-page, no-charge card capture", () => {
+  it("creates a SETUP-mode embedded session that never redirects and charges nothing", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x" }]);
+    dbMock.queueSelect("org_acquirers", []);
+    stripeMock.checkout.sessions.create.mockResolvedValueOnce({
+      id: "cs_setup_1",
+      object: "checkout.session",
+      mode: "setup",
+      customer: "cus_x",
+      metadata: { org_id: TEST_ORG_ID, purpose: "card-setup" },
+      client_secret: "cs_setup_1_secret_abc",
+    });
+
+    const res = await request(app)
+      .post(`/internal/card_setup/by-org/${TEST_ORG_ID}`)
+      .set(headers)
+      .send({ ui_mode: "embedded" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      object: "card_setup",
+      mode: "embedded_checkout",
+      client_secret: "cs_setup_1_secret_abc",
+    });
+    const params = stripeMock.checkout.sessions.create.mock.calls[0][0];
+    expect(params).toMatchObject({
+      mode: "setup",
+      ui_mode: "embedded",
+      redirect_on_completion: "never",
+      customer: "cus_x",
+      payment_method_types: ["card"],
+      metadata: { org_id: TEST_ORG_ID },
+    });
+    // Nothing that could take money is on the request.
+    expect(params.line_items).toBeUndefined();
+    expect(params.return_url).toBeUndefined();
+    expect(stripeMock.billingPortal.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("still requires return_url when the caller did not ask for embedded", async () => {
+    const res = await request(app)
+      .post(`/internal/card_setup/by-org/${TEST_ORG_ID}`)
+      .set(headers)
+      .send({});
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("POST /internal/card_setup/by-org/:orgId — what the browser gets", () => {
   it("hands over the per-order public token and no merchant credential", async () => {
     pinnedToRevolut();

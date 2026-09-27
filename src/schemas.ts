@@ -138,14 +138,27 @@ export const CreateCustomerRequestSchema = z
 
 export const CardSetupRequestSchema = z
   .object({
-    return_url: z.string().url().openapi({
+    return_url: z.string().url().optional().openapi({
       description:
-        "Where a hosted flow returns the customer to. Ignored by an acquirer whose flow is embedded rather than hosted.",
+        "Where a hosted flow returns the customer to. Required unless `ui_mode` is `embedded`. Ignored by an acquirer whose flow is embedded rather than hosted.",
     }),
     currency: z.string().min(3).optional().openapi({
       description:
         "Currency for the verification authorisation an acquirer may need to place. Never captured.",
     }),
+    ui_mode: z.enum(["hosted", "embedded"]).optional().openapi({
+      description:
+        "How the caller wants the card form presented. `hosted` (absent = hosted, unchanged for every existing caller) may send the customer to a page and back. `embedded` asks for a form the caller mounts IN ITS OWN PAGE, charging nothing: the default acquirer then answers `embedded_checkout`. An acquirer whose only mechanism is already in-page (`embedded_widget`) answers the same whichever is asked.",
+    }),
+  })
+  .superRefine((data, ctx) => {
+    if (data.ui_mode !== "embedded" && data.return_url === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["return_url"],
+        message: "return_url is required unless ui_mode is 'embedded'",
+      });
+    }
   })
   .openapi("CardSetupRequest");
 
@@ -913,12 +926,16 @@ registry.registerPath({
 export const CardSetupSchema = z
   .object({
     object: z.literal("card_setup"),
-    mode: z.enum(["hosted_redirect", "embedded_widget"]).openapi({
+    mode: z.enum(["hosted_redirect", "embedded_checkout", "embedded_widget"]).openapi({
       description:
-        "Which MECHANISM this org's acquirer offers. `hosted_redirect` — send the customer to `url`. `embedded_widget` — load `script_url`, initialise the SDK with `token`, mount its card field, and pass `save_payment_method_for` when submitting it.",
+        "Which MECHANISM this org's acquirer offers. `hosted_redirect` — send the customer to `url`. `embedded_checkout` — mount the acquirer's embedded checkout in the page with `client_secret` (Stripe.js `initEmbeddedCheckout({ clientSecret, onComplete })`); it is a SETUP session, charges nothing, saves the card for off-session use, and never redirects — completion arrives through `onComplete`. `embedded_widget` — load `script_url`, initialise the SDK with `token`, mount its card field, and pass `save_payment_method_for` when submitting it.",
     }),
     url: z.string().optional().openapi({
       description: "hosted_redirect only. Where to send the customer.",
+    }),
+    client_secret: z.string().optional().openapi({
+      description:
+        "embedded_checkout only. The secret the page mounts the embedded checkout with. Scoped to this one setup session and safe in a page; it is not a merchant key.",
     }),
     script_url: z.string().optional().openapi({
       description:
@@ -966,7 +983,7 @@ registry.registerPath({
   path: "/internal/card_setup/by-org/{orgId}",
   summary: "How this org's customer adds a card (described, not performed)",
   description:
-    "Server-to-server. Returns a DESCRIPTOR of the mechanism the org's acquirer offers, because the acquirers genuinely differ: one hosts a portal we redirect to, the other has no portal at all and saves a card only through a browser card field the page mounts itself. The caller switches on `mode` — a UI concern it owns anyway — and never names an acquirer, never resolves a key and never receives a secret: the only credential handed over is a PER-ORDER public token scoped to this one setup attempt. Card details are entered inside an iframe the acquirer hosts, so they never touch the calling page or this service. The widget flow AUTHORISES a small amount with capture disabled and the poller releases the hold ten minutes later; nobody is charged for adding a card. 409 when the org has no customer at its acquirer — there would be nothing to attach a card to. X-API-Key only — no identity headers (orgId is in the path).",
+    "Server-to-server. Returns a DESCRIPTOR of the mechanism the org's acquirer offers, because the acquirers genuinely differ: one hosts a portal we redirect to, the other has no portal at all and saves a card only through a browser card field the page mounts itself. The caller switches on `mode` — a UI concern it owns anyway — and never names an acquirer, never resolves a key and never receives a secret: the only credential handed over is a PER-ORDER public token scoped to this one setup attempt. Card details are entered inside an iframe the acquirer hosts, so they never touch the calling page or this service. Send `ui_mode: \"embedded\"` to get a form mounted IN the calling page: the default acquirer then answers `embedded_checkout` (a setup session, nothing charged, no redirect); absent or `hosted` keeps the historical answer byte for byte. The widget flow AUTHORISES a small amount with capture disabled and the poller releases the hold ten minutes later; nobody is charged for adding a card. 409 when the org has no customer at its acquirer — there would be nothing to attach a card to. X-API-Key only — no identity headers (orgId is in the path).",
   tags: ["Internal"],
   security: apiKeySec,
   request: {
