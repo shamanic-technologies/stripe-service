@@ -1,5 +1,5 @@
 import type Stripe from "stripe";
-import { VERIFICATION_AMOUNT } from "./card-setup";
+import { REVOLUT_SDK_SCRIPT_URL, VERIFICATION_AMOUNT } from "./card-setup";
 import { getPlatformStripe } from "./event-processor";
 import { createOrder } from "./revolut-client";
 import { mirrorOrderById } from "./revolut-processor";
@@ -24,8 +24,17 @@ export interface NeutralCheckout {
   /** Diagnostic only. A consumer must not branch on it. */
   acquirer: "revolut";
   id: string;
-  /** Where to send the buyer. */
-  url: string;
+  /**
+   * How the buyer pays, and the field a consumer switches on — the same
+   * vocabulary as `card_setup.mode`. `hosted_redirect`: send them to `url`.
+   * `embedded_widget`: mount the acquirer's browser widget IN THE PAGE with the
+   * fields under `widget`; nobody leaves the page and `url` is null.
+   */
+  presentation: "hosted_redirect" | "embedded_widget";
+  /** Where to send the buyer. Null for `embedded_widget`, which never redirects. */
+  url: string | null;
+  /** `embedded_widget` only; absent otherwise. */
+  widget?: EmbeddedWidget;
   mode: "payment" | "setup";
   /**
    * What the buyer is asked for, minor units. For `setup` this is the
@@ -36,6 +45,28 @@ export interface NeutralCheckout {
   currency: string;
   /** The acquirer's own state for the order, at creation. */
   status: string | null;
+}
+
+/**
+ * What the page needs to take the payment in the acquirer's own widget, without
+ * leaving the page. Byte-identical to the `embedded_widget` card setup, so a
+ * page that already mounts that one mounts this one the same way — the only
+ * difference is that this order is CAPTURED (it is a real payment) rather than
+ * authorised and released.
+ */
+export interface EmbeddedWidget {
+  /** The acquirer's browser SDK to load in the page. */
+  script_url: string;
+  /** The SDK's environment argument. */
+  environment: "prod" | "sandbox";
+  /** The per-order PUBLIC token the SDK is initialised with. Not a secret. */
+  token: string;
+  /**
+   * Pass this to the widget. It is what saves the card for charging LATER with
+   * nobody on the page — the order alone does not (proved in production), and
+   * a card saved only for the customer's own checkouts cannot run auto-topup.
+   */
+  save_payment_method_for: "merchant";
 }
 
 /** A checkout this acquirer cannot perform. Always fails loud, never degrades. */
@@ -184,6 +215,11 @@ export async function checkoutViaRevolut(params: {
     );
   }
   const isSetup = body.mode === "setup";
+  // In the page, or on a page of theirs. The caller asks with Stripe's own
+  // `ui_mode`, because that is what it already sends; this acquirer has no
+  // embedded checkout, but its card widget takes a payment in the page just as
+  // well, and saves the card while doing it.
+  const embedded = body.ui_mode === "embedded";
 
   let amount: number;
   let currency: string;
@@ -219,7 +255,7 @@ export async function checkoutViaRevolut(params: {
     // a card is saved against a customer, so an order without one has nowhere
     // to put it.
     save_payment_method_for: "merchant",
-    ...(body.success_url ? { redirect_url: body.success_url } : {}),
+    ...(body.success_url && !embedded ? { redirect_url: body.success_url } : {}),
     metadata: {
       ...((body.metadata as Record<string, string> | undefined) ?? {}),
       org_id: params.orgId,
@@ -227,7 +263,22 @@ export async function checkoutViaRevolut(params: {
     },
   });
 
-  if (!order.checkout_url) {
+  let widget: EmbeddedWidget | undefined;
+  if (embedded) {
+    if (typeof order.token !== "string" || order.token.length === 0) {
+      // A widget with nothing to mount against would fail in the buyer's
+      // browser, where nobody of ours can read why.
+      throw new Error(
+        `Revolut created order ${order.id} without a token; there is nothing to mount the payment widget against`
+      );
+    }
+    widget = {
+      script_url: REVOLUT_SDK_SCRIPT_URL,
+      environment: "prod",
+      token: order.token,
+      save_payment_method_for: "merchant",
+    };
+  } else if (!order.checkout_url) {
     throw new Error(
       `Revolut created order ${order.id} without a checkout_url; there is nowhere to send the buyer`
     );
@@ -245,7 +296,9 @@ export async function checkoutViaRevolut(params: {
     object: "checkout",
     acquirer: "revolut",
     id: order.id,
-    url: order.checkout_url,
+    presentation: embedded ? "embedded_widget" : "hosted_redirect",
+    url: embedded ? null : (order.checkout_url as string),
+    ...(widget ? { widget } : {}),
     mode: isSetup ? "setup" : "payment",
     amount,
     currency,
