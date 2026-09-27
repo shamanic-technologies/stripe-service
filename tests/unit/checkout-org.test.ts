@@ -56,6 +56,7 @@ describe("checkoutViaRevolut — payment", () => {
       object: "checkout",
       acquirer: "revolut",
       id: "ord-1",
+      presentation: "hosted_redirect",
       url: "https://checkout.revolut.com/payment-link/tok-1",
       mode: "payment",
       amount: 5000,
@@ -230,5 +231,87 @@ describe("checkoutViaRevolut — setup mode, the $0 card imprint", () => {
     const [[body]] = createOrder.mock.calls;
     expect(body.amount).toBe(VERIFICATION_AMOUNT);
     expect(body.description).toMatch(/not charged/i);
+  });
+});
+
+describe("checkoutViaRevolut — in the page (ui_mode embedded)", () => {
+  const EMBEDDED_TOPUP = {
+    mode: "payment" as const,
+    ui_mode: "embedded" as const,
+    redirect_on_completion: "never" as const,
+    line_items: TOPUP.line_items,
+    customer: "cus_stripe_1",
+    metadata: { org_id: "org-1" },
+  };
+
+  beforeEach(() => {
+    createOrder.mockResolvedValue({
+      id: "ord-2",
+      state: "pending",
+      token: "pub-tok-2",
+      checkout_url: "https://checkout.revolut.com/payment-link/tok-2",
+    });
+  });
+
+  it("describes the widget to mount instead of a page to send the buyer to", async () => {
+    const checkout = await checkoutViaRevolut({ ...BASE, body: EMBEDDED_TOPUP as never });
+
+    expect(checkout).toEqual({
+      object: "checkout",
+      acquirer: "revolut",
+      id: "ord-2",
+      presentation: "embedded_widget",
+      url: null,
+      widget: {
+        script_url: "https://merchant.revolut.com/embed.js",
+        environment: "prod",
+        token: "pub-tok-2",
+        save_payment_method_for: "merchant",
+      },
+      mode: "payment",
+      amount: 5000,
+      currency: "USD",
+      status: "pending",
+    });
+  });
+
+  it("takes real money, saves the card for later, and credits the org", async () => {
+    await checkoutViaRevolut({ ...BASE, body: EMBEDDED_TOPUP as never });
+
+    const sent = createOrder.mock.calls[0][0];
+    expect(sent).toMatchObject({
+      amount: 5000,
+      currency: "USD",
+      capture_mode: "automatic",
+      customerId: "cus-rev-1",
+      save_payment_method_for: "merchant",
+      metadata: { org_id: "org-1" },
+    });
+    // A top-up, not a card-verification hold the poller would release.
+    expect(sent.metadata.purpose).toBeUndefined();
+    // Nobody leaves the page, so there is nowhere to redirect them back to.
+    expect(sent.redirect_url).toBeUndefined();
+  });
+
+  it("never redirects even when the caller also sent a success_url", async () => {
+    await checkoutViaRevolut({
+      ...BASE,
+      body: { ...EMBEDDED_TOPUP, success_url: "https://dashboard.example/x" } as never,
+    });
+    expect(createOrder.mock.calls[0][0].redirect_url).toBeUndefined();
+  });
+
+  it("fails loud when the acquirer returns no token to mount against", async () => {
+    createOrder.mockResolvedValue({ id: "ord-3", state: "pending" });
+    await expect(
+      checkoutViaRevolut({ ...BASE, body: EMBEDDED_TOPUP as never })
+    ).rejects.toThrow(/token/);
+  });
+
+  it("needs no hosted checkout_url in the page", async () => {
+    createOrder.mockResolvedValue({ id: "ord-4", state: "pending", token: "pub-tok-4" });
+    const checkout = await checkoutViaRevolut({ ...BASE, body: EMBEDDED_TOPUP as never });
+    expect(checkout.presentation).toBe("embedded_widget");
+    expect(checkout.url).toBeNull();
   });
 });
