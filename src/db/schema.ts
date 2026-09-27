@@ -175,6 +175,12 @@ export const events = pgTable(
     payload: jsonb("payload").notNull(),
     source: text("source").notNull(), // "webhook" | "poll"
     receivedAt: timestamp("received_at").defaultNow().notNull(),
+    // Set once every side-effect of a real Stripe event has run. NULL on a
+    // stored event means a side-effect threw: the next delivery of the same
+    // event (Stripe's retry, or the poller) runs them again instead of
+    // treating the event as done. Synthetic api_snapshot rows never run
+    // side-effects and leave it NULL.
+    sideEffectsCompletedAt: timestamp("side_effects_completed_at"),
   },
   (table) => [
     index("idx_events_type").on(table.type),

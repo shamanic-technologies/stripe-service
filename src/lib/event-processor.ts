@@ -64,8 +64,18 @@ export async function getPlatformStripe(): Promise<Stripe> {
  * for real Stripe events (`source ∈ {webhook, poll}`), never for synthetic
  * api_snapshot events.
  *
- * Returns true if the event was processed (newly inserted), false if it was
- * already known.
+ * A side-effect that throws makes the webhook answer 5xx so Stripe delivers
+ * the event again (and the poller does not advance past it). That retry is
+ * only worth something if it RE-RUNS the side-effects: the event row is
+ * already stored, so "already known" alone would skip them forever and the
+ * failure would be permanent (a default card never promoted, a fee never
+ * declared, a payer's email never adopted). So an event counts as done only
+ * once `side_effects_completed_at` is set; a stored event without it is
+ * processed again. Every side-effect is idempotent, which is what makes the
+ * re-run safe.
+ *
+ * Returns true if the event was processed (newly inserted, or re-run after a
+ * failed side-effect), false if it was already fully handled.
  */
 export async function processEvent(
   event: Stripe.Event,
@@ -89,7 +99,17 @@ export async function processEvent(
     .returning({ id: events.id });
 
   if (inserted.length === 0) {
-    return false;
+    const [known] = await db
+      .select({ sideEffectsCompletedAt: events.sideEffectsCompletedAt })
+      .from(events)
+      .where(eq(events.id, event.id))
+      .limit(1);
+    if (!known || known.sideEffectsCompletedAt) {
+      return false;
+    }
+    console.warn(
+      `[stripe-service] Event ${event.id} (${event.type}) is stored but its side-effects never completed; running them again`
+    );
   }
 
   // A card was added or removed: drop any remembered payment-method answer for
@@ -102,6 +122,10 @@ export async function processEvent(
     await projectSilverFromBronze(objectId, orgId);
   }
   await runSideEffects(event);
+  await db
+    .update(events)
+    .set({ sideEffectsCompletedAt: new Date() })
+    .where(eq(events.id, event.id));
   return true;
 }
 
