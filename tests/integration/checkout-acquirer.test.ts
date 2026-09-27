@@ -117,6 +117,7 @@ describe("POST /v1/checkout/sessions dispatches on the org's acquirer", () => {
       object: "checkout",
       acquirer: "revolut",
       id: "ord-1",
+      presentation: "hosted_redirect",
       // The one field a caller redirecting a browser reads, named as it always was.
       url: "https://checkout.revolut.com/payment-link/tok-1",
       mode: "payment",

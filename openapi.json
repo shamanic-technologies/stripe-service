@@ -2100,6 +2100,7 @@
     "/v1/checkout/sessions": {
       "post": {
         "summary": "Create a checkout. A Stripe org gets its verbatim Checkout Session; an org the rollout has moved to another acquirer gets a neutral checkout carrying the same `url`.",
+        "description": "An org on an acquirer with no Checkout Session object gets `{object:\"checkout\", presentation, url, widget?, mode, amount, currency, status}`. Switch on `presentation` (same vocabulary as `card_setup.mode`): `hosted_redirect` sends the buyer to `url`; `embedded_widget` (asked for with `ui_mode: \"embedded\"`) takes the payment IN THE PAGE — load `widget.script_url`, initialise the SDK with `widget.token`, and pass `widget.save_payment_method_for` to the widget so the card is saved for later off-session top-ups; `url` is then null and nothing redirects. The payment is stamped with the org and credits it through the same per-org payment summary a Stripe top-up does.",
         "tags": [
           "Checkout"
         ],
