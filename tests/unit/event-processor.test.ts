@@ -208,3 +208,50 @@ describe("resolveOrgId — customer-mirror fallback", () => {
     expect(dbMock.db.select).not.toHaveBeenCalled();
   });
 });
+
+describe("processEvent — a side-effect that failed is retried on redelivery", () => {
+  const detached = {
+    id: "evt_pm_retry",
+    type: "payment_method.detached",
+    api_version: "2024-12-18",
+    livemode: false,
+    created: 1700000000,
+    data: { object: { id: "pm_1", object: "payment_method", customer: null } },
+  } as never;
+
+  beforeEach(() => {
+    dbMock.clearQueues();
+  });
+
+  it("marks side-effects complete once they all ran", async () => {
+    dbMock.queueInsert("events", [{ id: "evt_pm_retry" }]);
+    const result = await processEvent(detached, "webhook");
+    expect(result).toBe(true);
+    expect(notifyPaymentMethodRemoved).toHaveBeenCalledTimes(1);
+    expect(dbMock.db.update).toHaveBeenCalled();
+  });
+
+  it("does not mark complete when a side-effect throws", async () => {
+    dbMock.queueInsert("events", [{ id: "evt_pm_retry" }]);
+    vi.mocked(notifyPaymentMethodRemoved).mockRejectedValueOnce(new Error("boom"));
+    await expect(processEvent(detached, "webhook")).rejects.toThrow("boom");
+    expect(dbMock.db.update).not.toHaveBeenCalled();
+  });
+
+  it("re-runs the side-effects of a stored event that never completed", async () => {
+    dbMock.queueInsert("events", []);
+    dbMock.queueSelect("events", [{ sideEffectsCompletedAt: null }]);
+    const result = await processEvent(detached, "webhook");
+    expect(result).toBe(true);
+    expect(notifyPaymentMethodRemoved).toHaveBeenCalledTimes(1);
+    expect(dbMock.db.update).toHaveBeenCalled();
+  });
+
+  it("skips a stored event whose side-effects already completed", async () => {
+    dbMock.queueInsert("events", []);
+    dbMock.queueSelect("events", [{ sideEffectsCompletedAt: new Date() }]);
+    const result = await processEvent(detached, "webhook");
+    expect(result).toBe(false);
+    expect(notifyPaymentMethodRemoved).not.toHaveBeenCalled();
+  });
+});
