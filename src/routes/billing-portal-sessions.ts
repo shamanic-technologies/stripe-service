@@ -5,6 +5,7 @@ import {
   cardUpdatePortalParams,
   invoiceHistoryPortalParams,
 } from "../lib/portal-session";
+import { recordCardUpdateOpener } from "../lib/payer-email";
 
 const router = Router();
 
@@ -61,6 +62,17 @@ router.post(
 
       const ctx = await buildContext(req, res);
       const session = await ctx.stripe.billingPortal.sessions.create(params, stripeRequestOptions(ctx));
+
+      // A card added through this session makes its opener the customer's
+      // contact email. The portal carries no metadata, so the opener is
+      // remembered here and adopted when Stripe reports the card saved.
+      if (flowType === "payment_method_update") {
+        await recordCardUpdateOpener({
+          customerId: body.customer,
+          orgId: ctx.orgId,
+          userId: ctx.userId,
+        });
+      }
 
       res.locals.stripeObjectId = session.id;
       return res.json(session);

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
-import { authHeaders, TEST_ORG_ID } from "../helpers/mocks";
+import { authHeaders, TEST_ORG_ID, TEST_USER_ID } from "../helpers/mocks";
 
 const { dbMock, stripeMock } = vi.hoisted(() => {
   const { makeDbMock, makeStripeMock } = require("../helpers/mocks-factory.cjs");
@@ -248,5 +248,50 @@ describe("GET /v1/checkout/sessions (list)", () => {
     expect(res.status).toBe(200);
     expect(res.body.object).toBe("list");
     expect(res.body.data).toHaveLength(1);
+  });
+});
+
+describe("POST /v1/checkout/sessions — names the person who opened it", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stripeMock.checkout.sessions.create.mockReset();
+  });
+
+  it("stamps payer_user_id on a payment session, keeping the caller's metadata", async () => {
+    stripeMock.checkout.sessions.create.mockResolvedValueOnce({
+      id: "cs_pay", object: "checkout.session", mode: "payment", metadata: {},
+    });
+    const res = await request(app)
+      .post("/v1/checkout/sessions")
+      .set(authHeaders())
+      .send({
+        mode: "payment",
+        success_url: "https://example.com/s",
+        customer: "cus_x",
+        line_items: [{ price: "price_1", quantity: 1 }],
+        metadata: { type: "topup" },
+      });
+    expect(res.status).toBe(200);
+    const params = stripeMock.checkout.sessions.create.mock.calls[0][0];
+    expect(params.metadata).toEqual({ type: "topup", payer_user_id: TEST_USER_ID, org_id: TEST_ORG_ID });
+    expect(params.setup_intent_data).toBeUndefined();
+  });
+
+  it("stamps it on the SetupIntent of a setup session too", async () => {
+    stripeMock.checkout.sessions.create.mockResolvedValueOnce({
+      id: "cs_setup", object: "checkout.session", mode: "setup", metadata: {},
+    });
+    const res = await request(app)
+      .post("/v1/checkout/sessions")
+      .set(authHeaders())
+      .send({
+        mode: "setup",
+        success_url: "https://example.com/s",
+        customer: "cus_x",
+        setup_intent_data: { metadata: { keep: "me" } },
+      });
+    expect(res.status).toBe(200);
+    const params = stripeMock.checkout.sessions.create.mock.calls[0][0];
+    expect(params.setup_intent_data.metadata).toEqual({ keep: "me", payer_user_id: TEST_USER_ID });
   });
 });

@@ -34,6 +34,7 @@ import {
   listPaymentMethodsForRead,
 } from "../lib/payment-method-read";
 import { cardUpdatePortalParams } from "../lib/portal-session";
+import { payerMetadata, recordCardUpdateOpener } from "../lib/payer-email";
 import { listOrgPayments } from "../lib/payments-list";
 import {
   chargeViaRevolut,
@@ -549,6 +550,11 @@ router.delete(
  * Fail loud: an org with no customer on its acquirer -> 409. There is nothing
  * to attach a card to, and answering with a session that cannot work would move
  * the failure into the customer's browser.
+ *
+ * An OPTIONAL `x-user-id` names the person setting the card up. When present,
+ * a card they save makes them the Stripe customer's contact email (the last
+ * person who pays or saves a card for the org takes over the receipts — see
+ * src/lib/payer-email.ts). Absent, nothing about the customer changes.
  */
 router.post(
   "/internal/card_setup/by-org/:orgId",
@@ -562,6 +568,10 @@ router.post(
       }
       const orgId = req.params.orgId;
       res.locals.orgId = orgId;
+      const userHeader = req.headers["x-user-id"];
+      const payerUserId =
+        typeof userHeader === "string" && userHeader.length > 0 ? userHeader : null;
+      if (payerUserId) res.locals.userId = payerUserId;
 
       const row = await db
         .select({ id: customers.id })
@@ -592,9 +602,9 @@ router.post(
             redirect_on_completion: "never",
             customer: customerId,
             payment_method_types: ["card"],
-            metadata: { org_id: orgId, purpose: "card-setup" },
+            metadata: { org_id: orgId, purpose: "card-setup", ...payerMetadata(payerUserId) },
             setup_intent_data: {
-              metadata: { org_id: orgId, purpose: "card-setup" },
+              metadata: { org_id: orgId, purpose: "card-setup", ...payerMetadata(payerUserId) },
             },
           } as Stripe.Checkout.SessionCreateParams);
           await recordApiSnapshot(session, "checkout_session", orgId);
@@ -612,6 +622,9 @@ router.post(
               return_url: parsed.data.return_url,
             })
           );
+          if (payerUserId) {
+            await recordCardUpdateOpener({ customerId, orgId, userId: payerUserId });
+          }
           return session.url;
         },
       });
