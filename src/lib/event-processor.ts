@@ -377,6 +377,41 @@ async function latestBronzeObject(objectId: string): Promise<object | null> {
 }
 
 /**
+ * Has Stripe deleted this customer? Deletion is TERMINAL at Stripe (a deleted
+ * customer can never come back), so ANY evidence of it in bronze wins over the
+ * latest payload.
+ *
+ * Two shapes of evidence, and the second is the one that was missed:
+ *  - a payload carrying `deleted: true` — what `customers.retrieve` returns for
+ *    a deleted customer, and what our own teardown tombstone records;
+ *  - a `customer.deleted` EVENT. Its `data.object` is the customer as it was,
+ *    with NO `deleted` field (verified on evt_1UKMBsEnlXMXdaZaQLjS6pgT), so
+ *    keying on the payload alone re-upserted every customer deleted in Stripe's
+ *    dashboard. The mirror kept answering with a customer Stripe no longer has,
+ *    and the live payment-method read then 502'd `No such customer` — which made
+ *    the org's whole balance unreadable (prod 2026-09-28: 40 of 52 deleted
+ *    customers were still in silver).
+ *
+ * Checked by existence rather than by "is the latest event a delete" so a
+ * snapshot recorded in the same second (or a replayed older event) can never
+ * resurrect the row.
+ */
+async function customerDeletedAtStripe(
+  objectId: string,
+  obj: object
+): Promise<boolean> {
+  if ((obj as Stripe.DeletedCustomer).deleted === true) return true;
+  const rows = await db
+    .select({ id: events.id })
+    .from(events)
+    .where(
+      sql`${events.objectId} = ${objectId} AND (${events.type} = 'customer.deleted' OR ${events.payload}->'data'->'object'->>'deleted' = 'true')`
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
  * Route one already-read bronze object into its silver table. Split out of
  * `projectSilverFromBronze` so the boot repair can reuse a payload it has
  * already fetched — and so kind detection always sees the payload, never just
@@ -390,6 +425,14 @@ async function projectBronzeObject(
   const kind = detectObjectKind(obj, objectId);
   if (!kind) {
     reportUnroutable(objectId, obj);
+    return;
+  }
+
+  // A customer Stripe has deleted is deleted for good, whatever the latest
+  // payload looks like — checked before the org guard because removing a row
+  // needs no tenant. See `customerDeletedAtStripe`.
+  if (kind === "customer" && (await customerDeletedAtStripe(objectId, obj))) {
+    await db.delete(customers).where(eq(customers.id, objectId));
     return;
   }
 
@@ -414,12 +457,7 @@ async function projectBronzeObject(
   const tenantOrgId = orgId as string;
 
   if (kind === "customer") {
-    const customer = obj as Stripe.Customer | Stripe.DeletedCustomer;
-    if ((customer as Stripe.DeletedCustomer).deleted) {
-      await db.delete(customers).where(eq(customers.id, customer.id!));
-      return;
-    }
-    await upsertCustomer(customer as Stripe.Customer, tenantOrgId);
+    await upsertCustomer(obj as Stripe.Customer, tenantOrgId);
   } else if (kind === "payment_intent") {
     await upsertPaymentIntent(obj as Stripe.PaymentIntent, tenantOrgId);
   } else if (kind === "checkout_session") {
