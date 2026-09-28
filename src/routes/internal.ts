@@ -1101,6 +1101,21 @@ router.get(
 );
 
 /**
+ * Stripe's definitive "this customer does not exist" — and nothing else. A
+ * timeout, a 5xx, a rate limit or an auth failure is not the acquirer stating
+ * absence, and must still fail loud. Read by shape, not `instanceof`: the SDK
+ * is mocked in tests.
+ */
+function stripeSaysCustomerIsGone(err: unknown): boolean {
+  const e = err as { code?: unknown; param?: unknown; message?: unknown } | null;
+  if (e?.code !== "resource_missing") return false;
+  return (
+    e.param === "customer" ||
+    (typeof e.message === "string" && e.message.includes("No such customer"))
+  );
+}
+
+/**
  * GET /internal/payment_methods/by-org/:orgId?type=card
  *
  * Live Stripe `paymentMethods.list` for the org's customer, via the PLATFORM
@@ -1145,7 +1160,7 @@ router.get(
       }
 
       const row = await db
-        .select({ id: customers.id })
+        .select({ id: customers.id, livemode: customers.livemode })
         .from(customers)
         .where(eq(customers.orgId, orgId))
         .orderBy(desc(customers.syncedAt))
@@ -1162,8 +1177,34 @@ router.get(
       // AUTHORIZE path, so a burst of authorizes must not become a burst of
       // Stripe calls (a 429 there refused paid work). See payment-method-read.ts.
       const stripe = await getPlatformStripe();
-      const list = await listPaymentMethodsForRead(stripe, customer, type);
-      return res.json(list);
+      try {
+        const list = await listPaymentMethodsForRead(stripe, customer, type);
+        return res.json(list);
+      } catch (err) {
+        if (!stripeSaysCustomerIsGone(err)) throw err;
+        // Stripe states, definitively, that the mirrored customer no longer
+        // exists — deleted with no event we ever received. Tombstone it so every
+        // later read (this one's siblings included) sees an org with NO
+        // customer, and answer the truth for now: Stripe holds no method for it.
+        // An empty list rather than the no-customer 404, because the caller
+        // already read the customer on this same request and treats a 404 here
+        // as a failure to ask.
+        const tombstone = {
+          id: customer,
+          deleted: true,
+          livemode: row[0].livemode === "true",
+        };
+        await recordApiSnapshot(tombstone, "customer", orgId);
+        console.warn(
+          `[stripe-service] org ${orgId}: customer ${customer} no longer exists at Stripe, tombstoned`
+        );
+        return res.json({
+          object: "list",
+          data: [],
+          has_more: false,
+          url: "/v1/payment_methods",
+        });
+      }
     } catch (err) {
       return next(err);
     }

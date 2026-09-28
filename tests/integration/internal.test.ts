@@ -1075,6 +1075,46 @@ describe("GET /internal/payment_methods/by-org/:orgId (user-less)", () => {
     expect(res.status).toBe(404);
     expect(stripeMock.paymentMethods.list).not.toHaveBeenCalled();
   });
+
+  it("a customer Stripe says no longer exists is tombstoned and reads as holding no method, never a 502", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_gone", livemode: "true" }]);
+    dbMock.queueSelect("events", deletedCustomerEvent("cus_gone"));
+    stripeMock.paymentMethods.list.mockRejectedValue(
+      Object.assign(new Error("No such customer: 'cus_gone'"), {
+        type: "StripeInvalidRequestError",
+        code: "resource_missing",
+        param: "customer",
+        statusCode: 400,
+      })
+    );
+
+    const res = await request(app)
+      .get(`/internal/payment_methods/by-org/${TEST_ORG_ID}?type=card`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([]);
+    const tomb = dbMock.lastInsertValues("events") as { payload: { data: { object: { id: string; deleted: boolean } } } };
+    expect(tomb.payload.data.object).toMatchObject({ id: "cus_gone", deleted: true });
+    expect(dbMock.db.delete).toHaveBeenCalled();
+  });
+
+  it("a Stripe failure that is NOT the customer's absence still fails loud", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x", livemode: "true" }]);
+    stripeMock.paymentMethods.list.mockRejectedValue(
+      Object.assign(new Error("An error occurred with our connection to Stripe"), {
+        type: "StripeAPIError",
+        statusCode: 500,
+      })
+    );
+
+    const res = await request(app)
+      .get(`/internal/payment_methods/by-org/${TEST_ORG_ID}?type=card`)
+      .set(apiKeyOnly());
+
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(dbMock.db.delete).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /internal/invoices/by-org/:orgId — acquirer dispatch", () => {

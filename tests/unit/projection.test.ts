@@ -419,3 +419,68 @@ describe("projection — refund / dispute silver", () => {
     expect(row.livemode).toBeNull();
   });
 });
+
+describe("projection — a customer Stripe deleted stays deleted", () => {
+  // Real shape, from evt_1UKMBsEnlXMXdaZaQLjS6pgT: a customer.deleted event's
+  // data.object is the customer as it was, with NO `deleted` field.
+  const deletedEventPayload = {
+    id: "evt_cus_deleted",
+    type: "customer.deleted",
+    created: 1790531324,
+    data: {
+      object: {
+        id: "cus_gone",
+        object: "customer",
+        livemode: true,
+        metadata: { org_id: TEST_ORG_ID },
+        email: null,
+      },
+    },
+  };
+
+  it("deletes silver when the latest bronze is a customer.deleted event carrying no `deleted` flag", async () => {
+    dbMock.queueSelect("events", [{ payload: deletedEventPayload }]);
+    dbMock.queueSelect("events", [{ id: "evt_cus_deleted" }]);
+
+    await projectSilverFromBronze("cus_gone", TEST_ORG_ID);
+
+    expect(dbMock.db.delete).toHaveBeenCalled();
+    expect(dbMock.lastInsertValues("customers")).toBeUndefined();
+  });
+
+  it("a snapshot newer than the delete cannot resurrect the customer", async () => {
+    dbMock.queueSelect("events", [
+      {
+        payload: {
+          id: "api_snap",
+          type: "api_snapshot.customer",
+          data: { object: { id: "cus_gone", object: "customer", livemode: true, metadata: { org_id: TEST_ORG_ID } } },
+        },
+      },
+    ]);
+    dbMock.queueSelect("events", [{ id: "evt_cus_deleted" }]);
+
+    await projectSilverFromBronze("cus_gone", TEST_ORG_ID);
+
+    expect(dbMock.db.delete).toHaveBeenCalled();
+    expect(dbMock.lastInsertValues("customers")).toBeUndefined();
+  });
+
+  it("a live customer with no deletion evidence is upserted as before", async () => {
+    dbMock.queueSelect("events", [
+      {
+        payload: {
+          id: "evt_cus_updated",
+          type: "customer.updated",
+          data: { object: { id: "cus_live", object: "customer", livemode: true, metadata: { org_id: TEST_ORG_ID } } },
+        },
+      },
+    ]);
+    dbMock.queueSelect("events", []);
+
+    await projectSilverFromBronze("cus_live", TEST_ORG_ID);
+
+    expect(dbMock.db.delete).not.toHaveBeenCalled();
+    expect(dbMock.lastInsertValues("customers")).toMatchObject({ id: "cus_live", orgId: TEST_ORG_ID });
+  });
+});
