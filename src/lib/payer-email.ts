@@ -113,7 +113,6 @@ export async function adoptPayerEmailForEvent(
     event.type === "checkout.session.async_payment_succeeded"
   ) {
     const session = event.data.object as Stripe.Checkout.Session;
-    if (session.mode === "subscription") return;
     // `unpaid` = an async payment still in flight; it is adopted on
     // `async_payment_succeeded`, never before.
     if (session.payment_status !== "paid" && session.payment_status !== "no_payment_required") {

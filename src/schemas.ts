@@ -1212,3 +1212,187 @@ registry.registerPath({
     400: { description: "Invalid signature", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });
+
+// --- Internal: Stripe subscriptions, org-scoped ---
+//
+// Stripe ONLY: the second acquirer has no subscription object. Business rules
+// (trial grants, credits, who may raise the amount) belong to the caller; these
+// routes expose the Stripe capability scoped to the org that owns it.
+
+export const SubscriptionCheckoutRequestSchema = z
+  .object({
+    amount: z.number().int().min(50).openapi({
+      description: "Monthly amount in minor units (e.g. 9900 = $99.00/month).",
+    }),
+    currency: z.string().length(3).toLowerCase().openapi({ description: "ISO currency, e.g. `usd`." }),
+    trial_period_days: z.number().int().min(0).max(730).openapi({
+      description:
+        "Free-trial length in days; 0 = no trial. A card is collected either way (`payment_method_collection: always`); a trial that ends without a payment method cancels.",
+    }),
+    ui_mode: z.enum(["hosted", "embedded"]).optional().openapi({
+      description:
+        "`hosted` (default) answers a Session carrying `url` to redirect to (requires `success_url`). `embedded` answers a Session carrying `client_secret` to mount with Stripe.js `initEmbeddedCheckout`; with no `return_url` it never redirects (completion arrives through `onComplete`).",
+    }),
+    success_url: z.string().url().optional(),
+    cancel_url: z.string().url().optional(),
+    return_url: z.string().url().optional().openapi({ description: "embedded only." }),
+    product_name: z.string().min(1).max(250).optional().openapi({
+      description: "Name shown on the checkout page and invoices. Default `Distribute subscription`.",
+    }),
+    metadata: z.record(z.string(), z.string()).optional().openapi({
+      description: "Caller metadata, stamped on the session AND the subscription. `org_id` and `purpose` are always overwritten.",
+    }),
+  })
+  .superRefine((data, ctx) => {
+    if (data.ui_mode !== "embedded" && data.success_url === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["success_url"],
+        message: "success_url is required unless ui_mode is 'embedded'",
+      });
+    }
+  })
+  .openapi("SubscriptionCheckoutRequest");
+
+export const SubscriptionAmountRequestSchema = z
+  .object({
+    amount: z.number().int().min(50).openapi({
+      description: "New amount per period, minor units. Applies from the NEXT invoice; no proration is invoiced now.",
+    }),
+  })
+  .openapi("SubscriptionAmountRequest");
+
+export const SubscriptionSummarySchema = z
+  .object({
+    object: z.literal("subscription_summary"),
+    id: z.string(),
+    org_id: z.string(),
+    customer: z.string().nullable(),
+    status: z.string().openapi({
+      description: "Stripe status verbatim: trialing, active, past_due, unpaid, canceled, incomplete, incomplete_expired, paused.",
+    }),
+    amount: z.number().int().nullable().openapi({ description: "Amount per period (minor units), summed over the prices." }),
+    currency: z.string().nullable(),
+    interval: z.string().nullable(),
+    interval_count: z.number().int().nullable(),
+    trial_start: z.number().int().nullable(),
+    trial_end: z.number().int().nullable().openapi({ description: "Unix seconds." }),
+    current_period_start: z.number().int().nullable(),
+    current_period_end: z.number().int().nullable().openapi({
+      description: "Unix seconds. End of the current period = the next charge date while the subscription runs.",
+    }),
+    cancel_at_period_end: z.boolean(),
+    cancel_at: z.number().int().nullable(),
+    canceled_at: z.number().int().nullable(),
+    ended_at: z.number().int().nullable(),
+    has_payment_method: z.boolean().openapi({
+      description: "A payment method is set: the subscription's own default, else the customer's invoice default.",
+    }),
+    default_payment_method: z.string().nullable(),
+    latest_invoice: z.string().nullable(),
+    created: z.number().int(),
+    metadata: z.record(z.string(), z.string()),
+  })
+  .openapi("SubscriptionSummary");
+
+export const SubscriptionListSchema = z
+  .object({
+    object: z.literal("list"),
+    org_id: z.string(),
+    has_subscription: z.boolean().openapi({
+      description: "false = Stripe answered and the org has NO subscription (ever). A Stripe failure is a 5xx, never `false`.",
+    }),
+    data: z.array(SubscriptionSummarySchema),
+  })
+  .openapi("SubscriptionList");
+
+const subscriptionErrors = {
+  403: { description: "`subscription_not_owned` — the subscription belongs to another org", content: { "application/json": { schema: ErrorResponseSchema } } },
+  404: { description: "`subscription_not_found` — no such subscription at Stripe", content: { "application/json": { schema: ErrorResponseSchema } } },
+  409: { description: "`subscription_ended` (canceled / incomplete_expired) or `subscription_shape_unsupported` (several prices)", content: { "application/json": { schema: ErrorResponseSchema } } },
+  502: { description: "`acquirer_unavailable` — Stripe could not be asked", content: { "application/json": { schema: ErrorResponseSchema } } },
+};
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/subscriptions/by-org/{orgId}/checkout",
+  summary: "Create a monthly SUBSCRIPTION Checkout Session for an org (Stripe only)",
+  description:
+    "Server-to-server. Subscription-mode Stripe Checkout on the org's own Stripe customer: one monthly price at `amount`, optional free trial, card collection required. `org_id` is stamped on the session AND on the subscription. Returns the Stripe Checkout Session verbatim (`url` when hosted, `client_secret` when embedded). NEVER runs the acquirer rollout: an unpinned org is pinned to STRIPE once the session exists (so it can never be moved to another acquirer afterwards); an org pinned to another acquirer is refused 409 `acquirer_not_stripe` with no side effect; an org with no Stripe customer is 409 `no_customer`. OPTIONAL `x-user-id` = the person subscribing (stamped as `payer_user_id`, so their email becomes the customer's once paid). OPTIONAL `Idempotency-Key` forwarded to Stripe. X-API-Key only.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+    body: { content: { "application/json": { schema: SubscriptionCheckoutRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Stripe Checkout Session (verbatim)", content: { "application/json": { schema: StripeObjectSchema } } },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorResponseSchema } } },
+    409: { description: "`acquirer_not_stripe` (org pays through another acquirer) or `no_customer`", content: { "application/json": { schema: ErrorResponseSchema } } },
+    502: { description: "`acquirer_unavailable`", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/subscriptions/by-org/{orgId}",
+  summary: "Every subscription an org holds, read LIVE from Stripe",
+  description:
+    "Server-to-server, user-less. Lists every subscription (any status) on the org's Stripe customers, newest first, read live from Stripe so it is correct the second a Checkout completes. `200 {has_subscription:false, data:[]}` is a DEFINITE none (no customer, or Stripe answered with none). A Stripe failure is `502 acquirer_unavailable` (or `503 acquirer_rate_limited`), never an empty list. X-API-Key only.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: { params: z.object({ orgId: z.string() }) },
+  responses: {
+    200: { description: "The org's subscriptions", content: { "application/json": { schema: SubscriptionListSchema } } },
+    502: { description: "`acquirer_unavailable` — Stripe could not be asked", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/subscriptions/by-org/{orgId}/{subscriptionId}/amount",
+  summary: "Change a subscription's amount for future invoices (no proration)",
+  description:
+    "Server-to-server. Re-prices the subscription's single price to `amount` (same product, currency and interval) with `proration_behavior: none`: nothing is invoiced now, the NEXT invoice is the first at the new amount. Refuses a subscription that is not the org's. OPTIONAL `Idempotency-Key` forwarded to Stripe. X-API-Key only.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string(), subscriptionId: z.string() }),
+    body: { content: { "application/json": { schema: SubscriptionAmountRequestSchema } } },
+  },
+  responses: {
+    200: { description: "The updated subscription", content: { "application/json": { schema: SubscriptionSummarySchema } } },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorResponseSchema } } },
+    ...subscriptionErrors,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/subscriptions/by-org/{orgId}/{subscriptionId}/cancellation",
+  summary: "Cancel a subscription at period end",
+  description:
+    "Server-to-server. Sets `cancel_at_period_end: true`: no future charge, the current period runs out. Idempotent. Refuses a subscription that is not the org's. X-API-Key only.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: { params: z.object({ orgId: z.string(), subscriptionId: z.string() }) },
+  responses: {
+    200: { description: "The updated subscription", content: { "application/json": { schema: SubscriptionSummarySchema } } },
+    ...subscriptionErrors,
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/internal/subscriptions/by-org/{orgId}/{subscriptionId}/cancellation",
+  summary: "Undo a pending cancellation",
+  description:
+    "Server-to-server. Sets `cancel_at_period_end: false`: the subscription renews as before. Idempotent. Refuses a subscription that is not the org's, or one that has already ended (409 `subscription_ended`). X-API-Key only.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: { params: z.object({ orgId: z.string(), subscriptionId: z.string() }) },
+  responses: {
+    200: { description: "The updated subscription", content: { "application/json": { schema: SubscriptionSummarySchema } } },
+    ...subscriptionErrors,
+  },
+});

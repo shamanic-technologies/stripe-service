@@ -1067,6 +1067,230 @@
         "additionalProperties": {
           "nullable": true
         }
+      },
+      "SubscriptionCheckoutRequest": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "minimum": 50,
+            "description": "Monthly amount in minor units (e.g. 9900 = $99.00/month)."
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3,
+            "description": "ISO currency, e.g. `usd`."
+          },
+          "trial_period_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 730,
+            "description": "Free-trial length in days; 0 = no trial. A card is collected either way (`payment_method_collection: always`); a trial that ends without a payment method cancels."
+          },
+          "ui_mode": {
+            "type": "string",
+            "enum": [
+              "hosted",
+              "embedded"
+            ],
+            "description": "`hosted` (default) answers a Session carrying `url` to redirect to (requires `success_url`). `embedded` answers a Session carrying `client_secret` to mount with Stripe.js `initEmbeddedCheckout`; with no `return_url` it never redirects (completion arrives through `onComplete`)."
+          },
+          "success_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "cancel_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "return_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "embedded only."
+          },
+          "product_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 250,
+            "description": "Name shown on the checkout page and invoices. Default `Distribute subscription`."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Caller metadata, stamped on the session AND the subscription. `org_id` and `purpose` are always overwritten."
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "trial_period_days"
+        ]
+      },
+      "SubscriptionList": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "list"
+            ]
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "has_subscription": {
+            "type": "boolean",
+            "description": "false = Stripe answered and the org has NO subscription (ever). A Stripe failure is a 5xx, never `false`."
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionSummary"
+            }
+          }
+        },
+        "required": [
+          "object",
+          "org_id",
+          "has_subscription",
+          "data"
+        ]
+      },
+      "SubscriptionSummary": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "subscription_summary"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "customer": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "description": "Stripe status verbatim: trialing, active, past_due, unpaid, canceled, incomplete, incomplete_expired, paused."
+          },
+          "amount": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Amount per period (minor units), summed over the prices."
+          },
+          "currency": {
+            "type": "string",
+            "nullable": true
+          },
+          "interval": {
+            "type": "string",
+            "nullable": true
+          },
+          "interval_count": {
+            "type": "integer",
+            "nullable": true
+          },
+          "trial_start": {
+            "type": "integer",
+            "nullable": true
+          },
+          "trial_end": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Unix seconds."
+          },
+          "current_period_start": {
+            "type": "integer",
+            "nullable": true
+          },
+          "current_period_end": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Unix seconds. End of the current period = the next charge date while the subscription runs."
+          },
+          "cancel_at_period_end": {
+            "type": "boolean"
+          },
+          "cancel_at": {
+            "type": "integer",
+            "nullable": true
+          },
+          "canceled_at": {
+            "type": "integer",
+            "nullable": true
+          },
+          "ended_at": {
+            "type": "integer",
+            "nullable": true
+          },
+          "has_payment_method": {
+            "type": "boolean",
+            "description": "A payment method is set: the subscription's own default, else the customer's invoice default."
+          },
+          "default_payment_method": {
+            "type": "string",
+            "nullable": true
+          },
+          "latest_invoice": {
+            "type": "string",
+            "nullable": true
+          },
+          "created": {
+            "type": "integer"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "object",
+          "id",
+          "org_id",
+          "customer",
+          "status",
+          "amount",
+          "currency",
+          "interval",
+          "interval_count",
+          "trial_start",
+          "trial_end",
+          "current_period_start",
+          "current_period_end",
+          "cancel_at_period_end",
+          "cancel_at",
+          "canceled_at",
+          "ended_at",
+          "has_payment_method",
+          "default_payment_method",
+          "latest_invoice",
+          "created",
+          "metadata"
+        ]
+      },
+      "SubscriptionAmountRequest": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "minimum": 50,
+            "description": "New amount per period, minor units. Applies from the NEXT invoice; no proration is invoiced now."
+          }
+        },
+        "required": [
+          "amount"
+        ]
       }
     },
     "parameters": {}
@@ -3227,6 +3451,396 @@
           },
           "400": {
             "description": "Invalid signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/subscriptions/by-org/{orgId}/checkout": {
+      "post": {
+        "summary": "Create a monthly SUBSCRIPTION Checkout Session for an org (Stripe only)",
+        "description": "Server-to-server. Subscription-mode Stripe Checkout on the org's own Stripe customer: one monthly price at `amount`, optional free trial, card collection required. `org_id` is stamped on the session AND on the subscription. Returns the Stripe Checkout Session verbatim (`url` when hosted, `client_secret` when embedded). NEVER runs the acquirer rollout: an unpinned org is pinned to STRIPE once the session exists (so it can never be moved to another acquirer afterwards); an org pinned to another acquirer is refused 409 `acquirer_not_stripe` with no side effect; an org with no Stripe customer is 409 `no_customer`. OPTIONAL `x-user-id` = the person subscribing (stamped as `payer_user_id`, so their email becomes the customer's once paid). OPTIONAL `Idempotency-Key` forwarded to Stripe. X-API-Key only.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscriptionCheckoutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stripe Checkout Session (verbatim)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StripeObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`acquirer_not_stripe` (org pays through another acquirer) or `no_customer`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`acquirer_unavailable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/subscriptions/by-org/{orgId}": {
+      "get": {
+        "summary": "Every subscription an org holds, read LIVE from Stripe",
+        "description": "Server-to-server, user-less. Lists every subscription (any status) on the org's Stripe customers, newest first, read live from Stripe so it is correct the second a Checkout completes. `200 {has_subscription:false, data:[]}` is a DEFINITE none (no customer, or Stripe answered with none). A Stripe failure is `502 acquirer_unavailable` (or `503 acquirer_rate_limited`), never an empty list. X-API-Key only.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The org's subscriptions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionList"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`acquirer_unavailable` — Stripe could not be asked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/subscriptions/by-org/{orgId}/{subscriptionId}/amount": {
+      "post": {
+        "summary": "Change a subscription's amount for future invoices (no proration)",
+        "description": "Server-to-server. Re-prices the subscription's single price to `amount` (same product, currency and interval) with `proration_behavior: none`: nothing is invoiced now, the NEXT invoice is the first at the new amount. Refuses a subscription that is not the org's. OPTIONAL `Idempotency-Key` forwarded to Stripe. X-API-Key only.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "subscriptionId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscriptionAmountRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`subscription_not_owned` — the subscription belongs to another org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`subscription_not_found` — no such subscription at Stripe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`subscription_ended` (canceled / incomplete_expired) or `subscription_shape_unsupported` (several prices)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`acquirer_unavailable` — Stripe could not be asked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/subscriptions/by-org/{orgId}/{subscriptionId}/cancellation": {
+      "post": {
+        "summary": "Cancel a subscription at period end",
+        "description": "Server-to-server. Sets `cancel_at_period_end: true`: no future charge, the current period runs out. Idempotent. Refuses a subscription that is not the org's. X-API-Key only.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "subscriptionId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The updated subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionSummary"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`subscription_not_owned` — the subscription belongs to another org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`subscription_not_found` — no such subscription at Stripe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`subscription_ended` (canceled / incomplete_expired) or `subscription_shape_unsupported` (several prices)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`acquirer_unavailable` — Stripe could not be asked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Undo a pending cancellation",
+        "description": "Server-to-server. Sets `cancel_at_period_end: false`: the subscription renews as before. Idempotent. Refuses a subscription that is not the org's, or one that has already ended (409 `subscription_ended`). X-API-Key only.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "subscriptionId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The updated subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionSummary"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`subscription_not_owned` — the subscription belongs to another org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`subscription_not_found` — no such subscription at Stripe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`subscription_ended` (canceled / incomplete_expired) or `subscription_shape_unsupported` (several prices)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`acquirer_unavailable` — Stripe could not be asked",
             "content": {
               "application/json": {
                 "schema": {

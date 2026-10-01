@@ -47,9 +47,6 @@ async function handleCheckoutSessionCompleted(
   session: Stripe.Checkout.Session,
   stripe: Stripe
 ): Promise<void> {
-  // Subscriptions out of scope (Phase 2 per CLAUDE.md).
-  if (session.mode === "subscription") return;
-
   const customerId = extractString(session.customer);
   if (!customerId) return;
 
@@ -64,6 +61,15 @@ async function handleCheckoutSessionCompleted(
     if (!siId) return;
     const si = await stripe.setupIntents.retrieve(siId);
     paymentMethodId = extractString(si.payment_method);
+  } else if (session.mode === "subscription") {
+    // Checkout sets the card as the SUBSCRIPTION's default, not the customer's.
+    // Promote it too, so off-session top-ups and "has a card" agree with it.
+    const subId = extractString(session.subscription);
+    if (!subId) return;
+    const sub = await stripe.subscriptions.retrieve(subId);
+    paymentMethodId = extractString(
+      sub.default_payment_method as string | { id: string } | null
+    );
   }
 
   if (!paymentMethodId) return;

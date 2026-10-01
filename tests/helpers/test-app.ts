@@ -14,6 +14,7 @@ import billingPortalSessionsRoutes from "../../src/routes/billing-portal-session
 import publicStatsRoutes from "../../src/routes/public-stats";
 import webhooksRoutes from "../../src/routes/webhooks";
 import revolutWebhooksRoutes from "../../src/routes/revolut-webhooks";
+import subscriptionsRoutes from "../../src/routes/subscriptions";
 
 export function createTestApp() {
   const app = express();
@@ -27,6 +28,7 @@ export function createTestApp() {
   app.use("/", healthRoutes);
   app.use("/", customersRoutes);
   app.use("/", internalRoutes);
+  app.use("/", subscriptionsRoutes);
   app.use("/", checkoutSessionsRoutes);
   app.use("/", paymentIntentsRoutes);
   app.use("/", paymentMethodsRoutes);

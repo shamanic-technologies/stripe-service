@@ -132,6 +132,7 @@ function makeStripeMock(vi) {
     },
     invoiceItems: { create: vi.fn() },
     paymentMethods: { list: vi.fn() },
+    subscriptions: { list: vi.fn(), retrieve: vi.fn(), update: vi.fn() },
     billingPortal: { sessions: { create: vi.fn() } },
     events: { list: vi.fn() },
   };
