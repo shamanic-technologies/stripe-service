@@ -13,6 +13,11 @@ import { isResourceMissing } from "../lib/stripe-client";
 import { selectAcquirerForCheckout } from "../lib/acquirer-rollout";
 import { checkoutViaRevolut, UnsupportedCheckout } from "../lib/checkout-org";
 import { payerMetadata } from "../lib/payer-email";
+import {
+  assertSubscriptionAcquirer,
+  pinOrgToStripeForSubscription,
+  SubscriptionAcquirerNotStripe,
+} from "../lib/subscriptions";
 
 const router = Router();
 
@@ -39,7 +44,26 @@ router.post("/v1/checkout/sessions", async (req: Request, res: Response, next: N
     }
 
     const orgId = res.locals.orgId as string;
-    const pin = await selectAcquirerForCheckout(orgId);
+    // A SUBSCRIPTION is Stripe-only and must never trigger the rollout: the
+    // rollout can pin a new org to the second acquirer as a side effect, and
+    // that acquirer has no subscription object, so the request would then be
+    // refused AFTER the org had been moved for good. Decide without writing
+    // anything; refuse an org already pinned elsewhere.
+    const isSubscription = parsed.data.mode === "subscription";
+    let subscriptionPinned = true;
+    if (isSubscription) {
+      try {
+        ({ pinned: subscriptionPinned } = await assertSubscriptionAcquirer(orgId));
+      } catch (err) {
+        if (err instanceof SubscriptionAcquirerNotStripe) {
+          return res.status(409).json({ error: err.message, code: "acquirer_not_stripe", acquirer: err.acquirer });
+        }
+        throw err;
+      }
+    }
+    const pin = isSubscription
+      ? { acquirer: "stripe" as const, customerId: null, pinned: subscriptionPinned }
+      : await selectAcquirerForCheckout(orgId);
     if (pin.acquirer === "revolut") {
       if (!pin.customerId) {
         return res.status(409).json({
@@ -71,6 +95,14 @@ router.post("/v1/checkout/sessions", async (req: Request, res: Response, next: N
     const payer = payerMetadata(ctx.userId);
     const metadata = { ...(body.metadata ?? {}), ...payer, org_id: ctx.orgId };
     const params: Stripe.Checkout.SessionCreateParams = { ...body, metadata };
+    if (isSubscription) {
+      // Stamp the org on the SUBSCRIPTION itself, not only on the session, so
+      // every object Stripe derives from it routes back to the org.
+      params.subscription_data = {
+        ...(body.subscription_data ?? {}),
+        metadata: { ...(body.subscription_data?.metadata ?? {}), org_id: ctx.orgId },
+      };
+    }
     if (body.mode === "setup") {
       params.setup_intent_data = {
         ...(body.setup_intent_data ?? {}),
@@ -85,6 +117,7 @@ router.post("/v1/checkout/sessions", async (req: Request, res: Response, next: N
 
     res.locals.stripeObjectId = session.id;
     await recordApiSnapshot(session, "checkout_session", ctx.orgId);
+    if (isSubscription) await pinOrgToStripeForSubscription(ctx.orgId, subscriptionPinned);
     return res.json(session);
   } catch (err) {
     return next(err);
