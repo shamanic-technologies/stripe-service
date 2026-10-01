@@ -64,7 +64,39 @@ describe("promoteDefaultPaymentMethod — dispatch", () => {
     expect(stripe.customers.update).not.toHaveBeenCalled();
   });
 
-  it("skips checkout.session.completed with mode=subscription", async () => {
+  it("promotes the SUBSCRIPTION's card for checkout.session.completed with mode=subscription", async () => {
+    const stripe = makeStripe() as StripeMock & {
+      subscriptions: { retrieve: ReturnType<typeof vi.fn> };
+    };
+    stripe.subscriptions = { retrieve: vi.fn().mockResolvedValue({ id: "sub_1", default_payment_method: "pm_sub" }) };
+    stripe.customers.retrieve.mockResolvedValue({ id: "cus_1", invoice_settings: { default_payment_method: null } });
+    stripe.paymentMethods.retrieve.mockResolvedValue({ id: "pm_sub", customer: "cus_1" });
+    stripe.customers.update.mockResolvedValue({ id: "cus_1", metadata: { org_id: TEST_ORG_ID } });
+    await promoteDefaultPaymentMethod(
+      {
+        ...baseEvent,
+        id: "evt_sub_promote",
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: "cs_sub",
+            object: "checkout.session",
+            mode: "subscription",
+            customer: "cus_1",
+            subscription: "sub_1",
+          },
+        },
+      } as never,
+      stripe as never
+    );
+
+    expect(stripe.subscriptions.retrieve).toHaveBeenCalledWith("sub_1");
+    expect(stripe.customers.update).toHaveBeenCalledWith("cus_1", {
+      invoice_settings: { default_payment_method: "pm_sub" },
+    });
+  });
+
+  it("skips checkout.session.completed with mode=subscription and no subscription yet", async () => {
     const stripe = makeStripe();
     await promoteDefaultPaymentMethod(
       {

@@ -21,6 +21,7 @@ import billingPortalSessionsRoutes from "./routes/billing-portal-sessions";
 import publicStatsRoutes from "./routes/public-stats";
 import webhooksRoutes from "./routes/webhooks";
 import revolutWebhooksRoutes from "./routes/revolut-webhooks";
+import subscriptionsRoutes from "./routes/subscriptions";
 import { startEventPoller } from "./lib/event-poller";
 import { backfillHistorical } from "./lib/historical-backfill";
 import { repairAllSilverFromBronze } from "./lib/event-processor";
@@ -92,6 +93,7 @@ app.get("/openapi.json", (_req, res) => {
 app.use("/", healthRoutes);
 app.use("/", customersRoutes);
 app.use("/", internalRoutes);
+app.use("/", subscriptionsRoutes);
 app.use("/", checkoutSessionsRoutes);
 app.use("/", paymentIntentsRoutes);
 app.use("/", paymentMethodsRoutes);
