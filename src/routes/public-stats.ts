@@ -7,6 +7,8 @@ import {
   payingAccounts,
   platformReturns,
   revolutPlatformPaid,
+  directPlatformPaid,
+  addSums,
   sumsToPaidRows,
   type PaidBucketRow,
 } from "../lib/platform-billing-stats";
@@ -27,6 +29,11 @@ const router = Router();
  *    spendable credit customers actually ended up with, i.e. what a consumer
  *    should report as "credited". Summing payments alone counts money we gave
  *    back as money we still hold.
+ *
+ * MONEY PAID OUTSIDE ANY ACQUIRER counts too: a payment staff recorded for an
+ * org (`direct_payments`) is revenue in the month it was recorded and makes the
+ * org a paying account, exactly like an acquirer payment. A voided one never
+ * counts.
  *
  * EVERY ACQUIRER is counted, on both sides. Stripe and Revolut have each taken
  * real customer money through this service, and the per-org reads already sum
@@ -129,23 +136,28 @@ router.get("/public/stats/billing", async (_req: Request, res: Response, next: N
         sql`date_trunc('week', to_timestamp(${paymentIntents.createdStripe}))`
       )) as PaidBucketRow[];
 
-    const [returns, revolutPaid, accounts] = await Promise.all([
+    const [returns, revolutPaid, directPaid, accounts] = await Promise.all([
       platformReturns(),
       revolutPlatformPaid(),
+      directPlatformPaid(),
       payingAccounts(),
     ]);
+    // Everything paid that is not a Stripe PaymentIntent: Revolut orders plus
+    // money staff recorded as paid outside any acquirer. Both join the series
+    // through the same merge as Stripe, so sum(buckets) === total still holds.
+    const nonStripePaid = addSums(revolutPaid, directPaid);
     const totalRefundedCents = returns.refunded.total;
     const totalDisputedLostCents = returns.disputedLost.total;
     const totalReturnedCents = totalRefundedCents + totalDisputedLostCents;
 
     return res.json({
-      total_paid_cents: (totalPaidCents + revolutPaid.total).toString(),
+      total_paid_cents: (totalPaidCents + nonStripePaid.total).toString(),
       total_refunded_cents: totalRefundedCents.toString(),
       total_disputed_lost_cents: totalDisputedLostCents.toString(),
       total_returned_cents: totalReturnedCents.toString(),
       total_net_cents: (
         totalPaidCents +
-        revolutPaid.total -
+        nonStripePaid.total -
         totalReturnedCents
       ).toString(),
       accounts_with_payment_method: accountsWithPaymentMethod,
@@ -155,13 +167,13 @@ router.get("/public/stats/billing", async (_req: Request, res: Response, next: N
       // Identical array, same order. Read `first_payment_times_unix`.
       first_payment_times: accounts.firstPaymentTimes,
       monthly_growth: mergeGrowth(
-        [...monthlyRows, ...sumsToPaidRows(revolutPaid.byMonth)],
+        [...monthlyRows, ...sumsToPaidRows(nonStripePaid.byMonth)],
         returns.refunded.byMonth,
         returns.disputedLost.byMonth,
         accounts.byMonth
       ),
       weekly_growth: mergeGrowth(
-        [...weeklyRows, ...sumsToPaidRows(revolutPaid.byWeek)],
+        [...weeklyRows, ...sumsToPaidRows(nonStripePaid.byWeek)],
         returns.refunded.byWeek,
         returns.disputedLost.byWeek,
         accounts.byWeek

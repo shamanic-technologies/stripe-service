@@ -85,6 +85,13 @@
       "when": 1790000100000,
       "tag": "0011_event_side_effects_completed",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790939385414,
+      "tag": "0012_direct_payments",
+      "breakpoints": true
     }
   ]
 }
