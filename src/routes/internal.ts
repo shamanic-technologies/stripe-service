@@ -55,12 +55,22 @@ import {
 } from "../lib/revolut-money";
 import { readRollout, writeRollout } from "../lib/acquirer-rollout";
 import {
+  directTotalsByCurrency,
+  IdempotencyKeyReused,
+  listDirectPayments,
+  recordDirectPayment,
+  voidDirectPayment,
+  type DirectPayment,
+} from "../lib/direct-payments";
+import {
   AcquirerRolloutRequestSchema,
   CreateInvoiceByOrgRequestSchema,
   UpdateCustomerMetadataRequestSchema,
   PinAcquirerRequestSchema,
   ChargeByOrgRequestSchema,
   CardSetupRequestSchema,
+  RecordDirectPaymentRequestSchema,
+  VoidDirectPaymentRequestSchema,
 } from "../schemas";
 
 const router = Router();
@@ -990,7 +1000,8 @@ router.get(
  * the mirrors, so partial refunds, reverted refunds and dispute outcomes are
  * correct without any reconciliation step.
  *
- * This is Stripe money movement ONLY — it is NOT a credit balance. Promo
+ * Spans Stripe, Revolut AND money staff recorded as paid outside any acquirer
+ * (`direct_payments`, standing rows only). It is NOT a credit balance. Promo
  * grants and usage stay billing-service's business; this endpoint has no
  * knowledge of them.
  *
@@ -1084,6 +1095,13 @@ router.get(
         asOf === undefined ? undefined : new Date(asOf * 1000)
       );
 
+      // Money staff recorded as paid outside any acquirer is the org's money
+      // too, bounded by the same instant (recorded strictly before `as_of`).
+      const direct = await directTotalsByCurrency(
+        orgId,
+        asOf === undefined ? undefined : new Date(asOf * 1000)
+      );
+
       return res.json({
         object: "payment_summary",
         org_id: orgId,
@@ -1091,7 +1109,8 @@ router.get(
         as_of: asOf ?? null,
         totals: mergeCurrencyTotals(
           summarizeByCurrency(payments, returned),
-          revolut
+          revolut,
+          direct
         ),
       });
     } catch (err) {
@@ -1447,6 +1466,140 @@ router.post(
           reference: err.reference,
         });
       }
+      return next(err);
+    }
+  }
+);
+
+// ===== Money paid OUTSIDE any acquirer, recorded by staff =====
+//
+// See `src/lib/direct-payments.ts`. Staff tooling calls these with the service
+// key; the org is in the path.
+
+function directPaymentView(p: DirectPayment) {
+  return {
+    object: "direct_payment" as const,
+    id: p.id,
+    org_id: p.orgId,
+    acquirer: "direct" as const,
+    amount: p.amount,
+    currency: p.currency,
+    note: p.note,
+    recorded_by: p.recordedBy,
+    recorded_at: Math.floor(p.recordedAt.getTime() / 1000),
+    voided_at: p.voidedAt ? Math.floor(p.voidedAt.getTime() / 1000) : null,
+    voided_by: p.voidedBy,
+    void_reason: p.voidReason,
+  };
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * POST /internal/direct_payments/by-org/:orgId
+ *
+ * Record that the org paid us outside any acquirer. Counts from now on exactly
+ * like a settled acquirer payment. `Idempotency-Key` required: a replay with
+ * the same amount + currency is a 200 returning the first record, a replay with
+ * a different amount or currency is a 409.
+ */
+router.post(
+  "/internal/direct_payments/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+      const parsed = RecordDirectPaymentRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid request", details: parsed.error.flatten() });
+      }
+      const idempotencyHeader = req.headers["idempotency-key"];
+      const idempotencyKey =
+        typeof idempotencyHeader === "string" ? idempotencyHeader.trim() : "";
+      if (!idempotencyKey) {
+        return res.status(400).json({
+          error:
+            "Idempotency-Key header is required (guarantees the payment is recorded once on retry)",
+        });
+      }
+
+      const { payment, created } = await recordDirectPayment({
+        orgId,
+        amount: parsed.data.amount,
+        currency: parsed.data.currency,
+        note: parsed.data.note,
+        recordedBy: parsed.data.recorded_by,
+        idempotencyKey,
+      });
+      return res.status(created ? 201 : 200).json(directPaymentView(payment));
+    } catch (err) {
+      if (err instanceof IdempotencyKeyReused) {
+        return res.status(409).json({
+          error: err.message,
+          code: "idempotency_key_reused",
+          existing: directPaymentView(err.existing),
+        });
+      }
+      return next(err);
+    }
+  }
+);
+
+/** GET /internal/direct_payments/by-org/:orgId — every record, voided included. */
+router.get(
+  "/internal/direct_payments/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+      const rows = await listDirectPayments(orgId);
+      return res.json({
+        object: "list",
+        data: rows.map(directPaymentView),
+        has_more: false,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+/**
+ * POST /internal/direct_payments/by-org/:orgId/:id/void
+ *
+ * A correction, not a refund: the payment stops counting everywhere. Idempotent.
+ */
+router.post(
+  "/internal/direct_payments/by-org/:orgId/:id/void",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { orgId, id } = req.params;
+      res.locals.orgId = orgId;
+      if (!UUID_RE.test(id)) {
+        return res.status(400).json({ error: "id must be a uuid" });
+      }
+      const parsed = VoidDirectPaymentRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid request", details: parsed.error.flatten() });
+      }
+      const result = await voidDirectPayment({
+        orgId,
+        id,
+        voidedBy: parsed.data.voided_by,
+        reason: parsed.data.reason ?? null,
+      });
+      if (!result) {
+        return res
+          .status(404)
+          .json({ error: "No such direct payment for this org" });
+      }
+      return res.json(directPaymentView(result.payment));
+    } catch (err) {
       return next(err);
     }
   }

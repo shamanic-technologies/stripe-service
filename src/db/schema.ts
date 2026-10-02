@@ -7,6 +7,7 @@ import {
   jsonb,
   bigint,
   uuid,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 // ===== Stripe-shape mirror tables =====
@@ -363,3 +364,45 @@ export const cardUpdateOpeners = pgTable("card_update_openers", {
   userId: text("user_id").notNull(),
   openedAt: timestamp("opened_at").defaultNow().notNull(),
 });
+
+// Money an org paid us OUTSIDE any acquirer, recorded by staff.
+//
+// An agency client pays the platform owner directly and he puts that money into
+// the product through the org; or the owner funds his own dogfooding org. No
+// acquirer took it, so no fee and no settlement delay, but it is still a
+// PAYMENT: it counts in the org's paid total, in revenue for the month it was
+// recorded and in every paying-account figure, exactly like a settled Stripe
+// PaymentIntent or a completed Revolut order.
+//
+// It is deliberately NOT a vendor object: its own table, its own uuid id, and
+// `acquirer: "direct"` wherever a payment is listed. No bank reference is
+// required (owner rule).
+//
+// A void is a CORRECTION ("recorded by mistake"), not a refund: a voided row is
+// excluded from every read, bounded or not, as if it had never been recorded.
+// Money actually given back is a different fact and has no path here.
+export const directPayments = pgTable(
+  "direct_payments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: text("org_id").notNull(),
+    amount: bigint("amount", { mode: "number" }).notNull(), // minor units, > 0
+    currency: text("currency").notNull(), // lowercase ISO 4217
+    note: text("note").notNull(),
+    recordedBy: text("recorded_by").notNull(), // staff email
+    // Caller's Idempotency-Key, unique per org: the same request twice records once.
+    idempotencyKey: text("idempotency_key").notNull(),
+    // The instant the money counts from (revenue month, as_of bound, first payment).
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).defaultNow().notNull(),
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    voidedBy: text("voided_by"),
+    voidReason: text("void_reason"),
+  },
+  (table) => [
+    uniqueIndex("uq_direct_payments_org_idempotency").on(
+      table.orgId,
+      table.idempotencyKey
+    ),
+    index("idx_direct_payments_org").on(table.orgId),
+  ]
+);
