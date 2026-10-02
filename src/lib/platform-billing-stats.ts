@@ -1,7 +1,14 @@
 import { and, eq, isNotNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "../db";
-import { disputes, paymentIntents, refunds, revolutOrders } from "../db/schema";
+import {
+  directPayments,
+  disputes,
+  paymentIntents,
+  refunds,
+  revolutOrders,
+} from "../db/schema";
+import { directPaidBuckets } from "./direct-payments";
 
 /**
  * Platform-wide money movement for `GET /public/stats/billing`.
@@ -265,6 +272,15 @@ export async function revolutPlatformPaid(): Promise<ReturnedSums> {
 }
 
 /**
+ * Platform-wide money staff recorded as paid OUTSIDE any acquirer, per grain,
+ * dated at the instant it was recorded. A payment like any other for every
+ * figure here; a voided one never counts (see `src/lib/direct-payments.ts`).
+ */
+export async function directPlatformPaid(): Promise<ReturnedSums> {
+  return foldReturnedRows(await directPaidBuckets());
+}
+
+/**
  * Turn a per-period roll-up back into the row shape `mergeGrowth` consumes, so
  * a second acquirer's payments join the series through the same merge as the
  * first one's rather than through a parallel code path.
@@ -385,7 +401,8 @@ export function mergeGrowth(
 // four orgs that predate the idempotent `POST /v1/customers` and hold several
 // Stripe customers each.
 //
-// ACQUIRER COVERAGE — both, exactly like the money. Same predicates, verbatim:
+// ACQUIRER COVERAGE — both, exactly like the money, plus money staff recorded
+// as paid outside any acquirer (`direct_payments`, standing rows only). Same predicates, verbatim:
 // a `succeeded` Stripe PaymentIntent, a `completed` Revolut `payment` order.
 // No purpose filter on the Revolut side, for the same reason the money half
 // has none: filtering by intent here would silently diverge from the figure
@@ -560,6 +577,11 @@ export async function payingAccounts(): Promise<PayingAccounts> {
          AND ${revolutOrders.state} = ${REVOLUT_SETTLED_STATE}
          AND ${revolutOrders.orgId} IS NOT NULL
          AND ${revolutOrders.createdAtRevolut} IS NOT NULL
+      UNION ALL
+      SELECT ${directPayments.orgId},
+             ${directPayments.recordedAt}
+        FROM ${directPayments}
+       WHERE ${directPayments.voidedAt} IS NULL
     ),
     first_paid AS (
       SELECT account_id, MIN(paid_at) AS first_paid_at

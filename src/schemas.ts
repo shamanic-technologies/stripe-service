@@ -1396,3 +1396,123 @@ registry.registerPath({
     ...subscriptionErrors,
   },
 });
+
+// --- Internal: money paid OUTSIDE any acquirer, recorded by staff ---
+//
+// A payment no acquirer took (no fee, no settlement delay): staff state that an
+// org paid X, and from then on it counts wherever a settled acquirer payment
+// counts. It is not a vendor object and never pretends to be one.
+
+export const RecordDirectPaymentRequestSchema = z
+  .object({
+    amount: z.number().int().positive().openapi({
+      description: "Amount received, in the currency's minor unit (cents). Must be > 0.",
+    }),
+    currency: z
+      .string()
+      .regex(/^[A-Za-z]{3}$/)
+      .openapi({ description: "ISO 4217 code. Stored lowercase." }),
+    note: z.string().trim().min(1).openapi({
+      description: "Free text: why this money is recorded (who paid, for what). Internal, never shown to the customer.",
+    }),
+    recorded_by: z.string().email().openapi({
+      description: "Email of the staff member recording it.",
+    }),
+  })
+  .openapi("RecordDirectPaymentRequest");
+
+export const VoidDirectPaymentRequestSchema = z
+  .object({
+    voided_by: z.string().email().openapi({
+      description: "Email of the staff member voiding it.",
+    }),
+    reason: z.string().trim().min(1).optional().openapi({
+      description: "Why it is voided.",
+    }),
+  })
+  .openapi("VoidDirectPaymentRequest");
+
+export const DirectPaymentSchema = z
+  .object({
+    object: z.literal("direct_payment"),
+    id: z.string().uuid(),
+    org_id: z.string(),
+    acquirer: z.literal("direct").openapi({
+      description: "Always `direct`: no acquirer took this money and no vendor object stands behind it.",
+    }),
+    amount: z.number().int(),
+    currency: z.string(),
+    note: z.string(),
+    recorded_by: z.string(),
+    recorded_at: z.number().int().openapi({
+      description: "Unix seconds. The instant the payment counts from: its revenue month, `as_of` bounds and first-payment instants.",
+    }),
+    voided_at: z.number().int().nullable().openapi({
+      description: "Unix seconds, or null. A voided payment counts NOWHERE, as if never recorded.",
+    }),
+    voided_by: z.string().nullable(),
+    void_reason: z.string().nullable(),
+  })
+  .openapi("DirectPayment");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/direct_payments/by-org/{orgId}",
+  summary: "Record money an org paid outside any acquirer",
+  description:
+    "Staff-only (X-API-Key; staff tooling calls it). Records that the org paid `amount` `currency` without going through any acquirer. From that instant it counts exactly like a settled acquirer payment: the per-org payment summary (and its `as_of` reads), the payment history (`acquirer: \"direct\"`) and every figure of `GET /public/stats/billing` (revenue, net, paying accounts, first-payment instants, the month/week it was recorded in). No acquirer is called and no proof of transfer is required. Requires `Idempotency-Key`: the same key with the same amount + currency returns the payment already recorded (200) and changes nothing; the same key with a different amount or currency is a 409.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+    headers: z.object({
+      "idempotency-key": z.string().openapi({ description: "Required. Stable per payment, so a retry records it once." }),
+    }),
+    body: { content: { "application/json": { schema: RecordDirectPaymentRequestSchema } } },
+  },
+  responses: {
+    201: { description: "Recorded", content: { "application/json": { schema: DirectPaymentSchema } } },
+    200: { description: "Replay of an already-recorded payment; nothing changed", content: { "application/json": { schema: DirectPaymentSchema } } },
+    400: { description: "Invalid body or missing Idempotency-Key", content: { "application/json": { schema: ErrorResponseSchema } } },
+    409: { description: "`idempotency_key_reused`: this key already recorded a different amount or currency", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/direct_payments/by-org/{orgId}",
+  summary: "Every direct payment recorded for an org, voided ones included",
+  description: "Staff-only. Newest first. Voided entries are listed (with `voided_at`) so the record of a correction is never lost; they count nowhere.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: { params: z.object({ orgId: z.string() }) },
+  responses: {
+    200: {
+      description: "List",
+      content: {
+        "application/json": {
+          schema: z.object({ object: z.literal("list"), data: z.array(DirectPaymentSchema), has_more: z.boolean() }),
+        },
+      },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/direct_payments/by-org/{orgId}/{id}/void",
+  summary: "Void a direct payment recorded by mistake",
+  description:
+    "Staff-only. A correction, not a refund: the payment stops counting EVERYWHERE (summary, bounded reads, history, platform stats, paying accounts), as if it had never been recorded. Idempotent: voiding an already-voided payment returns it unchanged.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string(), id: z.string().uuid() }),
+    body: { content: { "application/json": { schema: VoidDirectPaymentRequestSchema } } },
+  },
+  responses: {
+    200: { description: "The voided payment", content: { "application/json": { schema: DirectPaymentSchema } } },
+    400: { description: "Invalid body or id", content: { "application/json": { schema: ErrorResponseSchema } } },
+    404: { description: "The org has no such direct payment", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});

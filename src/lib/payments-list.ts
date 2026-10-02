@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../db";
 import { paymentIntents, revolutOrders } from "../db/schema";
 import { returnedByPaymentIntent } from "./returned-amounts";
+import { standingDirectPayments } from "./direct-payments";
 
 /**
  * One payment an org made, whichever acquirer took it.
@@ -19,8 +20,11 @@ import { returnedByPaymentIntent } from "./returned-amounts";
  */
 export interface OrgPayment {
   id: string;
-  /** Diagnostic only. A consumer must not branch on it. */
-  acquirer: "stripe" | "revolut";
+  /**
+   * Diagnostic only. A consumer must not branch on it. `direct` = money staff
+   * recorded as paid outside any acquirer (no vendor object behind it).
+   */
+  acquirer: "stripe" | "revolut" | "direct";
   amount: number;
   currency: string;
   status: "succeeded" | "failed" | "pending";
@@ -47,7 +51,7 @@ function revolutStatus(state: string | null): OrgPayment["status"] {
  * negative payment.
  */
 export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
-  const [stripeRows, revolutRows] = await Promise.all([
+  const [stripeRows, revolutRows, directRows] = await Promise.all([
     db
       .select({
         id: paymentIntents.id,
@@ -75,6 +79,7 @@ export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
       .where(
         and(eq(revolutOrders.orgId, orgId), eq(revolutOrders.type, "payment"))
       ),
+    standingDirectPayments(orgId),
   ]);
 
   const returned = await returnedByPaymentIntent(
@@ -117,6 +122,20 @@ export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
       created: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
       description: r.description ?? null,
       amount_returned: r.refunded ?? 0,
+    })),
+    // Money staff recorded as paid outside any acquirer. Settled by definition
+    // (it was received before it was recorded); a voided one is not listed, as
+    // it is counted nowhere. The staff note stays internal: it is not copy the
+    // customer was meant to read.
+    ...directRows.map((r) => ({
+      id: r.id,
+      acquirer: "direct" as const,
+      amount: r.amount,
+      currency: r.currency.toLowerCase(),
+      status: "succeeded" as const,
+      created: Math.floor(r.recordedAt.getTime() / 1000),
+      description: "Direct payment",
+      amount_returned: 0,
     })),
   ];
 

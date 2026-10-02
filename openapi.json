@@ -1291,6 +1291,124 @@
         "required": [
           "amount"
         ]
+      },
+      "DirectPayment": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "direct_payment"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "acquirer": {
+            "type": "string",
+            "enum": [
+              "direct"
+            ],
+            "description": "Always `direct`: no acquirer took this money and no vendor object stands behind it."
+          },
+          "amount": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "type": "integer",
+            "description": "Unix seconds. The instant the payment counts from: its revenue month, `as_of` bounds and first-payment instants."
+          },
+          "voided_at": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Unix seconds, or null. A voided payment counts NOWHERE, as if never recorded."
+          },
+          "voided_by": {
+            "type": "string",
+            "nullable": true
+          },
+          "void_reason": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "object",
+          "id",
+          "org_id",
+          "acquirer",
+          "amount",
+          "currency",
+          "note",
+          "recorded_by",
+          "recorded_at",
+          "voided_at",
+          "voided_by",
+          "void_reason"
+        ]
+      },
+      "RecordDirectPaymentRequest": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Amount received, in the currency's minor unit (cents). Must be > 0."
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Za-z]{3}$",
+            "description": "ISO 4217 code. Stored lowercase."
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Free text: why this money is recorded (who paid, for what). Internal, never shown to the customer."
+          },
+          "recorded_by": {
+            "type": "string",
+            "format": "email",
+            "description": "Email of the staff member recording it."
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "note",
+          "recorded_by"
+        ]
+      },
+      "VoidDirectPaymentRequest": {
+        "type": "object",
+        "properties": {
+          "voided_by": {
+            "type": "string",
+            "format": "email",
+            "description": "Email of the staff member voiding it."
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why it is voided."
+          }
+        },
+        "required": [
+          "voided_by"
+        ]
       }
     },
     "parameters": {}
@@ -3841,6 +3959,221 @@
           },
           "502": {
             "description": "`acquirer_unavailable` — Stripe could not be asked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/direct_payments/by-org/{orgId}": {
+      "post": {
+        "summary": "Record money an org paid outside any acquirer",
+        "description": "Staff-only (X-API-Key; staff tooling calls it). Records that the org paid `amount` `currency` without going through any acquirer. From that instant it counts exactly like a settled acquirer payment: the per-org payment summary (and its `as_of` reads), the payment history (`acquirer: \"direct\"`) and every figure of `GET /public/stats/billing` (revenue, net, paying accounts, first-payment instants, the month/week it was recorded in). No acquirer is called and no proof of transfer is required. Requires `Idempotency-Key`: the same key with the same amount + currency returns the payment already recorded (200) and changes nothing; the same key with a different amount or currency is a 409.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Required. Stable per payment, so a retry records it once."
+            },
+            "required": true,
+            "description": "Required. Stable per payment, so a retry records it once.",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordDirectPaymentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Replay of an already-recorded payment; nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectPayment"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectPayment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body or missing Idempotency-Key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused`: this key already recorded a different amount or currency",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Every direct payment recorded for an org, voided ones included",
+        "description": "Staff-only. Newest first. Voided entries are listed (with `voided_at`) so the record of a correction is never lost; they count nowhere.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "list"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DirectPayment"
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "data",
+                    "has_more"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/direct_payments/by-org/{orgId}/{id}/void": {
+      "post": {
+        "summary": "Void a direct payment recorded by mistake",
+        "description": "Staff-only. A correction, not a refund: the payment stops counting EVERYWHERE (summary, bounded reads, history, platform stats, paying accounts), as if it had never been recorded. Idempotent: voiding an already-voided payment returns it unchanged.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoidDirectPaymentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The voided payment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectPayment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body or id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The org has no such direct payment",
             "content": {
               "application/json": {
                 "schema": {
