@@ -2435,6 +2435,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Revolut has not finished the charge within this request (the payment is still in flight). NOT a refusal and NOT an outage: the money may yet move. Body: `code: \"charge_pending\"`, `reference`. Retry with the SAME Idempotency-Key, which resumes this order and answers its final state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }

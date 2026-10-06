@@ -44,6 +44,7 @@ import {
   CardDeclined,
   chargeResultFromDecline,
   NoChargeablePaymentMethod,
+  RevolutChargePending,
 } from "../lib/charge-org";
 import {
   createCustomer,
@@ -922,6 +923,19 @@ router.post(
       if (err instanceof NoChargeablePaymentMethod) {
         return res.status(409).json({ error: err.message });
       }
+      // Still in flight at the acquirer: neither a refusal nor an outage. A 503
+      // so the caller retries with the SAME Idempotency-Key, which resumes this
+      // order and reads its final state. Never a `failed` charge_result: that
+      // reported a collected $99 as a decline (2026-10-06).
+      if (err instanceof RevolutChargePending) {
+        res.locals.stripeObjectId = err.reference;
+        res.setHeader("Retry-After", "60");
+        return res.status(503).json({
+          error: err.message,
+          code: "charge_pending",
+          reference: err.reference,
+        });
+      }
       // A refusal is an answer, so it is reported, not raised. Re-parsing the
       // body keeps the reported amount the caller's own, and a body that failed
       // validation could never have reached a charge.
@@ -1456,6 +1470,14 @@ router.post(
     } catch (err) {
       if (err instanceof NoChargeablePaymentMethod) {
         return res.status(409).json({ error: err.message });
+      }
+      if (err instanceof RevolutChargePending) {
+        res.setHeader("Retry-After", "60");
+        return res.status(503).json({
+          error: err.message,
+          code: "charge_pending",
+          reference: err.reference,
+        });
       }
       if (err instanceof CardDeclined) {
         return res.status(402).json({
