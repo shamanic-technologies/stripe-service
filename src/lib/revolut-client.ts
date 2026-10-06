@@ -258,7 +258,19 @@ export function payOrderWithSavedMethod(
   return request<RevolutOrder>(
     "POST",
     `/orders/${encodeURIComponent(orderId)}/payments`,
-    { saved_payment_method: { type, id: savedPaymentMethodId } }
+    {
+      saved_payment_method: {
+        type,
+        id: savedPaymentMethodId,
+        // REQUIRED by Revolut: an order paid without it is a 400 `initiator is
+        // empty` (2026-10-06, first off-session charge that got past order
+        // creation). This function is the OFF-SESSION path (nobody on the
+        // page), i.e. merchant-initiated, which Revolut allows only on a method
+        // saved with `save_payment_method_for: "merchant"`, as every order
+        // here saves it.
+        initiator: "merchant",
+      },
+    }
   );
 }
 

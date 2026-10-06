@@ -4,7 +4,7 @@ vi.mock("../../src/lib/key-client", () => ({
   resolvePlatformKey: vi.fn().mockResolvedValue("sk_test_revolut"),
 }));
 
-import { createOrder } from "../../src/lib/revolut-client";
+import { createOrder, payOrderWithSavedMethod } from "../../src/lib/revolut-client";
 
 /**
  * Revolut's Merchant API accepts only an UPPERCASE ISO 4217 code. Callers speak
@@ -46,5 +46,39 @@ describe("revolut-client createOrder currency", () => {
   it("leaves an already-uppercase code untouched", async () => {
     await createOrder({ amount: 100, currency: "EUR" });
     expect(sentBody().currency).toBe("EUR");
+  });
+});
+
+/**
+ * Paying an order with a saved card off-session is MERCHANT-initiated, and
+ * Revolut rejects a payment without `initiator` (400 `initiator is empty`,
+ * prod 2026-10-06, the step right after the currency fix).
+ */
+describe("revolut-client payOrderWithSavedMethod", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: "ord-1", state: "completed" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends initiator merchant with the saved method", async () => {
+    await payOrderWithSavedMethod("ord-1", "pm-1", "card");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://merchant.revolut.com/api/orders/ord-1/payments"
+    );
+    const init = fetchMock.mock.calls[0][1] as { body: string };
+    expect(JSON.parse(init.body)).toEqual({
+      saved_payment_method: { type: "card", id: "pm-1", initiator: "merchant" },
+    });
   });
 });
