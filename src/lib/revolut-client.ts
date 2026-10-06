@@ -100,6 +100,8 @@ export interface RevolutOrder {
   payments?: Array<{
     id?: string;
     state?: string;
+    /** Why a `declined`/`failed` payment was refused (Revolut's own enum). */
+    decline_reason?: string;
     amount?: number;
     settled_amount?: number;
     settled_currency?: string;

@@ -13,6 +13,7 @@ import {
   getOrder,
   listCustomerPaymentMethods,
   payOrderWithSavedMethod,
+  type RevolutOrder,
 } from "./revolut-client";
 import { mirrorOrderById } from "./revolut-processor";
 
@@ -214,78 +215,208 @@ export async function chargeViaRevolut(params: {
 
   // Resume, never re-create. Revolut has no idempotency record of its own, so
   // the key rides on the order's metadata and the mirror is what remembers it:
-  // every order this route creates is mirrored in the `finally` below, and the
+  // every order this route creates is mirrored once it settles, and the
   // 5-minute poller re-reads anything a crash left unmirrored. A retry that
-  // finds a COMPLETED order returns it untouched — the money already moved —
-  // and one that finds an unpaid or failed order pays that same order again
+  // finds a COMPLETED order returns it untouched (the money already moved), one
+  // that finds a payment still IN FLIGHT waits for it rather than paying again,
+  // and one that finds an unpaid or refused order pays that same order again
   // rather than minting a second one.
-  const existing = params.idempotencyKey
+  const existingId = params.idempotencyKey
     ? await findOrderByIdempotencyKey(params.orgId, params.idempotencyKey)
     : null;
-  if (existing) {
-    const current = await getOrder(existing).catch(() => null);
-    if (current?.state === "completed") {
-      await mirrorOrderById(existing, "webhook").catch((err) =>
-        console.error(
-          `[stripe-service] Revolut charge mirror failed for ${existing}:`,
-          err
-        )
-      );
-      return revolutChargeResult(params, existing, "completed");
+  if (existingId) {
+    const current = await getOrder(existingId).catch(() => null);
+    if (current) {
+      const verdict = revolutVerdict(current);
+      if (verdict.kind === "succeeded" || hasPaymentInFlight(current)) {
+        return settleRevolutCharge(params, existingId);
+      }
     }
   }
 
-  const order = existing
-    ? { id: existing }
-    : await createOrder({
-        amount: params.amount,
-        currency: params.currency,
-        description: params.description,
-        customerId: params.customerId,
-        metadata: {
-          ...(params.metadata ?? {}),
-          org_id: params.orgId,
-          ...(params.idempotencyKey
-            ? { idempotency_key: params.idempotencyKey }
-            : {}),
-        },
-      });
+  const orderId = existingId
+    ? existingId
+    : (
+        await createOrder({
+          amount: params.amount,
+          currency: params.currency,
+          description: params.description,
+          customerId: params.customerId,
+          metadata: {
+            ...(params.metadata ?? {}),
+            org_id: params.orgId,
+            ...(params.idempotencyKey
+              ? { idempotency_key: params.idempotencyKey }
+              : {}),
+          },
+        })
+      ).id;
 
-  let paid;
   try {
-    paid = await payOrderWithSavedMethod(
-      order.id,
+    const payment = await payOrderWithSavedMethod(
+      orderId,
       chargeable.id,
       typeof chargeable.type === "string" ? chargeable.type : "card"
     );
-  } finally {
-    // Mirror whatever happened, success or failure. A declined charge is a real
-    // state the mirror must carry — leaving it out would make a failure
-    // indistinguishable from a charge that never ran.
-    await mirrorOrderById(order.id, "webhook").catch((err) =>
-      console.error(`[stripe-service] Revolut charge mirror failed for ${order.id}:`, err)
-    );
+    // The pay call answers with a PAYMENT, not the order, and a merchant-
+    // initiated card payment is almost never finished when it answers: its
+    // state is `authorisation_started` or similar, and the order reaches
+    // `completed` a second or two later. Reading that first state as the
+    // outcome reported a $99 that WAS collected as a decline (2026-10-06).
+    // A refusal the payment already states is final, so it is answered at once;
+    // anything else is settled by reading the order until it is terminal.
+    const paymentState = (payment as { state?: string } | null)?.state;
+    if (paymentState && REVOLUT_FAILED_PAYMENT_STATES.has(paymentState)) {
+      await mirrorQuietly(orderId);
+      return revolutChargeResult(params, orderId, {
+        kind: "failed",
+        code: declineReasonOf(payment),
+      });
+    }
+  } catch (err) {
+    await mirrorQuietly(orderId);
+    throw err;
   }
+  return settleRevolutCharge(params, orderId);
+}
 
-  const state = paid?.state ?? ("state" in order ? order.state : undefined);
-  return revolutChargeResult(params, order.id, state);
+/**
+ * Order states that END a Revolut charge, and payment states that end a payment
+ * as a refusal. Everything else (`pending`, `processing`, `authorised`,
+ * `authorisation_started`, `capture_started`, `completing`, ...) is IN FLIGHT:
+ * the money may still move, so it is never reported as a failure.
+ */
+const REVOLUT_FAILED_ORDER_STATES = new Set(["failed", "cancelled"]);
+export const REVOLUT_FAILED_PAYMENT_STATES = new Set([
+  "declined",
+  "soft_declined",
+  "failed",
+  "cancelled",
+]);
+
+/** How long one request waits for an in-flight Revolut charge to settle. */
+export const revolutSettleTiming = { intervalMs: 1000, budgetMs: 15_000 };
+
+type RevolutVerdict =
+  | { kind: "succeeded" }
+  | { kind: "failed"; code: string | null }
+  | { kind: "pending"; state: string | null };
+
+type RevolutPayment = NonNullable<RevolutOrder["payments"]>[number];
+
+function latestPayment(order: RevolutOrder): RevolutPayment | undefined {
+  const payments = order.payments ?? [];
+  return payments[payments.length - 1];
+}
+
+function declineReasonOf(payment: unknown): string | null {
+  const reason = (payment as { decline_reason?: unknown } | null | undefined)
+    ?.decline_reason;
+  return typeof reason === "string" && reason.length > 0 ? reason : null;
+}
+
+/** Is there a payment on this order that has not finished yet? */
+function hasPaymentInFlight(order: RevolutOrder): boolean {
+  const latest = latestPayment(order);
+  if (!latest || typeof latest.state !== "string") return false;
+  return (
+    !REVOLUT_FAILED_PAYMENT_STATES.has(latest.state) &&
+    latest.state !== "completed"
+  );
+}
+
+/**
+ * What a Revolut order says about the charge RIGHT NOW. Only a terminal state
+ * is a verdict; an in-flight one is `pending`, never `failed`.
+ */
+export function revolutVerdict(order: RevolutOrder): RevolutVerdict {
+  if (order.state === "completed") return { kind: "succeeded" };
+  const latest = latestPayment(order);
+  if (order.state && REVOLUT_FAILED_ORDER_STATES.has(order.state)) {
+    return { kind: "failed", code: declineReasonOf(latest) };
+  }
+  if (latest?.state && REVOLUT_FAILED_PAYMENT_STATES.has(latest.state)) {
+    return { kind: "failed", code: declineReasonOf(latest) };
+  }
+  return { kind: "pending", state: latest?.state ?? order.state ?? null };
+}
+
+/**
+ * A Revolut charge that has not reached a terminal state within this request.
+ * NOT a refusal and NOT an outage: the money may yet move. Reported as a 503
+ * (`charge_pending`) so the caller retries with the SAME idempotency key, which
+ * resumes this very order and reads its final state instead of charging again.
+ */
+export class RevolutChargePending extends Error {
+  readonly reference: string;
+  readonly state: string | null;
+  constructor(reference: string, state: string | null) {
+    super(
+      `Revolut charge ${reference} is still in flight (${state ?? "unknown"}); retry with the same Idempotency-Key`
+    );
+    this.name = "RevolutChargePending";
+    this.reference = reference;
+    this.state = state;
+  }
+}
+
+/** Read the order until it is terminal, mirror it, and answer from it. */
+async function settleRevolutCharge(
+  params: { orgId: string; amount: number; currency: string },
+  orderId: string
+): Promise<ChargeResult> {
+  const deadline = Date.now() + revolutSettleTiming.budgetMs;
+  let verdict: RevolutVerdict = { kind: "pending", state: null };
+  try {
+    for (;;) {
+      verdict = revolutVerdict(await getOrder(orderId));
+      if (verdict.kind !== "pending") break;
+      if (Date.now() + revolutSettleTiming.intervalMs > deadline) break;
+      await new Promise((r) => setTimeout(r, revolutSettleTiming.intervalMs));
+    }
+  } finally {
+    // Mirror whatever happened. A refused charge is a real state the mirror
+    // must carry, and so is one still in flight: the poller finishes it.
+    await mirrorQuietly(orderId);
+  }
+  if (verdict.kind === "pending") {
+    throw new RevolutChargePending(orderId, verdict.state);
+  }
+  return revolutChargeResult(params, orderId, verdict);
+}
+
+async function mirrorQuietly(orderId: string): Promise<void> {
+  await mirrorOrderById(orderId, "webhook").catch((err) =>
+    console.error(`[stripe-service] Revolut charge mirror failed for ${orderId}:`, err)
+  );
 }
 
 function revolutChargeResult(
   params: { orgId: string; amount: number; currency: string },
   orderId: string,
-  state: string | undefined
+  verdict: { kind: "succeeded" } | { kind: "failed"; code: string | null }
 ): ChargeResult {
   return {
     object: "charge_result",
     org_id: params.orgId,
     acquirer: "revolut",
     reference: orderId,
-    status: state === "completed" ? "succeeded" : "failed",
+    status: verdict.kind === "succeeded" ? "succeeded" : "failed",
     amount: params.amount,
     currency: params.currency,
     // Revolut has no invoice object. Null is the honest answer, not a gap.
     hosted_document_url: null,
+    // A refusal states the acquirer's reason, as a Stripe refusal does, so the
+    // caller can tell "insufficient funds" from "card expired".
+    ...(verdict.kind === "failed"
+      ? {
+          failure: {
+            type: "card_declined" as const,
+            code: verdict.code,
+            message: null,
+          },
+        }
+      : {}),
   };
 }
 
