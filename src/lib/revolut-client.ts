@@ -232,6 +232,11 @@ export function createOrder(body: {
   const { customerId, ...rest } = body;
   return request<RevolutOrder>("POST", "/orders", {
     ...rest,
+    // Revolut accepts ONLY an uppercase ISO 4217 code; "usd" is a 400
+    // `'currency' is invalid`. Callers speak Stripe's lowercase (billing-service
+    // pins "usd"), so normalise here, at the one boundary every order crosses,
+    // never per call site (2026-10-06: every off-session charge failed on it).
+    currency: body.currency.toUpperCase(),
     ...(customerId ? { customer: { id: customerId } } : {}),
   });
 }
