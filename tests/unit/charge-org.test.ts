@@ -33,6 +33,8 @@ import {
   CardDeclined,
   resolveStripeChargeablePaymentMethod,
   NoChargeablePaymentMethod,
+  RevolutChargePending,
+  revolutSettleTiming,
 } from "../../src/lib/charge-org";
 
 const BASE = {
@@ -46,6 +48,11 @@ const BASE = {
 beforeEach(() => {
   vi.clearAllMocks();
   mirrorOrderById.mockResolvedValue(undefined);
+  // The order read that settles a charge. Completed unless a test says otherwise.
+  getOrder.mockReset();
+  getOrder.mockResolvedValue({ id: "ord-1", state: "completed" });
+  revolutSettleTiming.intervalMs = 0;
+  revolutSettleTiming.budgetMs = 20;
 });
 
 describe("chargeViaRevolut", () => {
@@ -128,6 +135,89 @@ describe("chargeViaRevolut", () => {
   });
 });
 
+describe("chargeViaRevolut — a charge Revolut has not finished is never a decline", () => {
+  beforeEach(() => {
+    dbMock.clearQueues();
+    listCustomerPaymentMethods.mockResolvedValue([{ id: "pm-1", type: "card" }]);
+    createOrder.mockResolvedValue({ id: "ord-1", state: "pending" });
+  });
+
+  it("waits for the order to complete when the pay call answers mid-authorisation (2026-10-06)", async () => {
+    // The pay call returns a PAYMENT, still in flight. The order completed two
+    // seconds later in prod; reading the first state reported $99 as declined.
+    payOrderWithSavedMethod.mockResolvedValue({ id: "pay-1", state: "authorisation_started" });
+    getOrder
+      .mockResolvedValueOnce({
+        id: "ord-1",
+        state: "processing",
+        payments: [{ id: "pay-1", state: "authorisation_started" }],
+      })
+      .mockResolvedValue({ id: "ord-1", state: "completed" });
+
+    const out = await chargeViaRevolut(BASE);
+
+    expect(out.status).toBe("succeeded");
+    expect(out.failure).toBeUndefined();
+    expect(mirrorOrderById).toHaveBeenCalledWith("ord-1", "webhook");
+  });
+
+  it("reports PENDING (never failed) when the charge is still in flight at the deadline", async () => {
+    payOrderWithSavedMethod.mockResolvedValue({ id: "pay-1", state: "authorisation_started" });
+    getOrder.mockResolvedValue({
+      id: "ord-1",
+      state: "processing",
+      payments: [{ id: "pay-1", state: "authorisation_started" }],
+    });
+
+    const err = await chargeViaRevolut(BASE).catch((e) => e);
+
+    expect(err).toBeInstanceOf(RevolutChargePending);
+    expect(err.reference).toBe("ord-1");
+    expect(mirrorOrderById).toHaveBeenCalledWith("ord-1", "webhook");
+  });
+
+  it("reports a real refusal as failed, with Revolut's decline reason", async () => {
+    payOrderWithSavedMethod.mockResolvedValue({ id: "pay-1", state: "authorisation_started" });
+    getOrder.mockResolvedValue({
+      id: "ord-1",
+      state: "pending",
+      payments: [{ id: "pay-1", state: "declined", decline_reason: "insufficient_funds" }],
+    });
+
+    const out = await chargeViaRevolut(BASE);
+
+    expect(out.status).toBe("failed");
+    expect(out.failure).toEqual({ type: "card_declined", code: "insufficient_funds", message: null });
+  });
+
+  it("answers a refusal the pay call already states without waiting", async () => {
+    payOrderWithSavedMethod.mockResolvedValue({ id: "pay-1", state: "declined", decline_reason: "expired_card" });
+
+    const out = await chargeViaRevolut(BASE);
+
+    expect(out.status).toBe("failed");
+    expect(out.failure?.code).toBe("expired_card");
+    expect(getOrder).not.toHaveBeenCalled();
+  });
+
+  it("a retry that finds a payment IN FLIGHT waits for it and never pays again", async () => {
+    dbMock.queueSelect("revolut_orders", [{ id: "ord-1" }]);
+    getOrder
+      .mockResolvedValueOnce({
+        id: "ord-1",
+        state: "processing",
+        payments: [{ id: "pay-1", state: "authorisation_started" }],
+      })
+      .mockResolvedValue({ id: "ord-1", state: "completed" });
+
+    const out = await chargeViaRevolut({ ...BASE, idempotencyKey: "subscription:c1:1" });
+
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(payOrderWithSavedMethod).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ reference: "ord-1", status: "succeeded" });
+  });
+});
+
 describe("chargeResultFromInvoice", () => {
   it("carries the hosted invoice through for a Stripe org", () => {
     const out = chargeResultFromInvoice(
@@ -194,6 +284,9 @@ describe("chargeViaRevolut — retrying one logical top-up", () => {
     getOrder.mockResolvedValue({ id: "ord-1", state: "pending" });
     payOrderWithSavedMethod.mockResolvedValue({ id: "ord-1", state: "completed" });
 
+    getOrder
+      .mockResolvedValueOnce({ id: "ord-1", state: "pending" })
+      .mockResolvedValue({ id: "ord-1", state: "completed" });
     const out = await chargeViaRevolut({ ...BASE, idempotencyKey: "topup_1" });
 
     expect(createOrder).not.toHaveBeenCalled();

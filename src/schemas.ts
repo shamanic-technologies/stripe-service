@@ -894,6 +894,7 @@ registry.registerPath({
     404: { description: "No customer for org on its acquirer", content: { "application/json": { schema: ErrorResponseSchema } } },
     409: { description: "No chargeable saved payment method", content: { "application/json": { schema: ErrorResponseSchema } } },
     502: { description: "The acquirer could not be reached or could not complete the charge — nobody's card is at fault. Body carries `code: \"acquirer_unavailable\"`. Never returned for a refused card.", content: { "application/json": { schema: ErrorResponseSchema } } },
+    503: { description: "Revolut has not finished the charge within this request (the payment is still in flight). NOT a refusal and NOT an outage: the money may yet move. Body: `code: \"charge_pending\"`, `reference`. Retry with the SAME Idempotency-Key, which resumes this order and answers its final state.", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });
 
