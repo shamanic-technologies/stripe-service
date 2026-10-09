@@ -92,6 +92,13 @@
       "when": 1790939385414,
       "tag": "0012_direct_payments",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791576000000,
+      "tag": "0013_revolut_fee_declared",
+      "breakpoints": true
     }
   ]
 }
