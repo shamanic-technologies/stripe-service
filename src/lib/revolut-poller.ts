@@ -1,3 +1,4 @@
+import { declarePendingRevolutFees } from "./revolut-fees";
 import { listOrders, listDisputes } from "./revolut-client";
 import {
   mirrorOrderById,
@@ -65,6 +66,16 @@ export async function pollRevolutOnce(nowMs: number = Date.now()): Promise<numbe
     await releaseSettledCardSetupHolds(nowMs);
   } catch (err) {
     console.error("[stripe-service] Releasing card-verification holds failed:", err);
+  }
+
+  // The acquiring fee of each newly completed payment is charged to its org.
+  try {
+    const declared = await declarePendingRevolutFees();
+    if (declared > 0) {
+      console.log(`[stripe-service] Revolut fees declared: ${declared}`);
+    }
+  } catch (err) {
+    console.error("[stripe-service] Revolut fee sweep failed:", err);
   }
 
   // Disputes are captured verbatim into bronze. No silver projection until a

@@ -294,6 +294,9 @@ export const revolutOrders = pgTable(
     // separate balance_transaction; Revolut puts it on the payment itself.
     settledAmount: bigint("settled_amount", { mode: "number" }),
     feeAmount: bigint("fee_amount", { mode: "number" }),
+    // When the fee was declared to runs-service as a charge on the org (see
+    // src/lib/revolut-fees.ts). Never written by the projection.
+    feeDeclaredAt: timestamp("fee_declared_at"),
     paymentMethodType: text("payment_method_type"),
     description: text("description"),
     metadata: jsonb("metadata"),
