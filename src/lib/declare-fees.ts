@@ -1,5 +1,6 @@
 import type Stripe from "stripe";
-import { extractString } from "./event-processor";
+import { resolveOrgId, extractString } from "./event-processor";
+import { getKeySource } from "./key-client";
 import {
   createPlatformRun,
   addPlatformRunCost,
@@ -141,24 +142,24 @@ async function declareSingleFee(spec: FeeSpec, stripe: Stripe): Promise<void> {
   const bt = await stripe.balanceTransactions.retrieve(spec.balanceTransactionId);
   if (bt.fee === 0) return;
 
-  // A Stripe fee is OUR cost of taking the customer's money, never something
-  // the customer is charged for. runs-service counts every platform-source cost
-  // that carries an org into that org's usage total, which billing-service reads
-  // as SPEND — so a fee declared on the org's run is debited from the org's
-  // balance. Fees were never declared at all until 2026-10-09 (the key-source
-  // read 400'd), so no customer has ever paid one; the two that landed that day
-  // debited their orgs and were refunded. The run therefore carries NO org, and
-  // the cost is always platform-sourced: it counts in platform cost reporting
-  // and in no customer's balance. Charging customers the fee would be a pricing
-  // decision, not a side-effect of bookkeeping.
-  const costSource = "platform" as const;
+  // The fee is CHARGED to the org on purpose — owner decision 2026-10-09 ("make
+  // the charge on them, as we say in our pricing catalogue"): costs-service
+  // prices these names pass-through, so the org pays the acquirer's fee exactly.
+  // runs-service counts a platform-source cost carrying an org into that org's
+  // usage, which billing reads as spend. Dropping the org here would silently
+  // move the fee onto the platform.
+  const orgForHeader = await resolveOrgForFee(spec.customerId);
+  const costSource: "platform" | "org" =
+    spec.forcePlatformSource || !orgForHeader
+      ? "platform"
+      : (await getKeySource(orgForHeader, "stripe")).keySource;
 
   const idempotencyKey = `stripe:${spec.balanceTransactionId}`;
 
   const run = await createPlatformRun({
     taskName: spec.taskName,
     idempotencyKey,
-    orgId: null,
+    orgId: orgForHeader,
   });
 
   try {
@@ -181,4 +182,12 @@ async function declareSingleFee(spec: FeeSpec, stripe: Stripe): Promise<void> {
     }
     throw err;
   }
+}
+
+async function resolveOrgForFee(
+  customerId: string | null
+): Promise<string | null> {
+  if (!customerId) return null;
+  const orgId = await resolveOrgId(null, customerId);
+  return orgId === "unknown" ? null : orgId;
 }
