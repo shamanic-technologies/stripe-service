@@ -29,6 +29,7 @@ import {
 } from "../lib/saved-method";
 import { buildCardSetup } from "../lib/card-setup";
 import { detachAllPaymentMethods } from "../lib/remove-payment-methods";
+import { removeAllRevolutPaymentMethods } from "../lib/revolut-card-removal";
 import {
   invalidatePaymentMethodReads,
   listPaymentMethodsForRead,
@@ -1274,15 +1275,18 @@ router.get(
  * for. Same shape as the teardown route, and for the same reason: a removal
  * that finds nothing to remove has succeeded.
  *
- * ## Scope is STRIPE
+ * ## Answers about the org's REAL acquirer
  *
- * Named on the response as `acquirer: "stripe"`, because it is the acquirer
- * whose saved methods this detaches. Revolut is untouched: it saves a card
- * only through its own browser widget and exposes no detach, so pretending to
- * cover it would report a removal that did not happen. An org pinned there
- * simply has nothing for this route to find.
+ * Dispatches on the pin, like every other payment-method read here. A Stripe
+ * org takes the unchanged path below. A Revolut org has every saved Revolut
+ * method deleted (`removeAllRevolutPaymentMethods`), proven by a re-read, and
+ * the response names `acquirer: "revolut"` with the Revolut customer and ids.
+ * It used to answer about Stripe for EVERY org, so a Revolut org got a 200
+ * with nothing removed while its card stayed saved (AscendQE, 2026-10-09).
+ * Revolut sends no payment-method webhook, so for a Revolut org the after-state
+ * below is fired inline by the removal itself instead.
  *
- * ## The after-state still runs, and is NOT this route's job
+ * ## The after-state (Stripe) still runs, and is NOT this route's job
  *
  * Stripe emits `payment_method.detached` for a detach WE initiate exactly as
  * for one a customer performs in the portal, so the existing side-effect
@@ -1301,6 +1305,23 @@ router.delete(
     try {
       const orgId = req.params.orgId;
       res.locals.orgId = orgId;
+
+      const pin = await resolveAcquirer(orgId);
+      if (pin.acquirer === "revolut") {
+        const customer = pin.customerId;
+        const removal = customer
+          ? await removeAllRevolutPaymentMethods(orgId, customer)
+          : { detached: [], alreadyDetached: [] };
+        if (customer) res.locals.stripeObjectId = customer;
+        return res.json({
+          object: "payment_methods_removed",
+          org_id: orgId,
+          acquirer: "revolut",
+          customer: customer ?? null,
+          detached: removal.detached,
+          already_detached: removal.alreadyDetached,
+        });
+      }
 
       const row = await db
         .select({ id: customers.id })

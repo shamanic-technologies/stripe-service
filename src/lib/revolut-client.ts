@@ -44,7 +44,7 @@ export class RevolutApiError extends Error {
 }
 
 async function request<T>(
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
   path: string,
   body?: unknown
 ): Promise<T> {
@@ -181,6 +181,24 @@ export async function listCustomerPaymentMethods(
     `/customers/${encodeURIComponent(customerId)}/payment-methods`
   );
   return res.payment_methods ?? [];
+}
+
+/**
+ * Delete one saved payment method from a customer — the customer asked us to
+ * stop holding it. `DELETE /customers/{id}/payment-methods/{pm}`, confirmed
+ * against the live API 2026-10-09: an unknown method id answers `404
+ * not_found` ("Payment method with id … is not found"), never a 405, so the
+ * route exists. Throws `RevolutApiError` on any non-2xx; the caller decides
+ * which 404 means "already gone".
+ */
+export async function deleteCustomerPaymentMethod(
+  customerId: string,
+  paymentMethodId: string
+): Promise<void> {
+  await request<unknown>(
+    "DELETE",
+    `/customers/${encodeURIComponent(customerId)}/payment-methods/${encodeURIComponent(paymentMethodId)}`
+  );
 }
 
 /**
