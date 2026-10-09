@@ -345,14 +345,15 @@
           "acquirer": {
             "type": "string",
             "enum": [
-              "stripe"
+              "stripe",
+              "revolut"
             ],
-            "description": "The acquirer whose saved methods were detached. Stripe only — Revolut saves a card through its own browser widget and exposes no detach, so it is untouched."
+            "description": "The acquirer the org is on, whose saved methods were removed. Read from the org's pin, like every payment-method read."
           },
           "customer": {
             "type": "string",
             "nullable": true,
-            "description": "The Stripe customer the methods were removed from, null when the org has none mirrored (nothing to remove, still a success)."
+            "description": "The acquirer's customer the methods were removed from (cus_… on Stripe, a UUID on Revolut), null when the org has none (nothing to remove, still a success)."
           },
           "detached": {
             "type": "array",
@@ -366,7 +367,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Payment method ids Stripe reported as already gone. Counted apart from detached so a caller can tell a real removal from a replayed one; both mean the method is no longer held."
+            "description": "Payment method ids the acquirer reported as already gone. Counted apart from detached so a caller can tell a real removal from a replayed one; both mean the method is no longer held."
           }
         },
         "required": [
@@ -2151,8 +2152,8 @@
     },
     "/internal/payment_methods/by-org/{orgId}": {
       "delete": {
-        "summary": "Remove every payment method the org's Stripe customer holds",
-        "description": "Server-to-server. Detaches EVERY payment method on the org's Stripe customer via the platform key — never only the default, because a surviving non-default method reads downstream as 'no card' while still being held. Refused for nobody: no balance, debt state or card state blocks it (billing-service attempts the collection BEFORE calling, and a failed collection is a logged fact, not a veto — nothing is forgiven). An org with no customer, or a customer with no method, is a 200 with an empty detached list. Stripe only; Revolut is untouched. Stripe emits payment_method.detached for these detaches exactly as for an out-of-band one, so the existing staff notification and the 'no chargeable card left' signal to billing-service still fire. Fails loud on any other Stripe error; the detach is safe to retry. X-API-Key only — no identity headers (orgId is in the path).",
+        "summary": "Remove every payment method the org's customer holds, on the org's acquirer",
+        "description": "Server-to-server. Detaches EVERY payment method on the org's Stripe customer via the platform key — never only the default, because a surviving non-default method reads downstream as 'no card' while still being held. Refused for nobody: no balance, debt state or card state blocks it (billing-service attempts the collection BEFORE calling, and a failed collection is a logged fact, not a veto — nothing is forgiven). An org with no customer, or a customer with no method, is a 200 with an empty detached list. Dispatches on the org's acquirer: a Stripe org is detached at Stripe, which emits payment_method.detached so the existing staff notification and the 'no chargeable card left' signal to billing-service fire off the webhook; a Revolut org has every saved Revolut method deleted, proven by a re-read (a method still there is a 5xx, never an empty success), and since Revolut sends no payment-method webhook the 'no chargeable card left' signal + staff email are fired inline, once, by the call that actually removed a method. Fails loud on any other acquirer error; the removal is safe to retry. X-API-Key only — no identity headers (orgId is in the path).",
         "tags": [
           "Internal"
         ],
