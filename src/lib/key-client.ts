@@ -116,19 +116,22 @@ export async function getKeySource(
   orgId: string,
   provider: string
 ): Promise<KeySourceResponse> {
-  const url = `${KEY_SERVICE_URL}/keys/${encodeURIComponent(provider)}/source`;
+  // The user-less, org-keyed route (key-service v0.7.5). `GET /keys/:provider/source`
+  // sits behind key-service's identity guard and 400s without an `x-user-id`,
+  // which a webhook/poller caller does not have — that is why every Stripe fee
+  // declaration failed from 2026-09-30 until this switch. Never satisfy that
+  // guard with a sentinel user id (#77).
+  const path = `/internal/keys/by-org/${encodeURIComponent(orgId)}/${encodeURIComponent(provider)}/source`;
 
-  const headers: Record<string, string> = {
-    "x-api-key": KEY_SERVICE_API_KEY,
-    "x-org-id": orgId,
-  };
-
-  const response = await fetch(url, { method: "GET", headers });
+  const response = await fetch(`${KEY_SERVICE_URL}${path}`, {
+    method: "GET",
+    headers: { "x-api-key": KEY_SERVICE_API_KEY },
+  });
 
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(
-      `key-service GET /keys/${provider}/source failed: ${response.status} - ${errorText}`
+      `key-service GET ${path} failed: ${response.status} - ${errorText}`
     );
   }
 
