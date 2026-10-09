@@ -51,14 +51,8 @@ beforeEach(() => {
 });
 
 describe("declareFeesForEvent — charge.succeeded", () => {
-  it("declares stripe-processing-fee with resolved org and keySource", async () => {
+  it("declares stripe-processing-fee as a platform cost carrying NO org, so no customer is billed it", async () => {
     dbMock.queueSelect("customers", [{ orgId: "org-acme" }]);
-    keyMock.getKeySource.mockResolvedValueOnce({
-      provider: "stripe",
-      orgId: "org-acme",
-      keySource: "org",
-      isDefault: false,
-    });
     stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({
       id: "txn_processing",
       fee: 290,
@@ -85,16 +79,16 @@ describe("declareFeesForEvent — charge.succeeded", () => {
     expect(stripeMock.balanceTransactions.retrieve).toHaveBeenCalledWith(
       "txn_processing"
     );
-    expect(keyMock.getKeySource).toHaveBeenCalledWith("org-acme", "stripe");
+    expect(keyMock.getKeySource).not.toHaveBeenCalled();
     expect(runsMock.createPlatformRun).toHaveBeenCalledWith({
       taskName: "charge.succeeded",
       idempotencyKey: "stripe:txn_processing",
-      orgId: "org-acme",
+      orgId: null,
     });
     expect(runsMock.addPlatformRunCost).toHaveBeenCalledWith({
       runId: "run_processing",
       costName: "stripe-processing-fee",
-      costSource: "org",
+      costSource: "platform",
       quantity: 290,
       idempotencyKey: "stripe:txn_processing",
     });
@@ -336,32 +330,6 @@ describe("declareFeesForEvent — error handling", () => {
       runId: "run_err",
       status: "failed",
     });
-  });
-
-  it("propagates key-service errors before any runs-service call", async () => {
-    dbMock.queueSelect("customers", [{ orgId: "org-acme" }]);
-    stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({
-      id: "txn_keyerr",
-      fee: 290,
-    });
-    keyMock.getKeySource.mockRejectedValueOnce(new Error("key-service down"));
-
-    const event = {
-      id: "evt_keyerr",
-      type: "charge.succeeded",
-      data: {
-        object: {
-          id: "ch_keyerr",
-          customer: "cus_acme",
-          balance_transaction: "txn_keyerr",
-        },
-      },
-    } as never;
-
-    await expect(
-      declareFeesForEvent(event, stripeMock as never)
-    ).rejects.toThrow("key-service down");
-    expect(runsMock.createPlatformRun).not.toHaveBeenCalled();
   });
 });
 
