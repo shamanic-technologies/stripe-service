@@ -46,7 +46,7 @@ describe("confirmSavedPaymentMethod — the three answers stay apart", () => {
       object: "saved_payment_method",
       acquirer: "revolut",
       saved: true,
-      method: { id: "pm-rev-1", type: "card", saved_for: "merchant" },
+      method: { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: null, prepaid: null },
     });
   });
 
@@ -102,7 +102,7 @@ describe("confirmSavedPaymentMethod — the three answers stay apart", () => {
       object: "saved_payment_method",
       acquirer: "stripe",
       saved: true,
-      method: { id: "pm_card_1", type: "card", saved_for: null },
+      method: { id: "pm_card_1", type: "card", saved_for: null, funding: null, prepaid: null },
     });
   });
 
@@ -183,5 +183,74 @@ describe("hasChargeablePaymentMethod is the same read, not a second one", () => 
     await expect(hasChargeablePaymentMethod("org-1", pin)).rejects.toThrow(
       /down/
     );
+  });
+});
+
+describe("confirmSavedPaymentMethod — is the saved card PREPAID (both acquirers)", () => {
+  it.each([
+    ["prepaid", "prepaid", true],
+    ["debit", "debit", false],
+    ["credit", "credit", false],
+    ["PREPAID", "prepaid", true],
+  ])("Revolut funding %s -> funding %s, prepaid %s", async (raw, funding, prepaid) => {
+    pinnedToRevolut();
+    // Shape observed live 2026-10-12 on GET /customers/{id}/payment-methods.
+    listCustomerPaymentMethods.mockResolvedValue([
+      { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: raw },
+    ]);
+
+    const out = await confirmSavedPaymentMethod("org-1");
+    expect(out.saved && out.method).toMatchObject({ funding, prepaid });
+  });
+
+  it("Revolut stating no funding is UNKNOWN (null), never not-prepaid", async () => {
+    pinnedToRevolut();
+    listCustomerPaymentMethods.mockResolvedValue([
+      { id: "pm-rev-1", type: "card", saved_for: "merchant" },
+    ]);
+
+    const out = await confirmSavedPaymentMethod("org-1");
+    expect(out.saved && out.method).toMatchObject({ funding: null, prepaid: null });
+  });
+
+  it.each([
+    ["prepaid", "prepaid", true],
+    ["debit", "debit", false],
+    ["credit", "credit", false],
+    ["unknown", null, null],
+  ])("Stripe card.funding %s -> funding %s, prepaid %s", async (raw, funding, prepaid) => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_stripe_1" }]);
+    paymentMethodsList.mockResolvedValue({
+      data: [{ id: "pm_card_1", type: "card", card: { funding: raw } }],
+    });
+
+    const out = await confirmSavedPaymentMethod("org-1");
+    expect(out.saved && out.method).toMatchObject({ id: "pm_card_1", funding, prepaid });
+  });
+
+  it("a Stripe Link method has no card, so its funding is unknown", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_stripe_1" }]);
+    paymentMethodsList
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValueOnce({ data: [{ id: "pm_link_1", type: "link" }] });
+
+    const out = await confirmSavedPaymentMethod("org-1");
+    expect(out.saved && out.method).toMatchObject({
+      id: "pm_link_1",
+      funding: null,
+      prepaid: null,
+    });
+  });
+
+  it("the recurring-charge authorization carries the same fact", async () => {
+    pinnedToRevolut();
+    listCustomerPaymentMethods.mockResolvedValue([
+      { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: "prepaid" },
+    ]);
+
+    const auth = await authorizeRecurringCharges("org-1");
+    expect(auth.method).toMatchObject({ funding: "prepaid", prepaid: true });
   });
 });

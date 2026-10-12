@@ -803,12 +803,24 @@
               "saved_for": {
                 "type": "string",
                 "nullable": true
+              },
+              "funding": {
+                "type": "string",
+                "nullable": true,
+                "description": "How the card is funded, as the acquirer states it, lowercased verbatim (`credit`, `debit`, `prepaid`, …). `null` when the acquirer does not state it. Both acquirers."
+              },
+              "prepaid": {
+                "type": "boolean",
+                "nullable": true,
+                "description": "`true` the acquirer says the card is PREPAID; `false` it states a funding that is not prepaid; `null` it does not say. `null` is never \"not prepaid\"."
               }
             },
             "required": [
               "id",
               "type",
-              "saved_for"
+              "saved_for",
+              "funding",
+              "prepaid"
             ]
           },
           "reason": {

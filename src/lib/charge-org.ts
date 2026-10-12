@@ -626,10 +626,23 @@ export async function resolveStripeChargeablePaymentMethod(
   orgId: string,
   customerId: string
 ): Promise<string> {
+  return (await resolveStripeChargeablePaymentMethodObject(stripe, orgId, customerId)).id;
+}
+
+/**
+ * The same pick, returning the whole PaymentMethod rather than its id, for a
+ * reader that needs a fact about the method (its card's `funding`) and must be
+ * describing exactly the method a charge would name.
+ */
+export async function resolveStripeChargeablePaymentMethodObject(
+  stripe: Stripe,
+  orgId: string,
+  customerId: string
+): Promise<Stripe.PaymentMethod> {
   for (const type of STRIPE_OFF_SESSION_PM_TYPES) {
     const list = await stripe.paymentMethods.list({ customer: customerId, type });
     const pm = list?.data?.[0];
-    if (pm?.id) return pm.id;
+    if (pm?.id) return pm;
   }
   throw new NoChargeablePaymentMethod(orgId);
 }
