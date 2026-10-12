@@ -972,6 +972,14 @@ export const SavedPaymentMethodSchema = z
         id: z.string(),
         type: z.string(),
         saved_for: z.string().nullable(),
+        funding: z.string().nullable().openapi({
+          description:
+            "How the card is funded, as the acquirer states it, lowercased verbatim (`credit`, `debit`, `prepaid`, …). `null` when the acquirer does not state it. Both acquirers.",
+        }),
+        prepaid: z.boolean().nullable().openapi({
+          description:
+            "`true` the acquirer says the card is PREPAID; `false` it states a funding that is not prepaid; `null` it does not say. `null` is never \"not prepaid\".",
+        }),
       })
       .nullable(),
     reason: z

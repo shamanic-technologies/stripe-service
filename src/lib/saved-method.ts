@@ -4,7 +4,7 @@ import { customers } from "../db/schema";
 import { resolveAcquirer, type Acquirer, type AcquirerPin } from "./acquirer";
 import {
   NoChargeablePaymentMethod,
-  resolveStripeChargeablePaymentMethod,
+  resolveStripeChargeablePaymentMethodObject,
 } from "./charge-org";
 import { getPlatformStripe } from "./event-processor";
 import { listCustomerPaymentMethods } from "./revolut-client";
@@ -49,6 +49,32 @@ export interface SavedMethodRef {
    * attached to a customer is chargeable off-session by id).
    */
   saved_for: string | null;
+  /**
+   * How the card is funded, as the acquirer states it, lowercased verbatim:
+   * `credit`, `debit`, `prepaid`, … `null` when the acquirer does not state it
+   * (Stripe's own `"unknown"`, a Link method with no card, a field absent).
+   */
+  funding: string | null;
+  /**
+   * Is this a PREPAID card? Three answers kept apart, like the rest of this
+   * file: `true` the acquirer says prepaid; `false` the acquirer states a
+   * funding that is not prepaid; `null` the acquirer does not say. `null` is
+   * NEVER "not prepaid".
+   */
+  prepaid: boolean | null;
+}
+
+/**
+ * Normalise an acquirer's funding statement. Stripe states `card.funding`
+ * (`credit` | `debit` | `prepaid` | `unknown`); Revolut states `funding` on the
+ * saved method itself (observed live 2026-10-12: `"prepaid"` on a US Visa).
+ * Stripe's `"unknown"` is the acquirer NOT stating it, so it reads as `null`.
+ */
+export function fundingFacts(raw: unknown): Pick<SavedMethodRef, "funding" | "prepaid"> {
+  if (typeof raw !== "string") return { funding: null, prepaid: null };
+  const funding = raw.trim().toLowerCase();
+  if (funding === "" || funding === "unknown") return { funding: null, prepaid: null };
+  return { funding, prepaid: funding === "prepaid" };
 }
 
 /**
@@ -179,6 +205,7 @@ export async function confirmSavedPaymentMethod(
         id: usable.id,
         type: usable.type ?? "card",
         saved_for: typeof usable.saved_for === "string" ? usable.saved_for : null,
+        ...fundingFacts(usable.funding),
       },
     };
   }
@@ -203,12 +230,18 @@ export async function confirmSavedPaymentMethod(
   try {
     // The same resolution the neutral charge performs, so what this promises is
     // byte-identical to what the charge will actually name.
-    const id = await resolveStripeChargeablePaymentMethod(stripe, orgId, row[0].id);
+    const pm = await resolveStripeChargeablePaymentMethodObject(stripe, orgId, row[0].id);
     return {
       object: "saved_payment_method",
       acquirer: pin.acquirer,
       saved: true,
-      method: { id, type: "card", saved_for: null },
+      method: {
+        id: pm.id,
+        type: "card",
+        saved_for: null,
+        // A Link method carries no `card`, so its funding is not stated.
+        ...fundingFacts(pm.card?.funding),
+      },
     };
   } catch (err) {
     if (err instanceof NoChargeablePaymentMethod) {
