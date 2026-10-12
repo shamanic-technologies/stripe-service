@@ -68,7 +68,40 @@ describe("GET /internal/saved_payment_method/by-org/:orgId", () => {
       org_id: TEST_ORG_ID,
       acquirer: "revolut",
       saved: true,
-      method: { id: "pm-rev-1", type: "card", saved_for: "merchant" },
+      method: { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: null, prepaid: null },
+    });
+  });
+
+  it("states a PREPAID Revolut card as prepaid", async () => {
+    pinnedToRevolut();
+    revolutMock.listCustomerPaymentMethods.mockResolvedValue([
+      { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: "prepaid" },
+    ]);
+
+    const res = await request(app)
+      .get(`/internal/saved_payment_method/by-org/${TEST_ORG_ID}`)
+      .set(headers);
+
+    expect(res.status).toBe(200);
+    expect(res.body.method).toMatchObject({ funding: "prepaid", prepaid: true });
+  });
+
+  it("states a Stripe debit card as not prepaid", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_stripe_1" }]);
+    stripeMock.paymentMethods.list.mockResolvedValue({
+      data: [{ id: "pm_card_1", type: "card", card: { funding: "debit" } }],
+    });
+
+    const res = await request(app)
+      .get(`/internal/saved_payment_method/by-org/${TEST_ORG_ID}`)
+      .set(headers);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      acquirer: "stripe",
+      saved: true,
+      method: { id: "pm_card_1", funding: "debit", prepaid: false },
     });
   });
 
@@ -284,7 +317,7 @@ describe("POST /internal/recurring_charges/by-org/:orgId/authorize", () => {
       org_id: TEST_ORG_ID,
       acquirer: "revolut",
       authorized: true,
-      method: { id: "pm-rev-1", type: "card", saved_for: "merchant" },
+      method: { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: null, prepaid: null },
     });
   });
 

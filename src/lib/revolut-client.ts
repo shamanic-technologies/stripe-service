@@ -156,6 +156,8 @@ export interface RevolutPaymentMethod {
   type?: string;
   /** Revolut invalidates merchant-initiated use once a method is updated. */
   saved_for?: string;
+  /** `credit` | `debit` | `prepaid` … — observed live 2026-10-12. */
+  funding?: string;
   method_details?: Record<string, unknown>;
   [key: string]: unknown;
 }
