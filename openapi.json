@@ -366,6 +366,26 @@
                       "fee_cents": {
                         "type": "integer",
                         "description": "stripe + revolut."
+                      },
+                      "stripe_fee_usd_cents": {
+                        "type": "integer",
+                        "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                      },
+                      "revolut_fee_usd_cents": {
+                        "type": "integer",
+                        "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                      },
+                      "fee_usd_cents": {
+                        "type": "integer",
+                        "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                      },
+                      "unconverted_fee_count": {
+                        "type": "integer",
+                        "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                      },
+                      "unconverted_fee_cents": {
+                        "type": "integer",
+                        "description": "The part of `fee_cents` (in `currency`) that could not be converted to USD."
                       }
                     },
                     "required": [
@@ -373,7 +393,12 @@
                       "currency",
                       "stripe_fee_cents",
                       "revolut_fee_cents",
-                      "fee_cents"
+                      "fee_cents",
+                      "stripe_fee_usd_cents",
+                      "revolut_fee_usd_cents",
+                      "fee_usd_cents",
+                      "unconverted_fee_count",
+                      "unconverted_fee_cents"
                     ]
                   }
                 },
@@ -395,15 +420,103 @@
                       "fee_cents": {
                         "type": "integer",
                         "description": "stripe + revolut."
+                      },
+                      "stripe_fee_usd_cents": {
+                        "type": "integer",
+                        "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                      },
+                      "revolut_fee_usd_cents": {
+                        "type": "integer",
+                        "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                      },
+                      "fee_usd_cents": {
+                        "type": "integer",
+                        "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                      },
+                      "unconverted_fee_count": {
+                        "type": "integer",
+                        "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                      },
+                      "unconverted_fee_cents": {
+                        "type": "integer",
+                        "description": "The part of `fee_cents` (in `currency`) that could not be converted to USD."
                       }
                     },
                     "required": [
                       "currency",
                       "stripe_fee_cents",
                       "revolut_fee_cents",
-                      "fee_cents"
+                      "fee_cents",
+                      "stripe_fee_usd_cents",
+                      "revolut_fee_usd_cents",
+                      "fee_usd_cents",
+                      "unconverted_fee_count",
+                      "unconverted_fee_cents"
                     ]
                   }
+                },
+                "usd_months": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "stripe_fee_usd_cents": {
+                        "type": "integer",
+                        "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                      },
+                      "revolut_fee_usd_cents": {
+                        "type": "integer",
+                        "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                      },
+                      "fee_usd_cents": {
+                        "type": "integer",
+                        "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                      },
+                      "unconverted_fee_count": {
+                        "type": "integer",
+                        "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                      },
+                      "month": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "stripe_fee_usd_cents",
+                      "revolut_fee_usd_cents",
+                      "fee_usd_cents",
+                      "unconverted_fee_count",
+                      "month"
+                    ]
+                  },
+                  "description": "One basis: every currency of a UTC month merged in USD cents, oldest first."
+                },
+                "usd_total": {
+                  "type": "object",
+                  "properties": {
+                    "stripe_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                    },
+                    "revolut_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                    },
+                    "fee_usd_cents": {
+                      "type": "integer",
+                      "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                    },
+                    "unconverted_fee_count": {
+                      "type": "integer",
+                      "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                    }
+                  },
+                  "required": [
+                    "stripe_fee_usd_cents",
+                    "revolut_fee_usd_cents",
+                    "fee_usd_cents",
+                    "unconverted_fee_count"
+                  ],
+                  "description": "Every fee of the series in USD cents."
                 },
                 "org_id": {
                   "type": "string"
@@ -412,6 +525,8 @@
               "required": [
                 "months",
                 "total",
+                "usd_months",
+                "usd_total",
                 "org_id"
               ]
             },
@@ -442,6 +557,26 @@
                     "fee_cents": {
                       "type": "integer",
                       "description": "stripe + revolut."
+                    },
+                    "stripe_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                    },
+                    "revolut_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                    },
+                    "fee_usd_cents": {
+                      "type": "integer",
+                      "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                    },
+                    "unconverted_fee_count": {
+                      "type": "integer",
+                      "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                    },
+                    "unconverted_fee_cents": {
+                      "type": "integer",
+                      "description": "The part of `fee_cents` (in `currency`) that could not be converted to USD."
                     }
                   },
                   "required": [
@@ -449,7 +584,12 @@
                     "currency",
                     "stripe_fee_cents",
                     "revolut_fee_cents",
-                    "fee_cents"
+                    "fee_cents",
+                    "stripe_fee_usd_cents",
+                    "revolut_fee_usd_cents",
+                    "fee_usd_cents",
+                    "unconverted_fee_count",
+                    "unconverted_fee_cents"
                   ]
                 }
               },
@@ -471,20 +611,110 @@
                     "fee_cents": {
                       "type": "integer",
                       "description": "stripe + revolut."
+                    },
+                    "stripe_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                    },
+                    "revolut_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                    },
+                    "fee_usd_cents": {
+                      "type": "integer",
+                      "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                    },
+                    "unconverted_fee_count": {
+                      "type": "integer",
+                      "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                    },
+                    "unconverted_fee_cents": {
+                      "type": "integer",
+                      "description": "The part of `fee_cents` (in `currency`) that could not be converted to USD."
                     }
                   },
                   "required": [
                     "currency",
                     "stripe_fee_cents",
                     "revolut_fee_cents",
-                    "fee_cents"
+                    "fee_cents",
+                    "stripe_fee_usd_cents",
+                    "revolut_fee_usd_cents",
+                    "fee_usd_cents",
+                    "unconverted_fee_count",
+                    "unconverted_fee_cents"
                   ]
                 }
+              },
+              "usd_months": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "stripe_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                    },
+                    "revolut_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                    },
+                    "fee_usd_cents": {
+                      "type": "integer",
+                      "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                    },
+                    "unconverted_fee_count": {
+                      "type": "integer",
+                      "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                    },
+                    "month": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "stripe_fee_usd_cents",
+                    "revolut_fee_usd_cents",
+                    "fee_usd_cents",
+                    "unconverted_fee_count",
+                    "month"
+                  ]
+                },
+                "description": "One basis: every currency of a UTC month merged in USD cents, oldest first."
+              },
+              "usd_total": {
+                "type": "object",
+                "properties": {
+                  "stripe_fee_usd_cents": {
+                    "type": "integer",
+                    "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                  },
+                  "revolut_fee_usd_cents": {
+                    "type": "integer",
+                    "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                  },
+                  "fee_usd_cents": {
+                    "type": "integer",
+                    "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                  },
+                  "unconverted_fee_count": {
+                    "type": "integer",
+                    "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                  }
+                },
+                "required": [
+                  "stripe_fee_usd_cents",
+                  "revolut_fee_usd_cents",
+                  "fee_usd_cents",
+                  "unconverted_fee_count"
+                ],
+                "description": "Every fee of the series in USD cents."
               }
             },
             "required": [
               "months",
-              "total"
+              "total",
+              "usd_months",
+              "usd_total"
             ],
             "description": "Fees whose payment maps to no org of ours (a failed payout, an org-less order). Never dropped."
           },
@@ -513,6 +743,26 @@
                     "fee_cents": {
                       "type": "integer",
                       "description": "stripe + revolut."
+                    },
+                    "stripe_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                    },
+                    "revolut_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                    },
+                    "fee_usd_cents": {
+                      "type": "integer",
+                      "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                    },
+                    "unconverted_fee_count": {
+                      "type": "integer",
+                      "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                    },
+                    "unconverted_fee_cents": {
+                      "type": "integer",
+                      "description": "The part of `fee_cents` (in `currency`) that could not be converted to USD."
                     }
                   },
                   "required": [
@@ -520,7 +770,12 @@
                     "currency",
                     "stripe_fee_cents",
                     "revolut_fee_cents",
-                    "fee_cents"
+                    "fee_cents",
+                    "stripe_fee_usd_cents",
+                    "revolut_fee_usd_cents",
+                    "fee_usd_cents",
+                    "unconverted_fee_count",
+                    "unconverted_fee_cents"
                   ]
                 }
               },
@@ -542,20 +797,110 @@
                     "fee_cents": {
                       "type": "integer",
                       "description": "stripe + revolut."
+                    },
+                    "stripe_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                    },
+                    "revolut_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                    },
+                    "fee_usd_cents": {
+                      "type": "integer",
+                      "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                    },
+                    "unconverted_fee_count": {
+                      "type": "integer",
+                      "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                    },
+                    "unconverted_fee_cents": {
+                      "type": "integer",
+                      "description": "The part of `fee_cents` (in `currency`) that could not be converted to USD."
                     }
                   },
                   "required": [
                     "currency",
                     "stripe_fee_cents",
                     "revolut_fee_cents",
-                    "fee_cents"
+                    "fee_cents",
+                    "stripe_fee_usd_cents",
+                    "revolut_fee_usd_cents",
+                    "fee_usd_cents",
+                    "unconverted_fee_count",
+                    "unconverted_fee_cents"
                   ]
                 }
+              },
+              "usd_months": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "stripe_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                    },
+                    "revolut_fee_usd_cents": {
+                      "type": "integer",
+                      "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                    },
+                    "fee_usd_cents": {
+                      "type": "integer",
+                      "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                    },
+                    "unconverted_fee_count": {
+                      "type": "integer",
+                      "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                    },
+                    "month": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "stripe_fee_usd_cents",
+                    "revolut_fee_usd_cents",
+                    "fee_usd_cents",
+                    "unconverted_fee_count",
+                    "month"
+                  ]
+                },
+                "description": "One basis: every currency of a UTC month merged in USD cents, oldest first."
+              },
+              "usd_total": {
+                "type": "object",
+                "properties": {
+                  "stripe_fee_usd_cents": {
+                    "type": "integer",
+                    "description": "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket."
+                  },
+                  "revolut_fee_usd_cents": {
+                    "type": "integer",
+                    "description": "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves)."
+                  },
+                  "fee_usd_cents": {
+                    "type": "integer",
+                    "description": "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate."
+                  },
+                  "unconverted_fee_count": {
+                    "type": "integer",
+                    "description": "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee."
+                  }
+                },
+                "required": [
+                  "stripe_fee_usd_cents",
+                  "revolut_fee_usd_cents",
+                  "fee_usd_cents",
+                  "unconverted_fee_count"
+                ],
+                "description": "Every fee of the series in USD cents."
               }
             },
             "required": [
               "months",
-              "total"
+              "total",
+              "usd_months",
+              "usd_total"
             ],
             "description": "Every fee: orgs + unattributed."
           }

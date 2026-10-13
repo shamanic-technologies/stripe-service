@@ -1,6 +1,7 @@
 import type Stripe from "stripe";
 import { extractString } from "./event-processor";
 import { recordStripeFeeTransaction } from "./acquiring-fees";
+import { stripeFeeUsdCents } from "./fee-usd";
 import {
   createPlatformRun,
   addPlatformRunCost,
@@ -173,11 +174,11 @@ async function declareSingleFee(spec: FeeSpec, stripe: Stripe): Promise<void> {
  * a non-USD fee with no rate is thrown, never declared at a guessed value.
  */
 export function feeInUsdCents(bt: Stripe.BalanceTransaction): number {
-  if (bt.currency.toLowerCase() === "usd") return bt.fee;
-  if (!bt.exchange_rate) {
+  const usd = stripeFeeUsdCents(bt.fee, bt.currency, bt.exchange_rate);
+  if (usd === null) {
     throw new Error(
       `Stripe balance transaction ${bt.id} states its fee in ${bt.currency} with no exchange_rate; refusing to declare it as USD`
     );
   }
-  return Math.round(bt.fee / bt.exchange_rate);
+  return usd;
 }
