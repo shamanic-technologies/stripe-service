@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { customers } from "../db/schema";
 import { resolveAcquirer, type Acquirer, type AcquirerPin } from "./acquirer";
@@ -62,6 +62,41 @@ export interface SavedMethodRef {
    * NEVER "not prepaid".
    */
   prepaid: boolean | null;
+  /**
+   * The country the card was ISSUED in, ISO 3166-1 alpha-2 uppercase, as the
+   * acquirer states it: Stripe `card.country`, Revolut `issuer_country` (observed
+   * live 2026-10-13: `"US"`). For a Stripe LINK method — which carries no card —
+   * it is the country of the funding source beneath the Link payment, read off
+   * that method's latest settled charge (`payment_method_details.link.country`);
+   * Link never states that source's funding, so `funding`/`prepaid` stay `null`.
+   * `null` when the acquirer does not state it (a Link method never charged yet).
+   */
+  country: string | null;
+}
+
+/** Normalise an acquirer's country statement to ISO alpha-2 uppercase, or null. */
+export function countryFact(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const country = raw.trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(country) ? country : null;
+}
+
+/**
+ * The funding-source country beneath a Stripe Link method, from the latest
+ * settled charge that used it. Read from bronze (every `charge.succeeded` is
+ * stored there), so it costs no Stripe call. Link hides the card, so this is the
+ * only place its country is ever stated.
+ */
+async function linkFundingCountry(paymentMethodId: string): Promise<string | null> {
+  const rows = await db.execute<{ country: string | null }>(sql`
+    SELECT payload->'data'->'object'->'payment_method_details'->'link'->>'country' AS country
+    FROM events
+    WHERE type = 'charge.succeeded'
+      AND payload->'data'->'object'->>'payment_method' = ${paymentMethodId}
+    ORDER BY created_stripe DESC NULLS LAST, received_at DESC
+    LIMIT 1
+  `);
+  return countryFact(rows.rows[0]?.country);
 }
 
 /**
@@ -206,6 +241,7 @@ export async function confirmSavedPaymentMethod(
         type: usable.type ?? "card",
         saved_for: typeof usable.saved_for === "string" ? usable.saved_for : null,
         ...fundingFacts(usable.funding),
+        country: countryFact(usable.issuer_country),
       },
     };
   }
@@ -231,16 +267,23 @@ export async function confirmSavedPaymentMethod(
     // The same resolution the neutral charge performs, so what this promises is
     // byte-identical to what the charge will actually name.
     const pm = await resolveStripeChargeablePaymentMethodObject(stripe, orgId, row[0].id);
+    const country = pm.card
+      ? countryFact(pm.card.country)
+      : pm.type === "link"
+        ? await linkFundingCountry(pm.id)
+        : null;
     return {
       object: "saved_payment_method",
       acquirer: pin.acquirer,
       saved: true,
       method: {
         id: pm.id,
-        type: "card",
+        // Verbatim: a Link method is `link`, not a card — say so.
+        type: pm.type ?? "card",
         saved_for: null,
         // A Link method carries no `card`, so its funding is not stated.
         ...fundingFacts(pm.card?.funding),
+        country,
       },
     };
   } catch (err) {

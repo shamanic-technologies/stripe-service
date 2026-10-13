@@ -99,6 +99,13 @@
       "when": 1791576000000,
       "tag": "0013_revolut_fee_declared",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1792000000000,
+      "tag": "0014_stripe_fee_transactions",
+      "breakpoints": true
     }
   ]
 }

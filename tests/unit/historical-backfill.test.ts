@@ -29,6 +29,9 @@ vi.mock("../../src/lib/event-processor", () => ({
   }),
 }));
 
+const backfillStripeFeeTransactions = vi.hoisted(() => vi.fn(async () => 0));
+vi.mock("../../src/lib/acquiring-fees", () => ({ backfillStripeFeeTransactions }));
+
 import { backfillHistorical } from "../../src/lib/historical-backfill";
 import { recordApiSnapshot } from "../../src/lib/event-processor";
 import { resolvePlatformKey } from "../../src/lib/key-client";
@@ -46,6 +49,16 @@ beforeEach(() => {
   // Default the money-returned legs to empty; tests that care override them.
   stripeMock.refunds.list.mockReturnValue(asyncIter([]));
   stripeMock.disputes.list.mockReturnValue(asyncIter([]));
+});
+
+describe("backfillHistorical — fee mirror", () => {
+  it("back-fills the Stripe fee mirror after the payments it attributes through", async () => {
+    stripeMock.customers.list.mockReturnValue(asyncIter([]));
+    stripeMock.paymentIntents.list.mockReturnValue(asyncIter([]));
+    stripeMock.checkout.sessions.list.mockReturnValue(asyncIter([]));
+    await backfillHistorical();
+    expect(backfillStripeFeeTransactions).toHaveBeenCalledWith(stripeMock);
+  });
 });
 
 describe("backfillHistorical", () => {

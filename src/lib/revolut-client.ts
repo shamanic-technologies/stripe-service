@@ -158,6 +158,8 @@ export interface RevolutPaymentMethod {
   saved_for?: string;
   /** `credit` | `debit` | `prepaid` … — observed live 2026-10-12. */
   funding?: string;
+  /** ISO alpha-2 country the card was issued in — observed live 2026-10-13. */
+  issuer_country?: string;
   method_details?: Record<string, unknown>;
   [key: string]: unknown;
 }

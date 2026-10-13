@@ -294,8 +294,8 @@ export const revolutOrders = pgTable(
     // separate balance_transaction; Revolut puts it on the payment itself.
     settledAmount: bigint("settled_amount", { mode: "number" }),
     feeAmount: bigint("fee_amount", { mode: "number" }),
-    // When the fee was declared to runs-service as a charge on the org (see
-    // src/lib/revolut-fees.ts). Never written by the projection.
+    // When the fee was declared to runs-service as an org-less platform cost
+    // (charged to nobody, see src/lib/revolut-fees.ts). Never written by the projection.
     feeDeclaredAt: timestamp("fee_declared_at"),
     paymentMethodType: text("payment_method_type"),
     description: text("description"),
@@ -408,4 +408,29 @@ export const directPayments = pgTable(
     ),
     index("idx_direct_payments_org").on(table.orgId),
   ]
+);
+
+// Every fee-bearing Stripe balance transaction (`txn_…`): what Stripe kept of a
+// payment, a refund, a dispute or a failed payout. The fee is OUR cost — the
+// customer is never charged it (owner 2026-10-13) — and this mirror is what
+// lets staff see it per org and per month, since inception.
+//
+// NO org_id, like `refunds` / `disputes`: the tenant is resolved on read by
+// joining `source` to the payment it belongs to (a charge through
+// `payment_intents.latest_charge`, a refund through `refunds.payment_intent`).
+// A fee whose source maps to no payment of ours (a failed payout) is reported
+// apart as unattributed, never dropped.
+export const stripeFeeTransactions = pgTable(
+  "stripe_fee_transactions",
+  {
+    id: text("id").primaryKey(), // txn_...
+    type: text("type").notNull(), // charge | payment | refund | adjustment | payout_failure | ...
+    source: text("source"), // ch_… / py_… / re_… / pyr_… / dp_… / po_…
+    fee: bigint("fee", { mode: "number" }).notNull(), // minor units
+    currency: text("currency").notNull(), // lowercase ISO 4217
+    createdStripe: bigint("created_stripe", { mode: "number" }).notNull(),
+    rawJson: jsonb("raw_json").notNull(),
+    syncedAt: timestamp("synced_at").defaultNow().notNull(),
+  },
+  (table) => [index("idx_stripe_fee_transactions_source").on(table.source)]
 );

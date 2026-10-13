@@ -46,7 +46,7 @@ describe("confirmSavedPaymentMethod — the three answers stay apart", () => {
       object: "saved_payment_method",
       acquirer: "revolut",
       saved: true,
-      method: { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: null, prepaid: null },
+      method: { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: null, prepaid: null, country: null },
     });
   });
 
@@ -96,13 +96,13 @@ describe("confirmSavedPaymentMethod — the three answers stay apart", () => {
   it("reads Stripe the same way, through the resolution the charge itself uses", async () => {
     dbMock.queueSelect("org_acquirers", []);
     dbMock.queueSelect("customers", [{ id: "cus_stripe_1" }]);
-    paymentMethodsList.mockResolvedValue({ data: [{ id: "pm_card_1" }] });
+    paymentMethodsList.mockResolvedValue({ data: [{ id: "pm_card_1", type: "card" }] });
 
     expect(await confirmSavedPaymentMethod("org-1")).toEqual({
       object: "saved_payment_method",
       acquirer: "stripe",
       saved: true,
-      method: { id: "pm_card_1", type: "card", saved_for: null, funding: null, prepaid: null },
+      method: { id: "pm_card_1", type: "card", saved_for: null, funding: null, prepaid: null, country: null },
     });
   });
 
@@ -242,6 +242,65 @@ describe("confirmSavedPaymentMethod — is the saved card PREPAID (both acquirer
       funding: null,
       prepaid: null,
     });
+  });
+
+  it("a Revolut card states the country it was issued in (prod shape 2026-10-13)", async () => {
+    pinnedToRevolut();
+    listCustomerPaymentMethods.mockResolvedValue([
+      {
+        id: "pm-rev-1",
+        type: "card",
+        saved_for: "merchant",
+        funding: "prepaid",
+        issuer_country: "US",
+        billing_address: { country_code: "US" },
+      },
+    ]);
+
+    const out = await confirmSavedPaymentMethod("org-1");
+    expect(out.saved && out.method).toMatchObject({ prepaid: true, country: "US" });
+  });
+
+  it("a Stripe card states card.country, uppercased", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_stripe_1" }]);
+    paymentMethodsList.mockResolvedValue({
+      data: [{ id: "pm_card_1", type: "card", card: { funding: "credit", country: "fr" } }],
+    });
+
+    const out = await confirmSavedPaymentMethod("org-1");
+    expect(out.saved && out.method).toMatchObject({ type: "card", prepaid: false, country: "FR" });
+  });
+
+  it("a Stripe Link method says it is link, reads its funding-source country off its latest charge, funding stays unknown", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_stripe_1" }]);
+    paymentMethodsList
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValueOnce({ data: [{ id: "pm_link_1", type: "link" }] });
+    dbMock.queueExecute([{ country: "US" }]);
+
+    const out = await confirmSavedPaymentMethod("org-1");
+    expect(out.saved && out.method).toEqual({
+      id: "pm_link_1",
+      type: "link",
+      saved_for: null,
+      funding: null,
+      prepaid: null,
+      country: "US",
+    });
+  });
+
+  it("a Link method never charged yet has an unknown country, never a guess", async () => {
+    dbMock.queueSelect("org_acquirers", []);
+    dbMock.queueSelect("customers", [{ id: "cus_stripe_1" }]);
+    paymentMethodsList
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValueOnce({ data: [{ id: "pm_link_1", type: "link" }] });
+    dbMock.queueExecute([]);
+
+    const out = await confirmSavedPaymentMethod("org-1");
+    expect(out.saved && out.method).toMatchObject({ country: null, funding: null, prepaid: null });
   });
 
   it("the recurring-charge authorization carries the same fact", async () => {

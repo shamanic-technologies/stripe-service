@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, isNull } from "drizzle-orm";
 import { db } from "../db";
 import { revolutOrders } from "../db/schema";
 import {
@@ -8,20 +8,22 @@ import {
 } from "./runs-client";
 
 /**
- * The Revolut acquiring fee is CHARGED to the org, exactly like the Stripe fee.
+ * The Revolut acquiring fee is the PLATFORM's cost, charged to NOBODY, exactly
+ * like the Stripe fee.
  *
- * Owner 2026-10-09: "make the charge on them, as we say in our pricing
- * catalogue… Stripe fee or Revolut fees, same". costs-service prices this name
- * pass-through (1 USD cent per cent of fee), and runs-service counts a
+ * Owner 2026-10-13: "arrêter de prélever plus à un user que ce qu'il définit par
+ * campagne… prendre sur nous: Stripe fees, …". runs-service counts a
  * platform-source cost carrying an org into that org's usage, which billing
- * reads as spend — so the org on the run IS the charge.
+ * reads as spend — so the run carries NO org: the fee is recorded in platform
+ * cost reporting and debited from no balance. Per-org attribution is served by
+ * GET /internal/acquiring_fees/monthly off `revolut_orders`, never on the charge.
  *
  * ## Why a sweep, not a webhook side-effect
  *
  * Revolut sends `ORDER_*` events only, and an order is mirrored many times over
  * (webhook, poll, back-fill, re-reads). The fee is declared once per payment,
  * remembered in `revolut_orders.fee_declared_at`, by a sweep the 5-minute
- * Revolut poller runs over completed payments carrying a fee and an org. The
+ * Revolut poller runs over completed payments carrying a fee (an org-less one too: it is still our cost). The
  * runs-service idempotency key (`revolut:<order id>`) makes a crash between
  * the declaration and the stamp safe: the retry returns the existing rows.
  *
@@ -37,7 +39,6 @@ export async function declarePendingRevolutFees(): Promise<number> {
   const rows = await db
     .select({
       id: revolutOrders.id,
-      orgId: revolutOrders.orgId,
       feeAmount: revolutOrders.feeAmount,
       rawJson: revolutOrders.rawJson,
     })
@@ -46,7 +47,6 @@ export async function declarePendingRevolutFees(): Promise<number> {
       and(
         eq(revolutOrders.type, "payment"),
         eq(revolutOrders.state, "completed"),
-        isNotNull(revolutOrders.orgId),
         gt(revolutOrders.feeAmount, 0),
         isNull(revolutOrders.feeDeclaredAt)
       )
@@ -60,7 +60,7 @@ export async function declarePendingRevolutFees(): Promise<number> {
     // loud, stays undeclared, and is retried on the next sweep.
     try {
       assertUsdFees(row.id, row.rawJson);
-      await declareOne(row.id, row.orgId as string, row.feeAmount as number);
+      await declareOne(row.id, row.feeAmount as number);
       await db
         .update(revolutOrders)
         .set({ feeDeclaredAt: new Date() })
@@ -68,7 +68,7 @@ export async function declarePendingRevolutFees(): Promise<number> {
       declared += 1;
     } catch (err) {
       console.error(
-        `[stripe-service] Declaring the Revolut fee for order ${row.id} (org ${row.orgId}) failed; retried next sweep:`,
+        `[stripe-service] Declaring the Revolut fee for order ${row.id} failed; retried next sweep:`,
         err
       );
     }
@@ -78,14 +78,14 @@ export async function declarePendingRevolutFees(): Promise<number> {
 
 async function declareOne(
   orderId: string,
-  orgId: string,
   feeCents: number
 ): Promise<void> {
   const idempotencyKey = `revolut:${orderId}`;
   const run = await createPlatformRun({
     taskName: "revolut.payment.completed",
     idempotencyKey,
-    orgId,
+    // Never the org: an org on the run IS a charge to it (see the header).
+    orgId: null,
   });
   try {
     await addPlatformRunCost({
