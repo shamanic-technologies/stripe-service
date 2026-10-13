@@ -68,7 +68,7 @@ describe("GET /internal/saved_payment_method/by-org/:orgId", () => {
       org_id: TEST_ORG_ID,
       acquirer: "revolut",
       saved: true,
-      method: { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: null, prepaid: null },
+      method: { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: null, prepaid: null, country: null },
     });
   });
 
@@ -317,7 +317,7 @@ describe("POST /internal/recurring_charges/by-org/:orgId/authorize", () => {
       org_id: TEST_ORG_ID,
       acquirer: "revolut",
       authorized: true,
-      method: { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: null, prepaid: null },
+      method: { id: "pm-rev-1", type: "card", saved_for: "merchant", funding: null, prepaid: null, country: null },
     });
   });
 

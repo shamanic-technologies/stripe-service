@@ -1,6 +1,6 @@
 import type Stripe from "stripe";
-import { resolveOrgId, extractString } from "./event-processor";
-import { getKeySource } from "./key-client";
+import { extractString } from "./event-processor";
+import { recordStripeFeeTransaction } from "./acquiring-fees";
 import {
   createPlatformRun,
   addPlatformRunCost,
@@ -12,10 +12,8 @@ import {
  *
  * Stripe charges processing fees (2.9% + 30¢ per charge), refund fees (30¢
  * flat retained on refund), dispute fees (~$15), and payout-failure fees on
- * its connected account. Pre-this-module those fees were invisible to billing
- * — every reload over-credited the org by the processing fee. This module
- * records each fee as a cost on a synthetic platform-run owned by the org so
- * billing-service's downstream `spent_cents` aggregate sees them.
+ * its account. This module records each fee as a PLATFORM cost on an org-less
+ * synthetic platform-run, so it is measured and charged to no customer.
  *
  * Idempotency: the Stripe balance-transaction id (`txn_...`) is sent as the
  * runs-service `idempotencyKey` on both the run and the cost. Stripe webhook
@@ -29,8 +27,6 @@ interface FeeSpec {
   taskName: string;
   costName: string;
   balanceTransactionId: string;
-  customerId: string | null;
-  forcePlatformSource: boolean;
 }
 
 const FEE_EVENT_TYPES = new Set<string>([
@@ -67,14 +63,11 @@ function extractFeeSpecs(event: Stripe.Event): FeeSpec[] {
           taskName: "charge.succeeded",
           costName: "stripe-processing-fee",
           balanceTransactionId: btId,
-          customerId: extractString(charge.customer as never),
-          forcePlatformSource: false,
         },
       ];
     }
     case "charge.refunded": {
       const charge = event.data.object as Stripe.Charge;
-      const customerId = extractString(charge.customer as never);
       const refunds = charge.refunds?.data ?? [];
       const specs: FeeSpec[] = [];
       for (const refund of refunds) {
@@ -84,8 +77,6 @@ function extractFeeSpecs(event: Stripe.Event): FeeSpec[] {
           taskName: "charge.refunded",
           costName: "stripe-refund-fee",
           balanceTransactionId: btId,
-          customerId,
-          forcePlatformSource: false,
         });
       }
       return specs;
@@ -99,13 +90,6 @@ function extractFeeSpecs(event: Stripe.Event): FeeSpec[] {
       // fee into the held BT, the dispute fee won't be recorded here. Refine
       // when we have empirical BT shapes from prod.
       const dispute = event.data.object as Stripe.Dispute;
-      const chargeObj =
-        typeof dispute.charge === "object" && dispute.charge !== null
-          ? (dispute.charge as Stripe.Charge)
-          : null;
-      const customerId = chargeObj
-        ? extractString(chargeObj.customer as never)
-        : null;
       const bts = dispute.balance_transactions ?? [];
       const specs: FeeSpec[] = [];
       for (const bt of bts) {
@@ -113,8 +97,6 @@ function extractFeeSpecs(event: Stripe.Event): FeeSpec[] {
           taskName: "charge.dispute.created",
           costName: "stripe-dispute-fee",
           balanceTransactionId: bt.id,
-          customerId,
-          forcePlatformSource: false,
         });
       }
       return specs;
@@ -128,8 +110,6 @@ function extractFeeSpecs(event: Stripe.Event): FeeSpec[] {
           taskName: "payout.failed",
           costName: "stripe-payout-failure-fee",
           balanceTransactionId: btId,
-          customerId: null,
-          forcePlatformSource: true,
         },
       ];
     }
@@ -142,24 +122,24 @@ async function declareSingleFee(spec: FeeSpec, stripe: Stripe): Promise<void> {
   const bt = await stripe.balanceTransactions.retrieve(spec.balanceTransactionId);
   if (bt.fee === 0) return;
 
-  // The fee is CHARGED to the org on purpose — owner decision 2026-10-09 ("make
-  // the charge on them, as we say in our pricing catalogue"): costs-service
-  // prices these names pass-through, so the org pays the acquirer's fee exactly.
-  // runs-service counts a platform-source cost carrying an org into that org's
-  // usage, which billing reads as spend. Dropping the org here would silently
-  // move the fee onto the platform.
-  const orgForHeader = await resolveOrgForFee(spec.customerId);
-  const costSource: "platform" | "org" =
-    spec.forcePlatformSource || !orgForHeader
-      ? "platform"
-      : (await getKeySource(orgForHeader, "stripe")).keySource;
+  // Mirror first: the per-org, per-month view of what we absorb reads it.
+  await recordStripeFeeTransaction(bt);
+
+  // The fee is the PLATFORM's cost, charged to NOBODY — owner 2026-10-13 ("arrêter
+  // de prélever plus à un user que ce qu'il définit par campagne… prendre sur
+  // nous: Stripe fees"). runs-service counts every platform-source cost that
+  // carries an org into that org's usage, which billing reads as SPEND, so the
+  // run carries NO org: the fee is recorded in platform cost reporting and in no
+  // customer's balance. Per-org attribution lives in `stripe_fee_transactions`
+  // (GET /internal/acquiring_fees/monthly), never on the charge.
+  const costSource = "platform" as const;
 
   const idempotencyKey = `stripe:${spec.balanceTransactionId}`;
 
   const run = await createPlatformRun({
     taskName: spec.taskName,
     idempotencyKey,
-    orgId: orgForHeader,
+    orgId: null,
   });
 
   try {
@@ -184,10 +164,3 @@ async function declareSingleFee(spec: FeeSpec, stripe: Stripe): Promise<void> {
   }
 }
 
-async function resolveOrgForFee(
-  customerId: string | null
-): Promise<string | null> {
-  if (!customerId) return null;
-  const orgId = await resolveOrgId(null, customerId);
-  return orgId === "unknown" ? null : orgId;
-}
