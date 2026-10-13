@@ -147,7 +147,7 @@ async function declareSingleFee(spec: FeeSpec, stripe: Stripe): Promise<void> {
       runId: run.id,
       costName: spec.costName,
       costSource,
-      quantity: bt.fee,
+      quantity: feeInUsdCents(bt),
       idempotencyKey,
     });
     await updatePlatformRunStatus({ runId: run.id, status: "completed" });
@@ -164,3 +164,20 @@ async function declareSingleFee(spec: FeeSpec, stripe: Stripe): Promise<void> {
   }
 }
 
+/**
+ * The fee in USD cents, which is the unit every `stripe-*-fee` cost name is
+ * priced in. Stripe states a balance transaction in the account's SETTLEMENT
+ * currency: this account settled in EUR until 2026-08-13, so those fees are EUR
+ * cents, and declaring them as-is recorded EUR as USD (~15% low). Converted with
+ * Stripe's own `exchange_rate` on the transaction (USD → settlement currency);
+ * a non-USD fee with no rate is thrown, never declared at a guessed value.
+ */
+export function feeInUsdCents(bt: Stripe.BalanceTransaction): number {
+  if (bt.currency.toLowerCase() === "usd") return bt.fee;
+  if (!bt.exchange_rate) {
+    throw new Error(
+      `Stripe balance transaction ${bt.id} states its fee in ${bt.currency} with no exchange_rate; refusing to declare it as USD`
+    );
+  }
+  return Math.round(bt.fee / bt.exchange_rate);
+}

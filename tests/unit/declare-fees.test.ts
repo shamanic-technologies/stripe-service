@@ -29,7 +29,7 @@ vi.mock("../../src/lib/key-client", () => ({
   getDecryptedStripeKey: vi.fn(),
 }));
 
-import { declareFeesForEvent } from "../../src/lib/declare-fees";
+import { declareFeesForEvent, feeInUsdCents } from "../../src/lib/declare-fees";
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -64,6 +64,7 @@ describe("declareFeesForEvent — charge.succeeded", () => {
     stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({
       id: "txn_processing",
       fee: 290,
+      currency: "usd",
     });
     runsMock.createPlatformRun.mockResolvedValueOnce({
       id: "run_processing",
@@ -88,7 +89,7 @@ describe("declareFeesForEvent — charge.succeeded", () => {
       "txn_processing"
     );
     expect(keyMock.getKeySource).not.toHaveBeenCalled();
-    expect(recordStripeFeeTransaction).toHaveBeenCalledWith({ id: "txn_processing", fee: 290 });
+    expect(recordStripeFeeTransaction).toHaveBeenCalledWith({ id: "txn_processing", fee: 290, currency: "usd" });
     expect(runsMock.createPlatformRun).toHaveBeenCalledWith({
       taskName: "charge.succeeded",
       idempotencyKey: "stripe:txn_processing",
@@ -112,6 +113,7 @@ describe("declareFeesForEvent — charge.succeeded", () => {
     stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({
       id: "txn_orphan",
       fee: 100,
+      currency: "usd",
     });
     runsMock.createPlatformRun.mockResolvedValueOnce({ id: "run_orphan" });
 
@@ -145,6 +147,7 @@ describe("declareFeesForEvent — charge.succeeded", () => {
     stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({
       id: "txn_zero",
       fee: 0,
+      currency: "usd",
     });
 
     const event = {
@@ -195,8 +198,8 @@ describe("declareFeesForEvent — charge.refunded", () => {
       isDefault: true,
     });
     stripeMock.balanceTransactions.retrieve
-      .mockResolvedValueOnce({ id: "txn_refund_1", fee: 30 })
-      .mockResolvedValueOnce({ id: "txn_refund_2", fee: 30 });
+      .mockResolvedValueOnce({ id: "txn_refund_1", fee: 30, currency: "usd" })
+      .mockResolvedValueOnce({ id: "txn_refund_2", fee: 30, currency: "usd" });
     runsMock.createPlatformRun
       .mockResolvedValueOnce({ id: "run_refund_1" })
       .mockResolvedValueOnce({ id: "run_refund_2" });
@@ -242,6 +245,7 @@ describe("declareFeesForEvent — charge.dispute.created", () => {
     stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({
       id: "txn_dispute",
       fee: 1500,
+      currency: "usd",
     });
     runsMock.createPlatformRun.mockResolvedValueOnce({ id: "run_dispute" });
 
@@ -275,6 +279,7 @@ describe("declareFeesForEvent — payout.failed", () => {
     stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({
       id: "txn_payout",
       fee: 400,
+      currency: "usd",
     });
     runsMock.createPlatformRun.mockResolvedValueOnce({ id: "run_payout" });
 
@@ -314,6 +319,7 @@ describe("declareFeesForEvent — error handling", () => {
     stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({
       id: "txn_err",
       fee: 290,
+      currency: "usd",
     });
     runsMock.createPlatformRun.mockResolvedValueOnce({ id: "run_err" });
     runsMock.addPlatformRunCost.mockRejectedValueOnce(
@@ -339,6 +345,25 @@ describe("declareFeesForEvent — error handling", () => {
       runId: "run_err",
       status: "failed",
     });
+  });
+});
+
+describe("feeInUsdCents — the unit every stripe-*-fee name is priced in", () => {
+  it("a USD fee is declared as-is", () => {
+    expect(feeInUsdCents({ id: "txn_u", fee: 253, currency: "usd" } as never)).toBe(253);
+  });
+
+  it("a EUR fee (account settled in EUR until 2026-08-13) is converted with Stripe's own rate", () => {
+    // prod shape: fee 253 EUR cents, exchange_rate 0.867574 (USD -> EUR)
+    expect(
+      feeInUsdCents({ id: "txn_e", fee: 253, currency: "eur", exchange_rate: 0.867574 } as never)
+    ).toBe(292);
+  });
+
+  it("a non-USD fee with no rate is refused, never declared at a guess", () => {
+    expect(() =>
+      feeInUsdCents({ id: "txn_x", fee: 253, currency: "eur", exchange_rate: null } as never)
+    ).toThrow(/no exchange_rate/);
   });
 });
 
