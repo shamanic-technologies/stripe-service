@@ -763,17 +763,40 @@ registry.registerPath({
   },
 });
 
+const FeeUsdFiguresShape = {
+  stripe_fee_usd_cents: z.number().int().openapi({
+    description: "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket.",
+  }),
+  revolut_fee_usd_cents: z.number().int().openapi({
+    description: "Revolut fees in USD cents. Revolut records no rate on a fee, so only USD fees convert (as themselves).",
+  }),
+  fee_usd_cents: z.number().int().openapi({
+    description: "stripe + revolut in USD cents, over every convertible fee of the bucket. Never a guessed or global rate.",
+  }),
+  unconverted_fee_count: z.number().int().openapi({
+    description: "Fees left OUT of the USD figures because they carry no rate of their own (named, never dropped silently, never summed as USD). 0 = the USD figures cover every fee.",
+  }),
+};
 const FeeMonthSchema = z.object({
   month: z.string().openapi({ description: "UTC calendar month, `YYYY-MM`." }),
   currency: z.string().openapi({ description: "Lowercase ISO 4217. Currencies are never merged." }),
   stripe_fee_cents: z.number().int(),
   revolut_fee_cents: z.number().int(),
   fee_cents: z.number().int().openapi({ description: "stripe + revolut." }),
+  ...FeeUsdFiguresShape,
+  unconverted_fee_cents: z.number().int().openapi({
+    description: "The part of `fee_cents` (in `currency`) that could not be converted to USD.",
+  }),
 });
 const FeeTotalSchema = FeeMonthSchema.omit({ month: true });
+const FeeUsdFiguresSchema = z.object(FeeUsdFiguresShape);
 const FeeSeriesSchema = z.object({
   months: z.array(FeeMonthSchema),
   total: z.array(FeeTotalSchema),
+  usd_months: z
+    .array(FeeUsdFiguresSchema.extend({ month: z.string() }))
+    .openapi({ description: "One basis: every currency of a UTC month merged in USD cents, oldest first." }),
+  usd_total: FeeUsdFiguresSchema.openapi({ description: "Every fee of the series in USD cents." }),
 });
 
 export const AcquiringFeesByMonthSchema = z
