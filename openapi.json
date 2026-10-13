@@ -330,6 +330,243 @@
           "amount_net"
         ]
       },
+      "AcquiringFeesByMonth": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "acquiring_fees_by_month"
+            ]
+          },
+          "orgs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "months": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "month": {
+                        "type": "string",
+                        "description": "UTC calendar month, `YYYY-MM`."
+                      },
+                      "currency": {
+                        "type": "string",
+                        "description": "Lowercase ISO 4217. Currencies are never merged."
+                      },
+                      "stripe_fee_cents": {
+                        "type": "integer"
+                      },
+                      "revolut_fee_cents": {
+                        "type": "integer"
+                      },
+                      "fee_cents": {
+                        "type": "integer",
+                        "description": "stripe + revolut."
+                      }
+                    },
+                    "required": [
+                      "month",
+                      "currency",
+                      "stripe_fee_cents",
+                      "revolut_fee_cents",
+                      "fee_cents"
+                    ]
+                  }
+                },
+                "total": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "currency": {
+                        "type": "string",
+                        "description": "Lowercase ISO 4217. Currencies are never merged."
+                      },
+                      "stripe_fee_cents": {
+                        "type": "integer"
+                      },
+                      "revolut_fee_cents": {
+                        "type": "integer"
+                      },
+                      "fee_cents": {
+                        "type": "integer",
+                        "description": "stripe + revolut."
+                      }
+                    },
+                    "required": [
+                      "currency",
+                      "stripe_fee_cents",
+                      "revolut_fee_cents",
+                      "fee_cents"
+                    ]
+                  }
+                },
+                "org_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "months",
+                "total",
+                "org_id"
+              ]
+            },
+            "description": "One entry per org with at least one fee, sorted by org id."
+          },
+          "unattributed": {
+            "type": "object",
+            "properties": {
+              "months": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "month": {
+                      "type": "string",
+                      "description": "UTC calendar month, `YYYY-MM`."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "description": "Lowercase ISO 4217. Currencies are never merged."
+                    },
+                    "stripe_fee_cents": {
+                      "type": "integer"
+                    },
+                    "revolut_fee_cents": {
+                      "type": "integer"
+                    },
+                    "fee_cents": {
+                      "type": "integer",
+                      "description": "stripe + revolut."
+                    }
+                  },
+                  "required": [
+                    "month",
+                    "currency",
+                    "stripe_fee_cents",
+                    "revolut_fee_cents",
+                    "fee_cents"
+                  ]
+                }
+              },
+              "total": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "currency": {
+                      "type": "string",
+                      "description": "Lowercase ISO 4217. Currencies are never merged."
+                    },
+                    "stripe_fee_cents": {
+                      "type": "integer"
+                    },
+                    "revolut_fee_cents": {
+                      "type": "integer"
+                    },
+                    "fee_cents": {
+                      "type": "integer",
+                      "description": "stripe + revolut."
+                    }
+                  },
+                  "required": [
+                    "currency",
+                    "stripe_fee_cents",
+                    "revolut_fee_cents",
+                    "fee_cents"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "months",
+              "total"
+            ],
+            "description": "Fees whose payment maps to no org of ours (a failed payout, an org-less order). Never dropped."
+          },
+          "fleet": {
+            "type": "object",
+            "properties": {
+              "months": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "month": {
+                      "type": "string",
+                      "description": "UTC calendar month, `YYYY-MM`."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "description": "Lowercase ISO 4217. Currencies are never merged."
+                    },
+                    "stripe_fee_cents": {
+                      "type": "integer"
+                    },
+                    "revolut_fee_cents": {
+                      "type": "integer"
+                    },
+                    "fee_cents": {
+                      "type": "integer",
+                      "description": "stripe + revolut."
+                    }
+                  },
+                  "required": [
+                    "month",
+                    "currency",
+                    "stripe_fee_cents",
+                    "revolut_fee_cents",
+                    "fee_cents"
+                  ]
+                }
+              },
+              "total": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "currency": {
+                      "type": "string",
+                      "description": "Lowercase ISO 4217. Currencies are never merged."
+                    },
+                    "stripe_fee_cents": {
+                      "type": "integer"
+                    },
+                    "revolut_fee_cents": {
+                      "type": "integer"
+                    },
+                    "fee_cents": {
+                      "type": "integer",
+                      "description": "stripe + revolut."
+                    }
+                  },
+                  "required": [
+                    "currency",
+                    "stripe_fee_cents",
+                    "revolut_fee_cents",
+                    "fee_cents"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "months",
+              "total"
+            ],
+            "description": "Every fee: orgs + unattributed."
+          }
+        },
+        "required": [
+          "object",
+          "orgs",
+          "unattributed",
+          "fleet"
+        ]
+      },
       "PaymentMethodsRemoved": {
         "type": "object",
         "properties": {
@@ -813,6 +1050,11 @@
                 "type": "boolean",
                 "nullable": true,
                 "description": "`true` the acquirer says the card is PREPAID; `false` it states a funding that is not prepaid; `null` it does not say. `null` is never \"not prepaid\"."
+              },
+              "country": {
+                "type": "string",
+                "nullable": true,
+                "description": "Country the card was ISSUED in, ISO 3166-1 alpha-2 uppercase (`US`). Both acquirers: Stripe `card.country`, Revolut `issuer_country`. For a Stripe Link method (`type: \"link\"`, which hides the card) it is the country of the funding source beneath it, from that method's latest settled charge; Link never states that source's funding, so `funding`/`prepaid` are `null` there. `null` when the acquirer does not state it."
               }
             },
             "required": [
@@ -820,7 +1062,8 @@
               "type",
               "saved_for",
               "funding",
-              "prepaid"
+              "prepaid",
+              "country"
             ]
           },
           "reason": {
@@ -2155,6 +2398,32 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/acquiring_fees/monthly": {
+      "get": {
+        "summary": "Card fees we absorb, per org per UTC month, both acquirers (user-less)",
+        "description": "Server-to-server, staff reporting. What each acquirer KEPT of our customers' payments: Stripe `balance_transaction.fee` (processing, refund, dispute, payout-failure) and the Revolut acquiring fee, grouped by org and UTC month since inception. These fees are the PLATFORM's cost and are charged to no customer (owner 2026-10-13): runs-service records them on org-less platform runs, so the per-org view lives here. A Stripe fee attributes to the org of the payment it came from (charge through its PaymentIntent, refund through its refund's PaymentIntent); a Revolut fee to its order's org. A fee that maps to no org is in `unattributed`, never dropped. A fee is placed in the month the acquirer took it. DB read only, no acquirer call. X-API-Key only.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Acquiring fees by org and month",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcquiringFeesByMonth"
                 }
               }
             }

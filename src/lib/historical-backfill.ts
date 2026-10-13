@@ -1,5 +1,6 @@
 import { resolvePlatformKey } from "./key-client";
 import { makeStripeClient } from "./stripe-client";
+import { backfillStripeFeeTransactions } from "./acquiring-fees";
 import {
   recordApiSnapshot,
   extractOrgId,
@@ -74,7 +75,11 @@ export async function backfillHistorical(): Promise<void> {
     disputeCount += 1;
   }
 
+  // Fee mirror: what Stripe kept of each payment, for the per-org view of the
+  // fees we absorb. Last, after the payments and refunds it attributes through.
+  const feeCount = await backfillStripeFeeTransactions(stripe);
+
   console.log(
-    `[stripe-service] Historical back-fill complete: customers=${custCount}, pi=${piCount}, cs=${csCount}, refunds=${refundCount}, disputes=${disputeCount}`
+    `[stripe-service] Historical back-fill complete: customers=${custCount}, pi=${piCount}, cs=${csCount}, refunds=${refundCount}, disputes=${disputeCount}, fees=${feeCount}`
   );
 }

@@ -37,6 +37,7 @@ import {
 import { cardUpdatePortalParams } from "../lib/portal-session";
 import { payerMetadata, recordCardUpdateOpener } from "../lib/payer-email";
 import { listOrgPayments } from "../lib/payments-list";
+import { acquiringFeesByMonth } from "../lib/acquiring-fees";
 import {
   chargeViaRevolut,
   chargeViaStripeInvoice,
@@ -730,6 +731,23 @@ router.post(
           authorized: false,
         });
       }
+      return next(err);
+    }
+  }
+);
+
+/**
+ * GET /internal/acquiring_fees/monthly — the card fees we ABSORB, per org and per
+ * UTC month, since inception, both acquirers. Fees are charged to nobody (owner
+ * 2026-10-13), so runs-service records them org-less; this is where "whose
+ * payment did this fee come from" is answered. DB read only.
+ */
+router.get(
+  "/internal/acquiring_fees/monthly",
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      return res.json(await acquiringFeesByMonth());
+    } catch (err) {
       return next(err);
     }
   }

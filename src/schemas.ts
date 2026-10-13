@@ -763,6 +763,48 @@ registry.registerPath({
   },
 });
 
+const FeeMonthSchema = z.object({
+  month: z.string().openapi({ description: "UTC calendar month, `YYYY-MM`." }),
+  currency: z.string().openapi({ description: "Lowercase ISO 4217. Currencies are never merged." }),
+  stripe_fee_cents: z.number().int(),
+  revolut_fee_cents: z.number().int(),
+  fee_cents: z.number().int().openapi({ description: "stripe + revolut." }),
+});
+const FeeTotalSchema = FeeMonthSchema.omit({ month: true });
+const FeeSeriesSchema = z.object({
+  months: z.array(FeeMonthSchema),
+  total: z.array(FeeTotalSchema),
+});
+
+export const AcquiringFeesByMonthSchema = z
+  .object({
+    object: z.literal("acquiring_fees_by_month"),
+    orgs: z.array(FeeSeriesSchema.extend({ org_id: z.string() })).openapi({
+      description: "One entry per org with at least one fee, sorted by org id.",
+    }),
+    unattributed: FeeSeriesSchema.openapi({
+      description: "Fees whose payment maps to no org of ours (a failed payout, an org-less order). Never dropped.",
+    }),
+    fleet: FeeSeriesSchema.openapi({ description: "Every fee: orgs + unattributed." }),
+  })
+  .openapi("AcquiringFeesByMonth");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/acquiring_fees/monthly",
+  summary: "Card fees we absorb, per org per UTC month, both acquirers (user-less)",
+  description:
+    "Server-to-server, staff reporting. What each acquirer KEPT of our customers' payments: Stripe `balance_transaction.fee` (processing, refund, dispute, payout-failure) and the Revolut acquiring fee, grouped by org and UTC month since inception. These fees are the PLATFORM's cost and are charged to no customer (owner 2026-10-13): runs-service records them on org-less platform runs, so the per-org view lives here. A Stripe fee attributes to the org of the payment it came from (charge through its PaymentIntent, refund through its refund's PaymentIntent); a Revolut fee to its order's org. A fee that maps to no org is in `unattributed`, never dropped. A fee is placed in the month the acquirer took it. DB read only, no acquirer call. X-API-Key only.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  responses: {
+    200: {
+      description: "Acquiring fees by org and month",
+      content: { "application/json": { schema: AcquiringFeesByMonthSchema } },
+    },
+  },
+});
+
 export const PaymentMethodsRemovedSchema = z
   .object({
     object: z.literal("payment_methods_removed"),
@@ -979,6 +1021,10 @@ export const SavedPaymentMethodSchema = z
         prepaid: z.boolean().nullable().openapi({
           description:
             "`true` the acquirer says the card is PREPAID; `false` it states a funding that is not prepaid; `null` it does not say. `null` is never \"not prepaid\".",
+        }),
+        country: z.string().nullable().openapi({
+          description:
+            "Country the card was ISSUED in, ISO 3166-1 alpha-2 uppercase (`US`). Both acquirers: Stripe `card.country`, Revolut `issuer_country`. For a Stripe Link method (`type: \"link\"`, which hides the card) it is the country of the funding source beneath it, from that method's latest settled charge; Link never states that source's funding, so `funding`/`prepaid` are `null` there. `null` when the acquirer does not state it.",
         }),
       })
       .nullable(),
