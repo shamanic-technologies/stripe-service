@@ -1594,3 +1594,136 @@ registry.registerPath({
     404: { description: "The org has no such direct payment", content: { "application/json": { schema: ErrorResponseSchema } } },
   },
 });
+
+// --- Internal: card holds ---
+//
+// An AMOUNT HOLD on an org's saved card: the bank blocks the amount or refuses,
+// nothing is charged until the hold is captured. Owner 2026-10-22: a postpaid
+// org's card must hold the first $50 step before any credit line opens.
+
+export const PlaceCardHoldRequestSchema = z
+  .object({
+    amount: z.number().int().positive().openapi({ description: "Minor units, e.g. 5000 for $50.00." }),
+    currency: z.string().length(3),
+    session: z.enum(["on_session", "off_session"]).openapi({
+      description:
+        "`on_session` = the customer is on our page right now (card save): Stripe may ask for 3-D Secure, answered as `requires_action` + `client_secret`. `off_session` = nobody is there (after a capture): a bank asking for authentication is a refusal (`authentication_required`).",
+    }),
+    description: z.string().min(1).optional(),
+    metadata: z.record(z.string(), z.string()).optional(),
+  })
+  .openapi("PlaceCardHoldRequest");
+
+export const CaptureCardHoldRequestSchema = z
+  .object({
+    amount: z.number().int().positive().openapi({
+      description: "Minor units to take, at most the held amount. The rest is released by the acquirer.",
+    }),
+  })
+  .openapi("CaptureCardHoldRequest");
+
+export const CardHoldSchema = z
+  .object({
+    object: z.literal("card_hold"),
+    id: z.string().uuid(),
+    org_id: z.string(),
+    acquirer: z.enum(["stripe", "revolut"]).openapi({ description: "Diagnostic only — do not branch on it." }),
+    status: z.enum(["pending", "requires_action", "held", "refused", "captured", "released", "expired"]).openapi({
+      description:
+        "`held` = the bank blocked the amount and it can be captured until `expires_at`. `refused` = the bank said no (`failure`). `requires_action` = Stripe on-session only, the customer must pass 3-D Secure in the page (`client_secret`). `captured` = taken (`amount_captured`), counted as a payment everywhere. `released` = ended by us. `expired` = the acquirer's window passed; read as expired the instant `expires_at` passes. `pending` = the acquirer has not answered yet.",
+    }),
+    amount: z.number().int(),
+    currency: z.string(),
+    amount_captured: z.number().int().nullable(),
+    session: z.enum(["on_session", "off_session"]),
+    expires_at: z.string().nullable().openapi({ description: "ISO. The acquirer's own capture deadline (7 days on both today). Never renewed." }),
+    created_at: z.string(),
+    captured_at: z.string().nullable(),
+    ended_at: z.string().nullable().openapi({ description: "When it stopped being live without a capture (refused, released, expired)." }),
+    reference: z.string().nullable().openapi({ description: "The acquirer's own id (pi_… / order id), for support." }),
+    metadata: z.record(z.string(), z.string()).nullable(),
+    client_secret: z.string().optional(),
+    failure: ChargeFailureSchema.optional(),
+  })
+  .openapi("CardHold");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/card_holds/by-org/{orgId}",
+  summary: "Place an amount hold on the org's saved card, whichever acquirer holds it",
+  description:
+    "Authorises `amount` on the org's saved card with nothing charged. 200 with `status: held` (accepted, `expires_at` set), `refused` (the bank said no, `failure.code` is its reason, e.g. `insufficient_funds`), or `requires_action` (Stripe on-session, 3-D Secure, `client_secret`). Could-not-ask is a 5xx, never a refusal. `Idempotency-Key` required: a replay answers the same hold (a pending/requires_action one is re-read from the acquirer); the same key with another amount or currency is a 409 `idempotency_key_reused`.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+    headers: z.object({ "idempotency-key": z.string() }),
+    body: { content: { "application/json": { schema: PlaceCardHoldRequestSchema } } },
+  },
+  responses: {
+    200: { description: "The hold (`held`, `refused` or `requires_action`)", content: { "application/json": { schema: CardHoldSchema } } },
+    400: { description: "Invalid request or missing Idempotency-Key", content: { "application/json": { schema: ErrorResponseSchema } } },
+    404: { description: "`no_customer`: the org has no customer on its acquirer", content: { "application/json": { schema: ErrorResponseSchema } } },
+    409: { description: "`no_saved_payment_method`, or `idempotency_key_reused`", content: { "application/json": { schema: ErrorResponseSchema } } },
+    502: { description: "`acquirer_unavailable`: we could not ask", content: { "application/json": { schema: ErrorResponseSchema } } },
+    503: { description: "`hold_pending`: the acquirer is still authorising; retry with the SAME Idempotency-Key", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/card_holds/by-org/{orgId}",
+  summary: "The org's holds, and the one that is live right now",
+  description:
+    "DB read. `live_hold` is the newest hold with `status: held` whose `expires_at` is still ahead, or null. Every hold is listed newest first, refused and expired ones included.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: { params: z.object({ orgId: z.string() }) },
+  responses: {
+    200: {
+      description: "Holds",
+      content: {
+        "application/json": {
+          schema: z.object({ object: z.literal("list"), live_hold: CardHoldSchema.nullable(), data: z.array(CardHoldSchema), has_more: z.boolean() }),
+        },
+      },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/card_holds/by-org/{orgId}/{holdId}/capture",
+  summary: "Take an amount (at most the hold) out of a live hold",
+  description:
+    "Captures `amount` and releases the rest. The capture is a succeeded payment stamped with the org: the payment summary's `amount_received` rises by it and the payment history lists it. One capture per hold: the same amount again replays 200, another amount is a 409 `hold_already_captured`. A hold that is not live (refused, released, expired, including one the acquirer just released) is a 409 `hold_not_live` carrying the hold.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string(), holdId: z.string().uuid() }),
+    body: { content: { "application/json": { schema: CaptureCardHoldRequestSchema } } },
+  },
+  responses: {
+    200: { description: "The captured hold", content: { "application/json": { schema: CardHoldSchema } } },
+    400: { description: "Invalid body, or `capture_exceeds_hold`", content: { "application/json": { schema: ErrorResponseSchema } } },
+    404: { description: "No such hold for this org", content: { "application/json": { schema: ErrorResponseSchema } } },
+    409: { description: "`hold_not_live` or `hold_already_captured`", content: { "application/json": { schema: ErrorResponseSchema } } },
+    502: { description: "`acquirer_unavailable`", content: { "application/json": { schema: ErrorResponseSchema } } },
+    503: { description: "`hold_pending`: the acquirer has not confirmed the capture yet; retry the same call", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/card_holds/by-org/{orgId}/{holdId}/release",
+  summary: "End a hold without taking anything",
+  description: "Idempotent. A hold already ended answers unchanged; a captured one is a 409 `hold_already_captured`.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: { params: z.object({ orgId: z.string(), holdId: z.string().uuid() }) },
+  responses: {
+    200: { description: "The released hold", content: { "application/json": { schema: CardHoldSchema } } },
+    404: { description: "No such hold for this org", content: { "application/json": { schema: ErrorResponseSchema } } },
+    409: { description: "`hold_already_captured`", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});

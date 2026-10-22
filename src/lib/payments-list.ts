@@ -61,6 +61,8 @@ export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
         description: paymentIntents.description,
         created: paymentIntents.createdStripe,
         latestCharge: paymentIntents.latestCharge,
+        amountReceived: paymentIntents.amountReceived,
+        metadata: paymentIntents.metadata,
       })
       .from(paymentIntents)
       .where(eq(paymentIntents.orgId, orgId)),
@@ -90,15 +92,27 @@ export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
   // bought. An acquirer that cannot store a card without an authorisation makes
   // us place one; showing it as a pending payment in someone's history invites
   // exactly the question it has no good answer to.
+  //
+  // A card HOLD is the same kind of artifact until it is captured: an
+  // authorisation, released or lapsed, was never a payment. Once captured it
+  // IS one, listed at what was taken (Revolut's order amount is overridden by
+  // the mirror, Stripe's is `amount_received`).
+  const purposeOf = (m: unknown) => (m as { purpose?: string } | null)?.purpose;
   const customerFacing = revolutRows.filter(
-    (r) => (r.metadata as { purpose?: string } | null)?.purpose !== "card-setup"
+    (r) =>
+      purposeOf(r.metadata) !== "card-setup" &&
+      (purposeOf(r.metadata) !== "card-hold" || r.state === "completed")
+  );
+  const stripeFacing = stripeRows.filter(
+    (r) => purposeOf(r.metadata) !== "card-hold" || r.status === "succeeded"
   );
 
   const payments: OrgPayment[] = [
-    ...stripeRows.map((r) => ({
+    ...stripeFacing.map((r) => ({
       id: r.id,
       acquirer: "stripe" as const,
-      amount: r.amount,
+      amount:
+        purposeOf(r.metadata) === "card-hold" ? (r.amountReceived ?? r.amount) : r.amount,
       currency: (r.currency ?? "usd").toLowerCase(),
       status:
         r.status === "succeeded"

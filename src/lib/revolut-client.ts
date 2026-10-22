@@ -95,6 +95,11 @@ export interface RevolutOrder {
   /** Hosted checkout page for this order. Present from the moment it is created. */
   checkout_url?: string;
   token?: string;
+  /**
+   * Set when a `capture_mode: manual` order becomes `authorised`: the instant
+   * the authorisation is cancelled if nobody captures it (7 days by default).
+   */
+  capture_deadline?: string;
   /** Echoed back only when the customer was attached with `customer: { id }`. */
   customer?: { id?: string; email?: string; full_name?: string };
   payments?: Array<{
@@ -295,6 +300,19 @@ export function payOrderWithSavedMethod(
         initiator: "merchant",
       },
     }
+  );
+}
+
+/**
+ * Capture an `authorised` manual-capture order, for `amount` or less. Revolut
+ * voids the uncaptured remainder, allows ONE capture per order, and treats a
+ * resend of the same amount as a no-op — which is what makes a retry safe.
+ */
+export function captureOrder(orderId: string, amount: number): Promise<RevolutOrder> {
+  return request<RevolutOrder>(
+    "POST",
+    `/orders/${encodeURIComponent(orderId)}/capture`,
+    { amount }
   );
 }
 

@@ -32,6 +32,10 @@ interface FeeSpec {
 
 const FEE_EVENT_TYPES = new Set<string>([
   "charge.succeeded",
+  // A manual-capture charge (a card hold) has NO balance transaction when it
+  // succeeds — only an authorisation exists. Its fee appears when it is
+  // captured, so the capture is where it is declared (once per txn id).
+  "charge.captured",
   "charge.refunded",
   "charge.dispute.created",
   "payout.failed",
@@ -55,13 +59,14 @@ export async function declareFeesForEvent(
 
 function extractFeeSpecs(event: Stripe.Event): FeeSpec[] {
   switch (event.type) {
-    case "charge.succeeded": {
+    case "charge.succeeded":
+    case "charge.captured": {
       const charge = event.data.object as Stripe.Charge;
       const btId = extractString(charge.balance_transaction);
       if (!btId) return [];
       return [
         {
-          taskName: "charge.succeeded",
+          taskName: event.type,
           costName: "stripe-processing-fee",
           balanceTransactionId: btId,
         },
