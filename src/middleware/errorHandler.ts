@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/db-error.js";
 import type { NextFunction, Request, Response } from "express";
 import { RevolutApiError } from "../lib/revolut-client";
 import { isStripeRateLimit } from "../lib/payment-method-read";
@@ -38,7 +39,7 @@ export function errorHandler(
   // FIRST LINE only. Some errors carry their own stack inside the message
   // (undici's socket errors do), so forwarding `message` whole re-introduces
   // exactly the file paths this handler exists to keep out of the response.
-  const message = (err instanceof Error ? err.message : String(err)).split("\n")[0].trim();
+  const message = (errorMessage(err)).split("\n")[0].trim();
   const fromAcquirer =
     err instanceof RevolutApiError ||
     (typeof (err as { type?: unknown })?.type === "string" &&

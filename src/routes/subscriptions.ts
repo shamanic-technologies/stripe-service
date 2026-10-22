@@ -1,3 +1,4 @@
+import { messageOf } from "../lib/db-error.js";
 import { Router, Request, Response, NextFunction } from "express";
 import {
   SubscriptionAmountRequestSchema,
@@ -30,27 +31,27 @@ function headerString(req: Request, name: string): string | undefined {
 /** The definite refusals, each with its own code. Anything else is next(err). */
 function answerRefusal(err: unknown, res: Response): boolean {
   if (err instanceof SubscriptionAcquirerNotStripe) {
-    res.status(409).json({ error: err.message, code: "acquirer_not_stripe", acquirer: err.acquirer });
+    res.status(409).json({ error: messageOf(err), code: "acquirer_not_stripe", acquirer: err.acquirer });
     return true;
   }
   if (err instanceof SubscriptionNoCustomer) {
-    res.status(409).json({ error: err.message, code: "no_customer" });
+    res.status(409).json({ error: messageOf(err), code: "no_customer" });
     return true;
   }
   if (err instanceof SubscriptionNotFound) {
-    res.status(404).json({ error: err.message, code: "subscription_not_found" });
+    res.status(404).json({ error: messageOf(err), code: "subscription_not_found" });
     return true;
   }
   if (err instanceof SubscriptionNotOwned) {
-    res.status(403).json({ error: err.message, code: "subscription_not_owned" });
+    res.status(403).json({ error: messageOf(err), code: "subscription_not_owned" });
     return true;
   }
   if (err instanceof SubscriptionEnded) {
-    res.status(409).json({ error: err.message, code: "subscription_ended", status: err.status });
+    res.status(409).json({ error: messageOf(err), code: "subscription_ended", status: err.status });
     return true;
   }
   if (err instanceof SubscriptionShapeUnsupported) {
-    res.status(409).json({ error: err.message, code: "subscription_shape_unsupported" });
+    res.status(409).json({ error: messageOf(err), code: "subscription_shape_unsupported" });
     return true;
   }
   return false;

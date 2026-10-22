@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 import type Stripe from "stripe";
 import { constructWebhookEvent } from "../lib/stripe-client";
@@ -38,7 +39,7 @@ router.post("/v1/webhooks", async (req: Request, res: Response) => {
   try {
     event = constructWebhookEvent(req.body, signature, webhookSecret);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "unknown";
+    const msg = err instanceof Error ? errorMessage(err) : "unknown";
     console.error("[stripe-service] Webhook signature verification failed:", msg);
     return res.status(400).json({ error: "Invalid signature" });
   }

@@ -1,3 +1,4 @@
+import { messageOf } from "../lib/db-error.js";
 import { Router, Request, Response, NextFunction } from "express";
 import { and, eq, desc, lt } from "drizzle-orm";
 import type Stripe from "stripe";
@@ -643,8 +644,8 @@ router.post(
       });
       return res.json(setup);
     } catch (err) {
-      if (err instanceof Error && /has no (acquirer )?customer/.test(err.message)) {
-        return res.status(409).json({ error: err.message });
+      if (err instanceof Error && /has no (acquirer )?customer/.test(messageOf(err))) {
+        return res.status(409).json({ error: messageOf(err) });
       }
       return next(err);
     }
@@ -724,7 +725,7 @@ router.post(
     } catch (err) {
       if (err instanceof NoSavedPaymentMethod) {
         return res.status(409).json({
-          error: err.message,
+          error: messageOf(err),
           code: "no_saved_payment_method",
           reason: err.reason,
           acquirer: err.acquirer,
@@ -940,7 +941,7 @@ router.post(
       return res.json(chargeResultFromInvoice(orgId, paid, amount, currency));
     } catch (err) {
       if (err instanceof NoChargeablePaymentMethod) {
-        return res.status(409).json({ error: err.message });
+        return res.status(409).json({ error: messageOf(err) });
       }
       // Still in flight at the acquirer: neither a refusal nor an outage. A 503
       // so the caller retries with the SAME Idempotency-Key, which resumes this
@@ -950,7 +951,7 @@ router.post(
         res.locals.stripeObjectId = err.reference;
         res.setHeader("Retry-After", "60");
         return res.status(503).json({
-          error: err.message,
+          error: messageOf(err),
           code: "charge_pending",
           reference: err.reference,
         });
@@ -1508,19 +1509,19 @@ router.post(
       return res.json(paid);
     } catch (err) {
       if (err instanceof NoChargeablePaymentMethod) {
-        return res.status(409).json({ error: err.message });
+        return res.status(409).json({ error: messageOf(err) });
       }
       if (err instanceof RevolutChargePending) {
         res.setHeader("Retry-After", "60");
         return res.status(503).json({
-          error: err.message,
+          error: messageOf(err),
           code: "charge_pending",
           reference: err.reference,
         });
       }
       if (err instanceof CardDeclined) {
         return res.status(402).json({
-          error: err.message,
+          error: messageOf(err),
           code: "card_declined",
           decline_code: err.code,
           decline_message: err.declineMessage,
@@ -1599,7 +1600,7 @@ router.post(
     } catch (err) {
       if (err instanceof IdempotencyKeyReused) {
         return res.status(409).json({
-          error: err.message,
+          error: messageOf(err),
           code: "idempotency_key_reused",
           existing: directPaymentView(err.existing),
         });

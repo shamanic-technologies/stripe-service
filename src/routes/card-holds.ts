@@ -1,3 +1,4 @@
+import { messageOf } from "../lib/db-error.js";
 import { Router, Request, Response, NextFunction } from "express";
 import { NoChargeablePaymentMethod } from "../lib/charge-org";
 import {
@@ -32,42 +33,42 @@ const UUID_RE =
 /** The answers that are not "we could not ask", each said in its own words. */
 function knownRefusal(err: unknown, res: Response): Response | null {
   if (err instanceof NoChargeablePaymentMethod) {
-    return res.status(409).json({ error: err.message, code: "no_saved_payment_method" });
+    return res.status(409).json({ error: messageOf(err), code: "no_saved_payment_method" });
   }
   if (err instanceof NoAcquirerCustomer) {
-    return res.status(404).json({ error: err.message, code: "no_customer" });
+    return res.status(404).json({ error: messageOf(err), code: "no_customer" });
   }
   if (err instanceof HoldIdempotencyKeyReused) {
     return res.status(409).json({
-      error: err.message,
+      error: messageOf(err),
       code: "idempotency_key_reused",
       existing: cardHoldView(err.existing),
     });
   }
   if (err instanceof HoldNotFound) {
-    return res.status(404).json({ error: err.message, code: "hold_not_found" });
+    return res.status(404).json({ error: messageOf(err), code: "hold_not_found" });
   }
   if (err instanceof HoldNotLive) {
     return res.status(409).json({
-      error: err.message,
+      error: messageOf(err),
       code: "hold_not_live",
       hold: cardHoldView(err.hold),
     });
   }
   if (err instanceof HoldAlreadyCaptured) {
     return res.status(409).json({
-      error: err.message,
+      error: messageOf(err),
       code: "hold_already_captured",
       hold: cardHoldView(err.hold),
     });
   }
   if (err instanceof CaptureExceedsHold) {
-    return res.status(400).json({ error: err.message, code: "capture_exceeds_hold" });
+    return res.status(400).json({ error: messageOf(err), code: "capture_exceeds_hold" });
   }
   if (err instanceof HoldPending) {
     res.setHeader("Retry-After", "30");
     return res.status(503).json({
-      error: err.message,
+      error: messageOf(err),
       code: "hold_pending",
       hold: cardHoldView(err.hold),
     });
