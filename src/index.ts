@@ -22,6 +22,8 @@ import publicStatsRoutes from "./routes/public-stats";
 import webhooksRoutes from "./routes/webhooks";
 import revolutWebhooksRoutes from "./routes/revolut-webhooks";
 import subscriptionsRoutes from "./routes/subscriptions";
+import cardHoldsRoutes from "./routes/card-holds";
+import { startCardHoldSweeper } from "./lib/card-holds";
 import { startEventPoller } from "./lib/event-poller";
 import { backfillHistorical } from "./lib/historical-backfill";
 import { repairAllSilverFromBronze } from "./lib/event-processor";
@@ -94,6 +96,7 @@ app.use("/", healthRoutes);
 app.use("/", customersRoutes);
 app.use("/", internalRoutes);
 app.use("/", subscriptionsRoutes);
+app.use("/", cardHoldsRoutes);
 app.use("/", checkoutSessionsRoutes);
 app.use("/", paymentIntentsRoutes);
 app.use("/", paymentMethodsRoutes);
@@ -139,6 +142,7 @@ if (process.env.NODE_ENV !== "test") {
         // costs a stale mirror and nothing else. Fire-and-forget after
         // listen(), same as the Stripe back-fill, so the port is never held.
         startRevolutPoller();
+        startCardHoldSweeper();
         backfillRevolutHistory().catch((err) => {
           console.error("[stripe-service] Revolut back-fill failed:", err);
         });

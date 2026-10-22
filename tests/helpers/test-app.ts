@@ -15,6 +15,7 @@ import publicStatsRoutes from "../../src/routes/public-stats";
 import webhooksRoutes from "../../src/routes/webhooks";
 import revolutWebhooksRoutes from "../../src/routes/revolut-webhooks";
 import subscriptionsRoutes from "../../src/routes/subscriptions";
+import cardHoldsRoutes from "../../src/routes/card-holds";
 
 export function createTestApp() {
   const app = express();
@@ -29,6 +30,7 @@ export function createTestApp() {
   app.use("/", customersRoutes);
   app.use("/", internalRoutes);
   app.use("/", subscriptionsRoutes);
+  app.use("/", cardHoldsRoutes);
   app.use("/", checkoutSessionsRoutes);
   app.use("/", paymentIntentsRoutes);
   app.use("/", paymentMethodsRoutes);

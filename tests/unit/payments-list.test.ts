@@ -34,6 +34,27 @@ const REVOLUT_PAYMENT = {
 };
 
 describe("listOrgPayments", () => {
+  it("a card HOLD shows only once captured, at what was taken", async () => {
+    const hold = { metadata: { purpose: "card-hold" }, amount: 5000, description: "hold" };
+    dbMock.queueSelect("payment_intents", [
+      { ...STRIPE_PI, ...hold, id: "pi_held", status: "requires_capture", amountReceived: 0 },
+      { ...STRIPE_PI, ...hold, id: "pi_lapsed", status: "canceled", amountReceived: 0 },
+      { ...STRIPE_PI, ...hold, id: "pi_taken", status: "succeeded", amountReceived: 3693 },
+    ]);
+    dbMock.queueSelect("revolut_orders", [
+      { ...REVOLUT_PAYMENT, id: "ord-held", state: "authorised", metadata: { purpose: "card-hold" } },
+      { ...REVOLUT_PAYMENT, id: "ord-taken", amount: 3693, metadata: { purpose: "card-hold" } },
+    ]);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", []);
+
+    const out = await listOrgPayments("org-1");
+    expect(out.map((p) => [p.id, p.amount]).sort()).toEqual([
+      ["ord-taken", 3693],
+      ["pi_taken", 3693],
+    ]);
+  });
+
   it("shows payments from BOTH acquirers in one history", async () => {
     dbMock.queueSelect("payment_intents", [STRIPE_PI]);
     dbMock.queueSelect("revolut_orders", [REVOLUT_PAYMENT]);

@@ -434,3 +434,51 @@ export const stripeFeeTransactions = pgTable(
   },
   (table) => [index("idx_stripe_fee_transactions_source").on(table.source)]
 );
+
+// An AMOUNT HOLD placed on an org's saved card: an authorisation the bank
+// accepts or refuses, never a charge until it is CAPTURED. Owner 2026-10-22:
+// before a postpaid org gets a credit line, its card must hold the first step
+// ($50) — saving a card proves nothing about funds. A hold lasts the acquirer's
+// own window (7 days on both) and is never renewed; if the org's spend reaches
+// the step while it is alive the step is paid by capturing it, else it expires.
+//
+// One row per hold attempt, refused ones included (the refusal IS the answer
+// the caller acts on). The acquirer object it rides on (Stripe PaymentIntent
+// with `capture_method: manual`, Revolut order with `capture_mode: manual`) is
+// mirrored like any other and carries `metadata.purpose = "card-hold"`.
+export const cardHolds = pgTable(
+  "card_holds",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: text("org_id").notNull(),
+    acquirer: text("acquirer").notNull(), // 'stripe' | 'revolut'
+    // The acquirer's id for the hold (pi_… / Revolut order uuid). Null only
+    // between the row's insert and the acquirer's create answering.
+    reference: text("reference"),
+    paymentMethod: text("payment_method"),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    currency: text("currency").notNull(), // lowercase ISO 4217
+    // pending | requires_action | held | refused | captured | released | expired
+    status: text("status").notNull(),
+    session: text("session").notNull(), // 'on_session' | 'off_session'
+    amountCaptured: bigint("amount_captured", { mode: "number" }),
+    declineCode: text("decline_code"),
+    declineMessage: text("decline_message"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    description: text("description"),
+    metadata: jsonb("metadata"),
+    // The acquirer's own capture deadline; the hold reads `expired` after it.
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    capturedAt: timestamp("captured_at", { withTimezone: true }),
+    // When a hold stopped being live without a capture: refused, released, expired.
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("uq_card_holds_org_idempotency").on(table.orgId, table.idempotencyKey),
+    index("idx_card_holds_org").on(table.orgId),
+    index("idx_card_holds_status").on(table.status),
+    index("idx_card_holds_reference").on(table.reference),
+  ]
+);

@@ -167,6 +167,22 @@ describe("declareFeesForEvent — charge.succeeded", () => {
     expect(runsMock.createPlatformRun).not.toHaveBeenCalled();
   });
 
+  it("a captured card HOLD declares its fee on charge.captured (the authorisation had none)", async () => {
+    stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({ id: "txn_hold", fee: 137, currency: "usd" });
+    runsMock.createPlatformRun.mockResolvedValueOnce({ id: "run_hold" });
+    await declareFeesForEvent(
+      {
+        id: "evt_capture",
+        type: "charge.captured",
+        data: { object: { id: "ch_hold", object: "charge", balance_transaction: "txn_hold" } },
+      } as never,
+      stripeMock as never
+    );
+    expect(runsMock.addPlatformRunCost).toHaveBeenCalledWith(
+      expect.objectContaining({ costName: "stripe-processing-fee", quantity: 137, idempotencyKey: "stripe:txn_hold" })
+    );
+  });
+
   it("skips when balance_transaction is missing", async () => {
     const event = {
       id: "evt_no_bt",
