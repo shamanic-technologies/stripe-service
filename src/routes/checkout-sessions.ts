@@ -1,3 +1,4 @@
+import { messageOf } from "../lib/db-error.js";
 import { Router, Request, Response, NextFunction } from "express";
 import { eq, and, desc, lt } from "drizzle-orm";
 import type Stripe from "stripe";
@@ -56,7 +57,7 @@ router.post("/v1/checkout/sessions", async (req: Request, res: Response, next: N
         ({ pinned: subscriptionPinned } = await assertSubscriptionAcquirer(orgId));
       } catch (err) {
         if (err instanceof SubscriptionAcquirerNotStripe) {
-          return res.status(409).json({ error: err.message, code: "acquirer_not_stripe", acquirer: err.acquirer });
+          return res.status(409).json({ error: messageOf(err), code: "acquirer_not_stripe", acquirer: err.acquirer });
         }
         throw err;
       }
@@ -80,7 +81,7 @@ router.post("/v1/checkout/sessions", async (req: Request, res: Response, next: N
         return res.json(checkout);
       } catch (err) {
         if (err instanceof UnsupportedCheckout) {
-          return res.status(422).json({ error: err.message });
+          return res.status(422).json({ error: messageOf(err) });
         }
         throw err;
       }
