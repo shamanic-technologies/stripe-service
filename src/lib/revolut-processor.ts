@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
-import { revolutObjectSnapshots, revolutOrders } from "../db/schema";
+import { cardHolds, revolutObjectSnapshots, revolutOrders } from "../db/schema";
 import { cancelOrder, getOrder, type RevolutOrder } from "./revolut-client";
 
 export type RevolutObjectKind = "order" | "dispute";
@@ -158,15 +158,35 @@ export function revolutOrgIdOf(order: RevolutOrder): string | null {
   return typeof own === "string" && own.length > 0 ? own : null;
 }
 
+/**
+ * What a captured CARD HOLD actually took. Revolut keeps the order's `amount`
+ * at what was AUTHORISED after a partial capture (the rest is voided), and every
+ * money read here sums `amount` over completed orders — so without this a $50
+ * hold captured for $36.93 would credit $50. The captured amount is OURS: the
+ * hold row records it before the capture is sent (src/lib/card-holds.ts).
+ */
+async function capturedHoldAmount(order: RevolutOrder): Promise<number | null> {
+  if (order.state !== "completed") return null;
+  if (order.metadata?.purpose !== "card-hold") return null;
+  const rows = await db
+    .select({ amountCaptured: cardHolds.amountCaptured })
+    .from(cardHolds)
+    .where(eq(cardHolds.reference, order.id))
+    .limit(1);
+  const captured = rows[0]?.amountCaptured;
+  return typeof captured === "number" ? captured : null;
+}
+
 async function upsertRevolutOrder(order: RevolutOrder): Promise<void> {
   const orgId = revolutOrgIdOf(order);
+  const captured = await capturedHoldAmount(order);
   const values = {
     id: order.id,
     type: typeof order.type === "string" ? order.type : "unknown",
     state: order.state ?? null,
     orgId,
     relatedOrderId: order.related_order_id ?? null,
-    amount: typeof order.amount === "number" ? order.amount : null,
+    amount: captured ?? (typeof order.amount === "number" ? order.amount : null),
     currency: order.currency ?? null,
     outstandingAmount:
       typeof order.outstanding_amount === "number"

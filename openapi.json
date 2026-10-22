@@ -2010,6 +2010,167 @@
         "required": [
           "voided_by"
         ]
+      },
+      "CardHold": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "card_hold"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "acquirer": {
+            "type": "string",
+            "enum": [
+              "stripe",
+              "revolut"
+            ],
+            "description": "Diagnostic only — do not branch on it."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "requires_action",
+              "held",
+              "refused",
+              "captured",
+              "released",
+              "expired"
+            ],
+            "description": "`held` = the bank blocked the amount and it can be captured until `expires_at`. `refused` = the bank said no (`failure`). `requires_action` = Stripe on-session only, the customer must pass 3-D Secure in the page (`client_secret`). `captured` = taken (`amount_captured`), counted as a payment everywhere. `released` = ended by us. `expired` = the acquirer's window passed; read as expired the instant `expires_at` passes. `pending` = the acquirer has not answered yet."
+          },
+          "amount": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "amount_captured": {
+            "type": "integer",
+            "nullable": true
+          },
+          "session": {
+            "type": "string",
+            "enum": [
+              "on_session",
+              "off_session"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO. The acquirer's own capture deadline (7 days on both today). Never renewed."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "captured_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "ended_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "When it stopped being live without a capture (refused, released, expired)."
+          },
+          "reference": {
+            "type": "string",
+            "nullable": true,
+            "description": "The acquirer's own id (pi_… / order id), for support."
+          },
+          "metadata": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "client_secret": {
+            "type": "string"
+          },
+          "failure": {
+            "$ref": "#/components/schemas/ChargeFailure"
+          }
+        },
+        "required": [
+          "object",
+          "id",
+          "org_id",
+          "acquirer",
+          "status",
+          "amount",
+          "currency",
+          "amount_captured",
+          "session",
+          "expires_at",
+          "created_at",
+          "captured_at",
+          "ended_at",
+          "reference",
+          "metadata"
+        ]
+      },
+      "PlaceCardHoldRequest": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Minor units, e.g. 5000 for $50.00."
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3
+          },
+          "session": {
+            "type": "string",
+            "enum": [
+              "on_session",
+              "off_session"
+            ],
+            "description": "`on_session` = the customer is on our page right now (card save): Stripe may ask for 3-D Secure, answered as `requires_action` + `client_secret`. `off_session` = nobody is there (after a capture): a bank asking for authentication is a refusal (`authentication_required`)."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "session"
+        ]
+      },
+      "CaptureCardHoldRequest": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Minor units to take, at most the held amount. The rest is released by the acquirer."
+          }
+        },
+        "required": [
+          "amount"
+        ]
       }
     },
     "parameters": {}
@@ -4811,6 +4972,345 @@
           },
           "404": {
             "description": "The org has no such direct payment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/card_holds/by-org/{orgId}": {
+      "post": {
+        "summary": "Place an amount hold on the org's saved card, whichever acquirer holds it",
+        "description": "Authorises `amount` on the org's saved card with nothing charged. 200 with `status: held` (accepted, `expires_at` set), `refused` (the bank said no, `failure.code` is its reason, e.g. `insufficient_funds`), or `requires_action` (Stripe on-session, 3-D Secure, `client_secret`). Could-not-ask is a 5xx, never a refusal. `Idempotency-Key` required: a replay answers the same hold (a pending/requires_action one is re-read from the acquirer); the same key with another amount or currency is a 409 `idempotency_key_reused`.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaceCardHoldRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The hold (`held`, `refused` or `requires_action`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CardHold"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or missing Idempotency-Key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_customer`: the org has no customer on its acquirer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`no_saved_payment_method`, or `idempotency_key_reused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`acquirer_unavailable`: we could not ask",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`hold_pending`: the acquirer is still authorising; retry with the SAME Idempotency-Key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "The org's holds, and the one that is live right now",
+        "description": "DB read. `live_hold` is the newest hold with `status: held` whose `expires_at` is still ahead, or null. Every hold is listed newest first, refused and expired ones included.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Holds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "list"
+                      ]
+                    },
+                    "live_hold": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/CardHold"
+                        },
+                        {
+                          "nullable": true
+                        }
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CardHold"
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "live_hold",
+                    "data",
+                    "has_more"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/card_holds/by-org/{orgId}/{holdId}/capture": {
+      "post": {
+        "summary": "Take an amount (at most the hold) out of a live hold",
+        "description": "Captures `amount` and releases the rest. The capture is a succeeded payment stamped with the org: the payment summary's `amount_received` rises by it and the payment history lists it. One capture per hold: the same amount again replays 200, another amount is a 409 `hold_already_captured`. A hold that is not live (refused, released, expired, including one the acquirer just released) is a 409 `hold_not_live` carrying the hold.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "holdId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureCardHoldRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The captured hold",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CardHold"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body, or `capture_exceeds_hold`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such hold for this org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`hold_not_live` or `hold_already_captured`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`acquirer_unavailable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`hold_pending`: the acquirer has not confirmed the capture yet; retry the same call",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/card_holds/by-org/{orgId}/{holdId}/release": {
+      "post": {
+        "summary": "End a hold without taking anything",
+        "description": "Idempotent. A hold already ended answers unchanged; a captured one is a 409 `hold_already_captured`.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "holdId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The released hold",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CardHold"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such hold for this org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`hold_already_captured`",
             "content": {
               "application/json": {
                 "schema": {
