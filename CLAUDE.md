@@ -13,7 +13,7 @@ and DB tables. Internal-only HTTP API consumed by other Distribute services
 knowledge of its callers — all reload/dedupe logic lives in clients.
 
 ## Commands
-- `npm run dev` — Start dev server with nodemon
+- `npm run dev` — Start dev server with tsx watch
 - `npm run build` — Compile TypeScript + generate OpenAPI spec
 - `npm test` — Run all tests
 - `npm run test:unit` — Unit tests only

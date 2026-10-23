@@ -4,7 +4,7 @@
   "description": "Payment processing service using Stripe",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "nodemon src/index.ts",
+    "dev": "tsx watch src/index.ts",
     "build": "tsc && npm run generate:openapi",
     "generate:openapi": "tsx scripts/generate-openapi.ts",
     "start": "node dist/index.js",
@@ -29,7 +29,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "drizzle-orm": "^0.45.4",
-    "express": "^4.21.2",
+    "express": "^4.22.3",
     "pg": "^8.16.3",
     "stripe": "^17.7.0",
     "zod": "^4.3.6"
@@ -42,11 +42,14 @@
     "@types/supertest": "^6.0.3",
     "@vitest/coverage-v8": "^4.1.12",
     "drizzle-kit": "^0.31.11",
-    "nodemon": "^3.1.10",
     "supertest": "^7.2.2",
-    "ts-node": "^10.9.2",
-    "tsx": "^4.21.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.2",
     "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": "^0.25.12"
+    }
   }
 }
