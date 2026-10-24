@@ -26,6 +26,7 @@ import cardHoldsRoutes from "./routes/card-holds";
 import { startCardHoldSweeper } from "./lib/card-holds";
 import { startEventPoller } from "./lib/event-poller";
 import { backfillHistorical } from "./lib/historical-backfill";
+import { markPastRunsPaymentFeesSupport } from "./lib/runs-client";
 import { repairAllSilverFromBronze } from "./lib/event-processor";
 import { deployEmailTemplates } from "./lib/transactional-email-client";
 import {
@@ -141,6 +142,15 @@ if (process.env.NODE_ENV !== "test") {
         // traffic to it and no consumer reads these tables, so a failure here
         // costs a stale mirror and nothing else. Fire-and-forget after
         // listen(), same as the Stripe back-fill, so the port is never held.
+        // Every past fee run carries its payment-fees support mark
+        // (COST-SUPPORT-1024). Idempotent, one scan of our runs in
+        // runs-service, so it re-runs on every boot and also catches replayed
+        // runs that were created before the mark at creation existed.
+        markPastRunsPaymentFeesSupport()
+          .then((out) => console.log("[stripe-service] Payment-fees support marks:", out))
+          .catch((err) => {
+            console.error("[stripe-service] Payment-fees support marks failed:", err);
+          });
         startRevolutPoller();
         startCardHoldSweeper();
         backfillRevolutHistory().catch((err) => {
