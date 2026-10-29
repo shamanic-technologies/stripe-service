@@ -7,17 +7,43 @@ import { revolutFeeUsdCents, stripeFeeUsdCents } from "./fee-usd";
 
 /**
  * What the acquirers KEPT of our customers' money, per org and per UTC month,
- * since inception — the fee we ABSORB.
+ * since inception.
  *
- * Owner 2026-10-13: the customer pays its campaign spend and nothing else; card
- * fees are the platform's cost. The fee is therefore declared to runs-service on
- * an ORG-LESS run (an org there would be a charge), which leaves runs-service
- * unable to say whose payment a fee came from. This is where that answer lives:
- * the Stripe fee mirror joined to the payment it belongs to, and the Revolut fee
- * already on the order. Read only, no acquirer call.
+ * From 2026-10-29 the fee is billed to the org that paid (declared on a run
+ * carrying that org); from 2026-10-13 to then it was absorbed on org-less runs.
+ * This is whose payment each fee came from, for every period alike: the Stripe
+ * fee mirror joined to the payment it belongs to, and the Revolut fee already on
+ * the order. Read only, no acquirer call.
  */
 
 const UNATTRIBUTED_ORG = "unknown";
+
+/**
+ * The org of the payment a Stripe fee came from, from its balance transaction's
+ * `source` (a charge, or a refund): the PaymentIntent whose latest charge it is,
+ * or the refund's PaymentIntent. One home for the mapping: the monthly view and
+ * the fee declaration both read it.
+ */
+const stripeFeeOrgSql = (source: ReturnType<typeof sql>) => sql`COALESCE(
+             (SELECT pi.org_id FROM payment_intents pi
+               WHERE pi.latest_charge = ${source} LIMIT 1),
+             (SELECT pi.org_id FROM refunds r
+                JOIN payment_intents pi ON pi.id = r.payment_intent
+               WHERE r.id = ${source} LIMIT 1),
+             (SELECT pi.org_id FROM refunds r
+                JOIN payment_intents pi ON pi.latest_charge = r.charge
+               WHERE r.id = ${source} LIMIT 1)
+           )`;
+
+/** `stripeFeeOrgSql` for one source id. Null = no org of ours. */
+export async function orgOfStripeFeeSource(source: string | null): Promise<string | null> {
+  if (!source) return null;
+  const result = await db.execute(
+    sql`SELECT ${stripeFeeOrgSql(sql`${source}`)} AS org_id`
+  );
+  const orgId = (result.rows[0] as { org_id: string | null } | undefined)?.org_id ?? null;
+  return orgId && orgId !== UNATTRIBUTED_ORG ? orgId : null;
+}
 
 /** Mirror one fee-bearing balance transaction. Idempotent on its id. */
 export async function recordStripeFeeTransaction(
@@ -134,16 +160,7 @@ export async function acquiringFeesByMonth(): Promise<AcquiringFeesByMonth> {
   // the refund mirror attributes through, one home for the mapping.
   // One row PER FEE (not grouped): each fee converts to USD with its own rate.
   const result = await db.execute(sql`
-    SELECT COALESCE(
-             (SELECT pi.org_id FROM payment_intents pi
-               WHERE pi.latest_charge = f.source LIMIT 1),
-             (SELECT pi.org_id FROM refunds r
-                JOIN payment_intents pi ON pi.id = r.payment_intent
-               WHERE r.id = f.source LIMIT 1),
-             (SELECT pi.org_id FROM refunds r
-                JOIN payment_intents pi ON pi.latest_charge = r.charge
-               WHERE r.id = f.source LIMIT 1)
-           ) AS org_id,
+    SELECT ${stripeFeeOrgSql(sql`f.source`)} AS org_id,
            'stripe' AS acquirer,
            to_char(to_timestamp(f.created_stripe) AT TIME ZONE 'UTC', 'YYYY-MM') AS month,
            f.currency,

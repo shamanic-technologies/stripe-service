@@ -8,15 +8,15 @@ import {
 } from "./runs-client";
 
 /**
- * The Revolut acquiring fee is the PLATFORM's cost, charged to NOBODY, exactly
- * like the Stripe fee.
+ * The Revolut acquiring fee is BILLED to the org that paid, exactly like the
+ * Stripe fee.
  *
- * Owner 2026-10-13: "arrêter de prélever plus à un user que ce qu'il définit par
- * campagne… prendre sur nous: Stripe fees, …". runs-service counts a
- * platform-source cost carrying an org into that org's usage, which billing
- * reads as spend — so the run carries NO org: the fee is recorded in platform
- * cost reporting and debited from no balance. Per-org attribution is served by
- * GET /internal/acquiring_fees/monthly off `revolut_orders`, never on the charge.
+ * Owner 2026-10-29: « dans ce monde sans marge tous les couts de supports sont
+ * refacturés à l'org cliente, incluant l'onboarding, stripe, les chat etc »
+ * (reverses 2026-10-13). runs-service counts a platform-source cost carrying an
+ * org into that org's usage, which billing reads as spend, so the org on the run
+ * IS the charge, at cost (pass-through price). An order with no org stays on an
+ * org-less run: the platform's.
  *
  * ## Why a sweep, not a webhook side-effect
  *
@@ -39,6 +39,7 @@ export async function declarePendingRevolutFees(): Promise<number> {
   const rows = await db
     .select({
       id: revolutOrders.id,
+      orgId: revolutOrders.orgId,
       feeAmount: revolutOrders.feeAmount,
       rawJson: revolutOrders.rawJson,
     })
@@ -60,7 +61,7 @@ export async function declarePendingRevolutFees(): Promise<number> {
     // loud, stays undeclared, and is retried on the next sweep.
     try {
       assertUsdFees(row.id, row.rawJson);
-      await declareOne(row.id, row.feeAmount as number);
+      await declareOne(row.id, row.orgId, row.feeAmount as number);
       await db
         .update(revolutOrders)
         .set({ feeDeclaredAt: new Date() })
@@ -68,7 +69,7 @@ export async function declarePendingRevolutFees(): Promise<number> {
       declared += 1;
     } catch (err) {
       console.error(
-        `[stripe-service] Declaring the Revolut fee for order ${row.id} failed; retried next sweep:`,
+        `[stripe-service] Declaring the Revolut fee for order ${row.id} (org ${row.orgId}) failed; retried next sweep:`,
         err
       );
     }
@@ -78,14 +79,15 @@ export async function declarePendingRevolutFees(): Promise<number> {
 
 async function declareOne(
   orderId: string,
+  orgId: string | null,
   feeCents: number
 ): Promise<void> {
   const idempotencyKey = `revolut:${orderId}`;
   const run = await createPlatformRun({
     taskName: "revolut.payment.completed",
     idempotencyKey,
-    // Never the org: an org on the run IS a charge to it (see the header).
-    orgId: null,
+    // The paying org: the run's org IS the charge to it (see the header).
+    orgId,
   });
   try {
     await addPlatformRunCost({

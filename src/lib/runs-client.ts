@@ -23,7 +23,7 @@ const FEATURE_SLUG = "stripe-webhook";
  */
 export const PAYMENT_FEES_SUPPORT = {
   kind: "payment_fees",
-  reason: "Card acquiring fee (Stripe / Revolut) absorbed by the platform: spend with no outcome by design.",
+  reason: "Card acquiring fee (Stripe / Revolut) of a payment, billed to the paying org: spend with no outcome by design.",
 } as const;
 
 /** First day of the runs ledger: past runs are marked from here on. */

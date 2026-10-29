@@ -815,9 +815,9 @@ export const AcquiringFeesByMonthSchema = z
 registry.registerPath({
   method: "get",
   path: "/internal/acquiring_fees/monthly",
-  summary: "Card fees we absorb, per org per UTC month, both acquirers (user-less)",
+  summary: "Card fees of each org's payments, per org per UTC month, both acquirers (user-less)",
   description:
-    "Server-to-server, staff reporting. What each acquirer KEPT of our customers' payments: Stripe `balance_transaction.fee` (processing, refund, dispute, payout-failure) and the Revolut acquiring fee, grouped by org and UTC month since inception. These fees are the PLATFORM's cost and are charged to no customer (owner 2026-10-13): runs-service records them on org-less platform runs, so the per-org view lives here. A Stripe fee attributes to the org of the payment it came from (charge through its PaymentIntent, refund through its refund's PaymentIntent); a Revolut fee to its order's org. A fee that maps to no org is in `unattributed`, never dropped. A fee is placed in the month the acquirer took it. DB read only, no acquirer call. X-API-Key only.",
+    "Server-to-server, staff reporting. What each acquirer KEPT of our customers' payments: Stripe `balance_transaction.fee` (processing, refund, dispute, payout-failure) and the Revolut acquiring fee, grouped by org and UTC month since inception. From 2026-10-29 a fee is BILLED to the org whose payment it came from (runs-service platform run carrying that org, at cost); from 2026-10-13 until then it was absorbed by the platform on an org-less run. This route attributes every fee, any period, the same way. A Stripe fee attributes to the org of the payment it came from (charge through its PaymentIntent, refund through its refund's PaymentIntent); a Revolut fee to its order's org. A fee that maps to no org is in `unattributed`, never dropped. A fee is placed in the month the acquirer took it. DB read only, no acquirer call. X-API-Key only.",
   tags: ["Internal"],
   security: apiKeySec,
   responses: {
