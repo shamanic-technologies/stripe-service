@@ -24,6 +24,7 @@ import revolutWebhooksRoutes from "./routes/revolut-webhooks";
 import subscriptionsRoutes from "./routes/subscriptions";
 import cardHoldsRoutes from "./routes/card-holds";
 import { startCardHoldSweeper } from "./lib/card-holds";
+import { startApiCallLogRetention } from "./lib/api-call-log-retention";
 import { startEventPoller } from "./lib/event-poller";
 import { backfillHistorical } from "./lib/historical-backfill";
 import { markPastRunsPaymentFeesSupport } from "./lib/runs-client";
@@ -153,6 +154,8 @@ if (process.env.NODE_ENV !== "test") {
           });
         startRevolutPoller();
         startCardHoldSweeper();
+        // api_call_log is a write-only audit: 30-day retention (BOX-DISK-FULL-1029).
+        startApiCallLogRetention();
         backfillRevolutHistory().catch((err) => {
           console.error("[stripe-service] Revolut back-fill failed:", err);
         });
