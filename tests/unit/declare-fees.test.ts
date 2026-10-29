@@ -21,8 +21,11 @@ const { dbMock, stripeMock, runsMock, keyMock } = vi.hoisted(() => {
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
 vi.mock("../../src/lib/runs-client", () => runsMock);
-const recordStripeFeeTransaction = vi.hoisted(() => vi.fn());
-vi.mock("../../src/lib/acquiring-fees", () => ({ recordStripeFeeTransaction }));
+const { recordStripeFeeTransaction, orgOfStripeFeeSource } = vi.hoisted(() => ({
+  recordStripeFeeTransaction: vi.fn(),
+  orgOfStripeFeeSource: vi.fn(),
+}));
+vi.mock("../../src/lib/acquiring-fees", () => ({ recordStripeFeeTransaction, orgOfStripeFeeSource }));
 vi.mock("../../src/lib/key-client", () => ({
   getKeySource: keyMock.getKeySource,
   resolvePlatformKey: vi.fn(),
@@ -50,10 +53,11 @@ beforeEach(() => {
   });
   runsMock.addPlatformRunCost.mockResolvedValue(undefined);
   runsMock.updatePlatformRunStatus.mockResolvedValue(undefined);
+  orgOfStripeFeeSource.mockResolvedValue(null);
 });
 
 describe("declareFeesForEvent — charge.succeeded", () => {
-  it("declares stripe-processing-fee as a platform cost on an ORG-LESS run, so no customer is charged it, and mirrors the fee", async () => {
+  it("bills stripe-processing-fee to the paying org (customer's org on the run), at cost, and mirrors the fee", async () => {
     dbMock.queueSelect("customers", [{ orgId: "org-acme" }]);
     keyMock.getKeySource.mockResolvedValueOnce({
       provider: "stripe",
@@ -93,7 +97,7 @@ describe("declareFeesForEvent — charge.succeeded", () => {
     expect(runsMock.createPlatformRun).toHaveBeenCalledWith({
       taskName: "charge.succeeded",
       idempotencyKey: "stripe:txn_processing",
-      orgId: null,
+      orgId: "org-acme",
     });
     expect(runsMock.addPlatformRunCost).toHaveBeenCalledWith({
       runId: "run_processing",
@@ -108,7 +112,40 @@ describe("declareFeesForEvent — charge.succeeded", () => {
     });
   });
 
-  it("uses platform costSource and omits orgId when customer has no org mapping", async () => {
+  it("a charge's own metadata.org_id wins over the customer lookup", async () => {
+    stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({ id: "txn_meta", fee: 59, currency: "usd" });
+    runsMock.createPlatformRun.mockResolvedValueOnce({ id: "run_meta" });
+    await declareFeesForEvent(
+      {
+        id: "evt_meta",
+        type: "charge.succeeded",
+        data: { object: { id: "ch_meta", customer: "cus_x", metadata: { org_id: "org-meta" }, balance_transaction: "txn_meta" } },
+      } as never,
+      stripeMock as never
+    );
+    expect(dbMock.db.select).not.toHaveBeenCalled();
+    expect(runsMock.createPlatformRun).toHaveBeenCalledWith(expect.objectContaining({ orgId: "org-meta" }));
+    expect(runsMock.addPlatformRunCost).toHaveBeenCalledWith(expect.objectContaining({ quantity: 59, costSource: "platform" }));
+  });
+
+  it("falls back to the fee mirror's payment attribution when the event names no org", async () => {
+    dbMock.queueSelect("customers", []);
+    orgOfStripeFeeSource.mockResolvedValueOnce("org-via-pi");
+    stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({ id: "txn_pi", fee: 40, currency: "usd", source: "ch_pi" });
+    runsMock.createPlatformRun.mockResolvedValueOnce({ id: "run_pi" });
+    await declareFeesForEvent(
+      {
+        id: "evt_pi_fallback",
+        type: "charge.succeeded",
+        data: { object: { id: "ch_pi", customer: "cus_unmirrored", balance_transaction: "txn_pi" } },
+      } as never,
+      stripeMock as never
+    );
+    expect(orgOfStripeFeeSource).toHaveBeenCalledWith("ch_pi");
+    expect(runsMock.createPlatformRun).toHaveBeenCalledWith(expect.objectContaining({ orgId: "org-via-pi" }));
+  });
+
+  it("uses platform costSource and omits orgId when the payment maps to no org", async () => {
     dbMock.queueSelect("customers", []);
     stripeMock.balanceTransactions.retrieve.mockResolvedValueOnce({
       id: "txn_orphan",
@@ -240,6 +277,7 @@ describe("declareFeesForEvent — charge.refunded", () => {
     await declareFeesForEvent(event, stripeMock as never);
 
     expect(runsMock.createPlatformRun).toHaveBeenCalledTimes(2);
+    expect(runsMock.createPlatformRun.mock.calls[0][0].orgId).toBe("org-acme");
     expect(runsMock.addPlatformRunCost).toHaveBeenCalledTimes(2);
     expect(runsMock.addPlatformRunCost.mock.calls[0][0]).toMatchObject({
       runId: "run_refund_1",
@@ -280,6 +318,9 @@ describe("declareFeesForEvent — charge.dispute.created", () => {
 
     await declareFeesForEvent(event, stripeMock as never);
 
+    expect(runsMock.createPlatformRun).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: "org-acme" })
+    );
     expect(runsMock.addPlatformRunCost).toHaveBeenCalledWith(
       expect.objectContaining({
         costName: "stripe-dispute-fee",
@@ -314,6 +355,7 @@ describe("declareFeesForEvent — payout.failed", () => {
     await declareFeesForEvent(event, stripeMock as never);
 
     expect(dbMock.db.select).not.toHaveBeenCalled();
+    expect(orgOfStripeFeeSource).not.toHaveBeenCalled();
     expect(keyMock.getKeySource).not.toHaveBeenCalled();
     expect(runsMock.createPlatformRun).toHaveBeenCalledWith({
       taskName: "payout.failed",

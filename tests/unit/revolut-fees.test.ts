@@ -18,7 +18,7 @@ import {
   REVOLUT_FEE_COST_NAME,
 } from "../../src/lib/revolut-fees";
 
-function order(id: string, orgId: string, fee: number, currency = "USD") {
+function order(id: string, orgId: string | null, fee: number, currency = "USD") {
   return {
     id,
     orgId,
@@ -37,7 +37,7 @@ beforeEach(() => {
 });
 
 describe("declarePendingRevolutFees", () => {
-  it("records each completed payment's fee as a platform cost charged to NO org, once", async () => {
+  it("bills each completed payment's fee to the org that paid, once", async () => {
     dbMock.queueSelect("revolut_orders", [order("ord-1", "org-a", 28)]);
 
     expect(await declarePendingRevolutFees()).toBe(1);
@@ -45,7 +45,7 @@ describe("declarePendingRevolutFees", () => {
     expect(runsMock.createPlatformRun).toHaveBeenCalledWith({
       taskName: "revolut.payment.completed",
       idempotencyKey: "revolut:ord-1",
-      orgId: null,
+      orgId: "org-a",
     });
     expect(runsMock.addPlatformRunCost).toHaveBeenCalledWith({
       runId: "run_1",
@@ -59,6 +59,13 @@ describe("declarePendingRevolutFees", () => {
       status: "completed",
     });
     expect(dbMock.db.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("an order of no org stays the platform's (org-less run)", async () => {
+    dbMock.queueSelect("revolut_orders", [order("ord-x", null, 25)]);
+
+    expect(await declarePendingRevolutFees()).toBe(1);
+    expect(runsMock.createPlatformRun.mock.calls[0][0].orgId).toBeNull();
   });
 
   it("nothing pending declares nothing", async () => {
@@ -75,7 +82,7 @@ describe("declarePendingRevolutFees", () => {
     expect(await declarePendingRevolutFees()).toBe(1);
     expect(runsMock.createPlatformRun).toHaveBeenCalledTimes(1);
     expect(runsMock.createPlatformRun.mock.calls[0][0].idempotencyKey).toBe("revolut:ord-2");
-    expect(runsMock.createPlatformRun.mock.calls[0][0].orgId).toBeNull();
+    expect(runsMock.createPlatformRun.mock.calls[0][0].orgId).toBe("org-b");
     expect(console.error).toHaveBeenCalled();
   });
 
