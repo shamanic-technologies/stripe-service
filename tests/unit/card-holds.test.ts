@@ -177,7 +177,8 @@ describe("placing a hold on Stripe", () => {
     stripe.paymentIntents.create.mockResolvedValue({
       id: "pi_3ds",
       status: "requires_action",
-      created: 1792400000,
+      // Created NOW: a fixed instant ages past its 7-day window and reads expired.
+      created: Math.floor(Date.now() / 1000),
       client_secret: "pi_3ds_secret_x",
     });
 
