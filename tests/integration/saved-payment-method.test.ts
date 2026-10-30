@@ -510,3 +510,39 @@ describe("POST /internal/card_setup/by-org/:orgId — an optional x-user-id name
     expect(dbMock.lastInsertValues("card_update_openers")).toBeUndefined();
   });
 });
+
+describe("GET /internal/payment_methods/by-org/:orgId on a Revolut org", () => {
+  it("serves the Stripe-shaped card billing reads, beside Revolut's own fields", async () => {
+    pinnedToRevolut();
+    revolutMock.listCustomerPaymentMethods.mockResolvedValue([
+      {
+        id: "pm-rev-1",
+        type: "card",
+        saved_for: "merchant",
+        last_four: "5121",
+        expiry_month: 4,
+        expiry_year: 2031,
+        brand: "mastercard",
+        funding: "credit",
+        issuer_country: "US",
+      },
+    ]);
+
+    const res = await request(app)
+      .get(`/internal/payment_methods/by-org/${TEST_ORG_ID}?type=card`)
+      .set(headers);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].card).toEqual({
+      brand: "mastercard",
+      last4: "5121",
+      exp_month: 4,
+      exp_year: 2031,
+      country: "US",
+      funding: "credit",
+    });
+    expect(res.body.data[0].last_four).toBe("5121");
+    expect(res.body.data[0].issuer_country).toBe("US");
+  });
+});

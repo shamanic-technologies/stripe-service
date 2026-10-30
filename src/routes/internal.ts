@@ -31,6 +31,7 @@ import {
 import { buildCardSetup } from "../lib/card-setup";
 import { detachAllPaymentMethods } from "../lib/remove-payment-methods";
 import { removeAllRevolutPaymentMethods } from "../lib/revolut-card-removal";
+import { withStripeShapedCard } from "../lib/revolut-card-display";
 import {
   invalidatePaymentMethodReads,
   listPaymentMethodsForRead,
@@ -1198,15 +1199,16 @@ router.get(
         }
         const methods = await listCustomerPaymentMethods(pin.customerId);
         res.locals.stripeObjectId = pin.customerId;
-        // Returned in the same list envelope as the Stripe answer, but the
-        // METHODS are Revolut's own objects, verbatim. Card brand and last4 are
-        // simply absent rather than invented — a consumer that renders them
-        // shows nothing, which is true, instead of something plausible.
+        // Returned in the same list envelope as the Stripe answer. Each method
+        // is Revolut's own object, verbatim, PLUS a Stripe-shaped `card`
+        // (brand, last4, exp_month, exp_year, country, funding) built from the
+        // fields Revolut states, so a consumer reading `data[0].card` gets the
+        // same display facts on either acquirer. A field Revolut omits is null.
         return res.json({
           object: "list",
-          data: type
-            ? methods.filter((m) => m.type === type)
-            : methods,
+          data: (type ? methods.filter((m) => m.type === type) : methods).map(
+            withStripeShapedCard
+          ),
           has_more: false,
           url: `/internal/payment_methods/by-org/${orgId}`,
         });

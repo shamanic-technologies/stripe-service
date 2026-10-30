@@ -74,7 +74,7 @@ GET    /internal/acquirer/by-org/:orgId         — user-less: which acquirer ch
 PUT    /internal/acquirer/by-org/:orgId         — user-less: pin an org to an acquirer; creates its Revolut customer when needed; 409 when the org can still be charged on the acquirer it would leave
 DELETE /internal/acquirer/by-org/:orgId         — user-less: return an org to the default acquirer (idempotent); same 409
 POST   /internal/charges/by-org/:orgId          — user-less: charge an org off-session on EITHER acquirer, one vendor-neutral result; idempotent per Idempotency-Key header
-GET    /internal/payment_methods/by-org/:orgId  — user-less: org customer's PMs (live Stripe, platform key); ?type=card
+GET    /internal/payment_methods/by-org/:orgId  — user-less: org customer's PMs (live, on the org's acquirer); ?type=card. A Revolut card also carries a Stripe-shaped `card` {brand, last4, exp_month, exp_year, country, funding} (`src/lib/revolut-card-display.ts`), so billing's `data[0].card` read works on both acquirers
 DELETE /internal/payment_methods/by-org/:orgId  — user-less: remove EVERY payment method the org's customer holds ON ITS ACQUIRER (Stripe detach / Revolut delete); refused for nobody, nothing to remove is a 200
 POST   /internal/invoices/by-org/:orgId          — user-less: create + pay an OFF-SESSION invoice for the org's customer (finalized + paid Stripe invoice); idempotent per Idempotency-Key header
 GET    /internal/saved_payment_method/by-org/:orgId — user-less: is a chargeable card saved for this org, on whichever acquirer holds it; three answers kept apart
