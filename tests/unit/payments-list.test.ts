@@ -47,12 +47,88 @@ describe("listOrgPayments", () => {
     ]);
     dbMock.queueSelect("refunds", []);
     dbMock.queueSelect("disputes", []);
+    dbMock.queueSelect("card_holds", [
+      { reference: "pi_taken", capturedAt: new Date("2026-10-31T23:01:10Z"), updatedAt: new Date() },
+      { reference: "ord-taken", capturedAt: new Date("2026-10-31T23:01:10Z"), updatedAt: new Date() },
+    ]);
 
     const out = await listOrgPayments("org-1");
     expect(out.map((p) => [p.id, p.amount]).sort()).toEqual([
       ["ord-taken", 3693],
       ["pi_taken", 3693],
     ]);
+  });
+
+  it("a hold placed day D and captured day D+4 for less reads as SPEND, dated the capture, at the captured amount", async () => {
+    // Beyond Logic: $50 held 27 Oct, captured $40.13 on 31 Oct 23:01 UTC.
+    const heldDay = Math.floor(Date.parse("2026-10-27T17:44:10Z") / 1000);
+    const capturedAt = new Date("2026-10-31T23:01:10Z");
+    const hold = {
+      metadata: { purpose: "card-hold" },
+      amount: 5000,
+      description: "Distribute card check (nothing is charged)",
+      created: heldDay,
+    };
+    dbMock.queueSelect("payment_intents", [
+      { ...STRIPE_PI, ...hold, id: "pi_taken", status: "succeeded", amountReceived: 4013 },
+      { ...STRIPE_PI, ...hold, id: "pi_next", status: "requires_capture", amountReceived: 0 },
+    ]);
+    dbMock.queueSelect("revolut_orders", [
+      {
+        ...REVOLUT_PAYMENT,
+        id: "ord-taken",
+        amount: 4013,
+        description: hold.description,
+        createdAt: new Date("2026-10-27T17:44:10Z"),
+        metadata: { purpose: "card-hold" },
+      },
+    ]);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", []);
+    dbMock.queueSelect("card_holds", [
+      { reference: "pi_taken", capturedAt, updatedAt: capturedAt },
+      { reference: "pi_next", capturedAt: null, updatedAt: new Date() },
+      { reference: "ord-taken", capturedAt, updatedAt: capturedAt },
+    ]);
+
+    const out = await listOrgPayments("org-1");
+    expect(out.map((p) => p.id).sort()).toEqual(["ord-taken", "pi_taken"]);
+    for (const p of out) {
+      expect(p.amount).toBe(4013);
+      expect(p.status).toBe("succeeded");
+      expect(p.created).toBe(Math.floor(capturedAt.getTime() / 1000));
+      expect(p.description).toBe("Distribute campaigns, October 2026");
+      expect(p.description).not.toMatch(/card check|nothing is charged/);
+    }
+  });
+
+  it("an uncaptured hold (held, expired, refused) is never a payment", async () => {
+    const hold = { metadata: { purpose: "card-hold" }, amount: 5000, description: "hold" };
+    dbMock.queueSelect("payment_intents", [
+      { ...STRIPE_PI, ...hold, id: "pi_held", status: "requires_capture", amountReceived: 0 },
+      { ...STRIPE_PI, ...hold, id: "pi_expired", status: "canceled", amountReceived: 0 },
+      { ...STRIPE_PI, ...hold, id: "pi_refused", status: "requires_payment_method", amountReceived: 0 },
+    ]);
+    dbMock.queueSelect("revolut_orders", [
+      { ...REVOLUT_PAYMENT, id: "ord-held", state: "authorised", metadata: { purpose: "card-hold" } },
+      { ...REVOLUT_PAYMENT, id: "ord-expired", state: "cancelled", metadata: { purpose: "card-hold" } },
+      { ...REVOLUT_PAYMENT, id: "ord-refused", state: "failed", metadata: { purpose: "card-hold" } },
+    ]);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", []);
+
+    expect(await listOrgPayments("org-1")).toEqual([]);
+  });
+
+  it("a captured hold with no hold record fails loud rather than showing the hold's wording", async () => {
+    dbMock.queueSelect("payment_intents", [
+      { ...STRIPE_PI, id: "pi_orphan", metadata: { purpose: "card-hold" }, amountReceived: 100 },
+    ]);
+    dbMock.queueSelect("revolut_orders", []);
+    dbMock.queueSelect("refunds", []);
+    dbMock.queueSelect("disputes", []);
+
+    await expect(listOrgPayments("org-1")).rejects.toThrow(/no card_holds row/);
   });
 
   it("shows payments from BOTH acquirers in one history", async () => {
