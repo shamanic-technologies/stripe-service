@@ -20,11 +20,17 @@ if (!connectionString) {
 
 const pool = new Pool({
   connectionString: normalizeSslMode(connectionString),
+  // PG-CONN-1101: 5 is the fleet budget; measured peak concurrent use 0-3, the box Postgres has 300 slots shared by ~30 pools. pg queues beyond max, it does not fail.
+  max: 5,
   // Bound the connect wait so a genuinely dead host fails loud instead of
   // hanging forever — the post-TCP startup phase is not covered by the
   // happy-eyeballs attempt timeout above.
   connectionTimeoutMillis: 15_000,
 });
+
+// An idle client killed server-side emits "error" on the pool; without a
+// listener that crashes the process.
+pool.on("error", (err) => console.error("[stripe-service] idle pg client error", err));
 
 // Retry only connection-ACQUISITION failures (cold Neon resume). drizzle runs
 // every statement via pool.query (no transactions / pool.connect in this repo),
