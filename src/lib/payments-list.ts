@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db";
-import { paymentIntents, revolutOrders } from "../db/schema";
+import { cardHolds, paymentIntents, revolutOrders } from "../db/schema";
 import { returnedByPaymentIntent } from "./returned-amounts";
 import { standingDirectPayments } from "./direct-payments";
 
@@ -35,6 +35,29 @@ export interface OrgPayment {
   amount_returned: number;
 }
 
+/**
+ * What a captured card hold PAID FOR, and when the card was charged.
+ *
+ * A hold is placed with the description of a hold ("card check, nothing is
+ * charged") on the day the credit line opens; days later billing captures it to
+ * pay the org's campaign spend. Listing it under the acquirer object's own
+ * description and creation date tells the customer two false things beside a
+ * real amount: that nothing was charged, and that it happened the day of the
+ * hold (Beyond Logic, held 27 Oct, captured 31 Oct for $40.13). A capture is
+ * ALWAYS a payment of spend already made (billing only captures for money
+ * owed), so the label is that spend, in the month the card was charged (UTC).
+ * Derived on read from `card_holds`, so a hold captured before this existed
+ * reads right too.
+ */
+export function capturedHoldLabel(capturedAt: Date): string {
+  const month = capturedAt.toLocaleString("en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  return `Distribute campaigns, ${month}`;
+}
+
 function revolutStatus(state: string | null): OrgPayment["status"] {
   if (state === "completed") return "succeeded";
   if (state === "failed" || state === "cancelled") return "failed";
@@ -51,7 +74,7 @@ function revolutStatus(state: string | null): OrgPayment["status"] {
  * negative payment.
  */
 export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
-  const [stripeRows, revolutRows, directRows] = await Promise.all([
+  const [stripeRows, revolutRows, directRows, holdRows] = await Promise.all([
     db
       .select({
         id: paymentIntents.id,
@@ -82,6 +105,14 @@ export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
         and(eq(revolutOrders.orgId, orgId), eq(revolutOrders.type, "payment"))
       ),
     standingDirectPayments(orgId),
+    db
+      .select({
+        reference: cardHolds.reference,
+        capturedAt: cardHolds.capturedAt,
+        updatedAt: cardHolds.updatedAt,
+      })
+      .from(cardHolds)
+      .where(eq(cardHolds.orgId, orgId)),
   ]);
 
   const returned = await returnedByPaymentIntent(
@@ -107,6 +138,28 @@ export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
     (r) => purposeOf(r.metadata) !== "card-hold" || r.status === "succeeded"
   );
 
+  // A captured hold is dated the day the card was CHARGED and labelled with
+  // what it paid for, never the hold's own day and wording. `capturedAt` is
+  // null only for a Revolut capture still settling when its row was last
+  // written; `updatedAt` is then the capture attempt itself (the row is written
+  // with the captured amount right before the capture is sent).
+  const holdByReference = new Map(
+    holdRows.filter((h) => h.reference).map((h) => [h.reference!, h])
+  );
+  const capturedHold = (reference: string) => {
+    const hold = holdByReference.get(reference);
+    if (!hold) {
+      throw new Error(
+        `card-hold payment ${reference} of org ${orgId} has no card_holds row`
+      );
+    }
+    const chargedAt = hold.capturedAt ?? hold.updatedAt;
+    return {
+      created: Math.floor(chargedAt.getTime() / 1000),
+      description: capturedHoldLabel(chargedAt),
+    };
+  };
+
   const payments: OrgPayment[] = [
     ...stripeFacing.map((r) => ({
       id: r.id,
@@ -123,6 +176,7 @@ export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
       created: r.created ?? 0,
       description: r.description ?? null,
       amount_returned: returned.get(r.id)?.amount_returned ?? 0,
+      ...(purposeOf(r.metadata) === "card-hold" ? capturedHold(r.id) : {}),
     })),
     ...customerFacing.map((r) => ({
       id: r.id,
@@ -136,6 +190,7 @@ export async function listOrgPayments(orgId: string): Promise<OrgPayment[]> {
       created: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
       description: r.description ?? null,
       amount_returned: r.refunded ?? 0,
+      ...(purposeOf(r.metadata) === "card-hold" ? capturedHold(r.id) : {}),
     })),
     // Money staff recorded as paid outside any acquirer. Settled by definition
     // (it was received before it was recorded); a voided one is not listed, as
