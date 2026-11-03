@@ -121,7 +121,24 @@ async function maybePromote(
     return;
   }
   if (!pmOwner) {
-    await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId });
+    try {
+      await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId });
+    } catch (err) {
+      // Stripe's definitive answer that this method can never be attached again:
+      // it was DETACHED (the customer removed it) or used once without being
+      // saved. Nothing to promote, and never will be. Read as an answer, not a
+      // failure: thrown, it left the event's side-effects incomplete forever and
+      // aborted every event poll behind it (prod 2026-10-29 → 2026-11-03,
+      // STALE-CARD-AFTER-REMOVAL-1103). A network error, 5xx or 429 still
+      // propagates.
+      if (isPaymentMethodUnusable(err)) {
+        console.warn(
+          `[stripe-service] PM ${paymentMethodId} can no longer be attached to ${customerId} (detached or single-use); skipping default-PM promotion`
+        );
+        return;
+      }
+      throw err;
+    }
   }
 
   const updated = await stripe.customers.update(customerId, {
@@ -140,4 +157,23 @@ function isDeletedCustomer(
   c: Stripe.Customer | Stripe.DeletedCustomer
 ): c is Stripe.DeletedCustomer {
   return (c as Stripe.DeletedCustomer).deleted === true;
+}
+
+/**
+ * Stripe refuses to attach a method that was detached or already used without
+ * being saved. It states it as a 400 `invalid_request_error` with NO `code`
+ * (observed live 2026-11-02, req_x1VUR0DNdpkjfp), so the message is the only
+ * discriminator: "This PaymentMethod was previously used without being
+ * attached to a Customer or was detached from a Customer, and may not be used
+ * again."
+ */
+function isPaymentMethodUnusable(err: unknown): boolean {
+  const e = err as { type?: unknown; rawType?: unknown; statusCode?: unknown; message?: unknown } | null;
+  const invalidRequest = e?.type === "StripeInvalidRequestError" || e?.rawType === "invalid_request_error";
+  return (
+    invalidRequest &&
+    e?.statusCode === 400 &&
+    typeof e?.message === "string" &&
+    /may not be used again|detached from a Customer/i.test(e.message)
+  );
 }
