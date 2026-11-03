@@ -43,6 +43,7 @@ import { acquiringFeesByMonth } from "../lib/acquiring-fees";
 import {
   chargeViaRevolut,
   chargeViaStripeInvoice,
+  ChargeSuperseded,
   resolveStripeChargeablePaymentMethod,
   chargeResultFromInvoice,
   CardDeclined,
@@ -941,6 +942,10 @@ router.post(
       });
       return res.json(chargeResultFromInvoice(orgId, paid, amount, currency));
     } catch (err) {
+      if (err instanceof ChargeSuperseded) {
+        res.locals.stripeObjectId = err.invoiceId;
+        return res.status(409).json({ error: messageOf(err), code: "charge_superseded" });
+      }
       if (err instanceof NoChargeablePaymentMethod) {
         return res.status(409).json({ error: messageOf(err) });
       }
@@ -1510,6 +1515,10 @@ router.post(
 
       return res.json(paid);
     } catch (err) {
+      if (err instanceof ChargeSuperseded) {
+        res.locals.stripeObjectId = err.invoiceId;
+        return res.status(409).json({ error: messageOf(err), code: "charge_superseded" });
+      }
       if (err instanceof NoChargeablePaymentMethod) {
         return res.status(409).json({ error: messageOf(err) });
       }
