@@ -1,6 +1,7 @@
+import type Stripe from "stripe";
 import { db } from "../db";
-import { eventSyncCursor } from "../db/schema";
-import { eq, sql } from "drizzle-orm";
+import { eventSyncCursor, events } from "../db/schema";
+import { and, asc, eq, gte, isNull, notLike, sql } from "drizzle-orm";
 import { resolvePlatformKey } from "./key-client";
 import { makeStripeClient } from "./stripe-client";
 import { processEvent } from "./event-processor";
@@ -38,40 +39,105 @@ type StripeClient = ReturnType<typeof makeStripeClient>;
 type StripeEventList = Awaited<ReturnType<StripeClient["events"]["list"]>>;
 
 /**
- * List events from the stored cursor, self-healing when the cursor event has
- * aged out of Stripe's retention window.
+ * Walk Stripe's events FORWARD from the stored cursor, every page up to now.
  *
- * Stripe retains events ~30 days. If the service is idle (or the poller is
- * wedged) longer than that, the stored `last_event_id` no longer resolves and
- * `events.list({ starting_after })` 400s with `code: resource_missing`,
- * `param: starting_after`. That cursor is unrecoverable — the event is gone —
- * and re-using it deadlocks the poller forever (only a successful poll advances
- * the cursor). On that specific error we drop the cursor and re-list the newest
- * page; the gap between the aged-out cursor and now is unrecoverable via
- * events.list regardless (retention limit) and is covered by historical-backfill
- * via the object-list APIs. processEvent is idempotent, so re-listing is safe.
+ * Stripe lists events newest-first, so `starting_after` pages to OLDER events
+ * and `ending_before` to NEWER ones. The poller used `starting_after` and so
+ * re-read history behind its cursor instead of what happened after it (probed
+ * live 2026-11-03, STALE-CARD-AFTER-REMOVAL-1103): events only Stripe's poll
+ * delivers to us (payment_method.*, setup_intent.*, invoice.*) arrived days
+ * late or never. Each `ending_before` page holds the events just newer than
+ * the cursor; the next page starts after its newest.
+ *
+ * Stripe retains events ~30 days. A cursor that aged out cannot be resolved
+ * (`resource_missing` on `ending_before`) and re-using it would wedge the poller
+ * forever, so on that specific error the walk restarts from the newest page;
+ * the gap is covered by the boot back-fill through the object-list APIs.
  */
-async function listEventsResilient(
+async function listPage(
   stripe: StripeClient,
-  startingAfter: string | undefined
-): Promise<StripeEventList> {
+  endingBefore: string | undefined
+): Promise<{ page: StripeEventList; cursorReset: boolean }> {
   try {
-    return await stripe.events.list({ limit: 100, starting_after: startingAfter });
+    return {
+      page: await stripe.events.list({ limit: 100, ending_before: endingBefore }),
+      cursorReset: false,
+    };
   } catch (err) {
     if (
-      startingAfter !== undefined &&
+      endingBefore !== undefined &&
       typeof err === "object" &&
       err !== null &&
       (err as { code?: string }).code === "resource_missing" &&
-      (err as { param?: string }).param === "starting_after"
+      (err as { param?: string }).param === "ending_before"
     ) {
       console.warn(
-        `[stripe-service] Event poll cursor '${startingAfter}' aged out of Stripe retention; resetting to newest events.`
+        `[stripe-service] Event poll cursor '${endingBefore}' aged out of Stripe retention; resetting to newest events.`
       );
-      return await stripe.events.list({ limit: 100 });
+      return { page: await stripe.events.list({ limit: 100 }), cursorReset: true };
     }
     throw err;
   }
+}
+
+/** Upper bound on pages per poll, so a long outage drains over several ticks. */
+const MAX_PAGES_PER_POLL = 50;
+
+async function saveCursor(newestId: string): Promise<void> {
+  await db
+    .insert(eventSyncCursor)
+    .values({ id: 1, lastEventId: newestId, lastSyncedAt: new Date() })
+    .onConflictDoUpdate({
+      target: eventSyncCursor.id,
+      set: {
+        lastEventId: sql`EXCLUDED.last_event_id`,
+        lastSyncedAt: sql`now()`,
+      },
+    });
+}
+
+/**
+ * Process ONE event, never letting it stop the others. A throwing event stays
+ * stored with its side-effects incomplete, so it is re-run by
+ * `retryIncompleteEvents` on every later poll and by any redelivery; it is
+ * logged loud each time. Before this, one event whose side-effect kept
+ * throwing (a default-card promotion naming a detached card) aborted the whole
+ * batch, so the cursor never moved again (prod 2026-10-29 → 2026-11-03).
+ */
+async function processIsolated(evt: Stripe.Event): Promise<{ wasNew: boolean; failed: boolean }> {
+  try {
+    return { wasNew: await processEvent(evt, "poll"), failed: false };
+  } catch (err) {
+    console.error(
+      `[stripe-service] Event poll: ${evt.id} (${evt.type}) failed; left for retry, poll continues:`,
+      err
+    );
+    return { wasNew: false, failed: true };
+  }
+}
+
+/** Stored events whose side-effects threw, re-run oldest first, bounded. */
+const RETRY_BATCH = 20;
+
+export async function retryIncompleteEvents(): Promise<number> {
+  const rows = await db
+    .select({ payload: events.payload })
+    .from(events)
+    .where(
+      and(
+        isNull(events.sideEffectsCompletedAt),
+        notLike(events.type, "api_snapshot.%"),
+        gte(events.receivedAt, sql`now() - interval '30 days'`)
+      )
+    )
+    .orderBy(asc(events.receivedAt))
+    .limit(RETRY_BATCH);
+  let completed = 0;
+  for (const row of rows) {
+    const { wasNew } = await processIsolated(row.payload as unknown as Stripe.Event);
+    if (wasNew) completed += 1;
+  }
+  return completed;
 }
 
 export async function pollOnce(): Promise<number> {
@@ -87,37 +153,36 @@ export async function pollOnce(): Promise<number> {
       .from(eventSyncCursor)
       .where(eq(eventSyncCursor.id, 1))
       .limit(1);
-    const startingAfter = cursor[0]?.lastEventId ?? undefined;
+    let endingBefore = cursor[0]?.lastEventId ?? undefined;
 
-    const events = await listEventsResilient(stripe, startingAfter);
-
-    if (events.data.length === 0) {
-      return 0;
-    }
-
+    let fetched = 0;
     let processed = 0;
-    // Stripe returns events newest-first. Process oldest-first to preserve causal order.
-    for (const evt of [...events.data].reverse()) {
-      const wasNew = await processEvent(evt, "poll");
-      if (wasNew) processed += 1;
+    let failed = 0;
+    for (let pageNo = 0; pageNo < MAX_PAGES_PER_POLL; pageNo += 1) {
+      const { page, cursorReset } = await listPage(stripe, endingBefore);
+      if (page.data.length === 0) break;
+      fetched += page.data.length;
+
+      // Newest-first within the page. Process oldest-first to preserve causal order.
+      for (const evt of [...page.data].reverse()) {
+        const r = await processIsolated(evt);
+        if (r.wasNew) processed += 1;
+        if (r.failed) failed += 1;
+      }
+
+      endingBefore = page.data[0].id;
+      await saveCursor(endingBefore);
+      // No cursor (first run) or a reset: the newest page is all there is to see.
+      if (cursor.length === 0 || cursorReset || !page.has_more) break;
     }
 
-    // Cursor must be the newest event we've seen (events.data[0]).
-    const newestId = events.data[0].id;
-    await db
-      .insert(eventSyncCursor)
-      .values({ id: 1, lastEventId: newestId, lastSyncedAt: new Date() })
-      .onConflictDoUpdate({
-        target: eventSyncCursor.id,
-        set: {
-          lastEventId: sql`EXCLUDED.last_event_id`,
-          lastSyncedAt: sql`now()`,
-        },
-      });
+    const retried = await retryIncompleteEvents();
 
-    console.log(
-      `[stripe-service] Event poll: fetched=${events.data.length}, newly_processed=${processed}, cursor=${newestId}`
-    );
+    if (fetched > 0 || failed > 0 || retried > 0) {
+      console.log(
+        `[stripe-service] Event poll: fetched=${fetched}, newly_processed=${processed}, failed=${failed}, retried_completed=${retried}, cursor=${endingBefore}`
+      );
+    }
     return processed;
   } catch (err) {
     console.error("[stripe-service] Event poller failed:", err);
