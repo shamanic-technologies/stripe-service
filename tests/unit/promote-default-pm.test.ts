@@ -567,3 +567,56 @@ describe("promoteDefaultPaymentMethod — deleted customer", () => {
     expect(stripe.customers.update).not.toHaveBeenCalled();
   });
 });
+
+describe("promoteDefaultPaymentMethod — a card the customer removed", () => {
+  const detachedEvent = {
+    ...baseEvent,
+    id: "evt_1UVE18EnlXMXdaZayPPbM4Su",
+    type: "setup_intent.succeeded",
+    data: {
+      object: {
+        id: "seti_1",
+        object: "setup_intent",
+        customer: "cus_target",
+        payment_method: "pm_detached",
+      },
+    },
+  };
+
+  function stripeWithDetachedPm(attachError: unknown) {
+    const stripe = makeStripe();
+    stripe.customers.retrieve.mockResolvedValue({
+      id: "cus_target",
+      object: "customer",
+      deleted: false,
+      invoice_settings: { default_payment_method: null },
+      metadata: { org_id: TEST_ORG_ID },
+    });
+    // A detached method reads `customer: null`, exactly like a never-saved one.
+    stripe.paymentMethods.retrieve.mockResolvedValue({ id: "pm_detached", customer: null });
+    stripe.paymentMethods.attach.mockRejectedValue(attachError);
+    return stripe;
+  }
+
+  it("skips the promotion instead of throwing, so the event completes (prod 2026-11-02 error, verbatim)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const stripe = stripeWithDetachedPm(
+      Object.assign(
+        new Error(
+          "This PaymentMethod was previously used without being attached to a Customer or was detached from a Customer, and may not be used again."
+        ),
+        { type: "StripeInvalidRequestError", rawType: "invalid_request_error", statusCode: 400, code: undefined }
+      )
+    );
+
+    await expect(promoteDefaultPaymentMethod(detachedEvent as never, stripe as never)).resolves.toBeUndefined();
+    expect(stripe.customers.update).not.toHaveBeenCalled();
+  });
+
+  it("still fails loud when Stripe could not be asked", async () => {
+    const boom = Object.assign(new Error("connection reset"), { type: "StripeConnectionError" });
+    const stripe = stripeWithDetachedPm(boom);
+
+    await expect(promoteDefaultPaymentMethod(detachedEvent as never, stripe as never)).rejects.toBe(boom);
+  });
+});

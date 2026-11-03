@@ -802,7 +802,7 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
     expect(event.payload.data.object.description).toBe("Auto top-up");
   });
 
-  it("forwards an explicit payment_method to the invoice default + the pay call", async () => {
+  it("forwards an explicit payment_method to the pay call, never onto the draft", async () => {
     dbMock.queueSelect("customers", [{ id: "cus_x" }]);
     queueHappyStripe();
 
@@ -812,13 +812,13 @@ describe("POST /internal/invoices/by-org/:orgId (off-session invoiced charge)", 
       .send({ amount: 5000, currency: "usd", description: "Top-up", payment_method: "pm_card_1" });
 
     expect(stripeMock.invoices.create).toHaveBeenCalledWith(
-      expect.objectContaining({ default_payment_method: "pm_card_1" }),
+      expect.not.objectContaining({ default_payment_method: expect.anything() }),
       expect.anything()
     );
     expect(stripeMock.invoices.pay).toHaveBeenCalledWith(
       "in_1",
       { off_session: true, expand: ["payments"], payment_method: "pm_card_1" },
-      expect.anything()
+      { idempotencyKey: "topup_pm:pay:pm_card_1" }
     );
   });
 
@@ -1234,7 +1234,7 @@ describe("POST /internal/charges/by-org/:orgId (vendor-neutral charge)", () => {
     expect(stripeMock.invoices.pay).toHaveBeenCalledWith(
       "in_9",
       { off_session: true, expand: ["payments"], payment_method: "pm_card_1" },
-      expect.objectContaining({ idempotencyKey: "topup_n2:pay" })
+      expect.objectContaining({ idempotencyKey: "topup_n2:pay:pm_card_1" })
     );
     expect(stripeMock.paymentIntents.update).toHaveBeenCalledWith(
       "pi_9",
@@ -1337,15 +1337,16 @@ describe("POST /internal/charges/by-org/:orgId (vendor-neutral charge)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("succeeded");
-    // Named explicitly on BOTH the draft and the pay call — never left to the
-    // customer's Stripe default, which is routinely absent or a wallet method
-    // Stripe refuses off-session.
+    // Named explicitly on the pay call — never left to the customer's Stripe
+    // default, which is routinely absent or a wallet method Stripe refuses
+    // off-session — and never on the draft, whose idempotency record must
+    // survive a card change.
     expect(stripeMock.paymentMethods.list).toHaveBeenCalledWith({
       customer: "cus_x",
       type: "card",
     });
     expect(stripeMock.invoices.create).toHaveBeenCalledWith(
-      expect.objectContaining({ default_payment_method: "pm_card_1" }),
+      expect.not.objectContaining({ default_payment_method: expect.anything() }),
       expect.anything()
     );
     expect(stripeMock.invoices.pay).toHaveBeenCalledWith(

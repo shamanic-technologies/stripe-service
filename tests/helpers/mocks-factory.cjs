@@ -128,7 +128,10 @@ function makeStripeMock(vi) {
       create: vi.fn(),
       finalizeInvoice: vi.fn(),
       pay: vi.fn(),
-      retrieve: vi.fn(),
+      // The charge reads the invoice's current state before paying it; an
+      // unpaid one by default, so the pay step runs.
+      retrieve: vi.fn(async (id) => ({ id, status: "open" })),
+      list: vi.fn(),
     },
     invoiceItems: { create: vi.fn() },
     paymentMethods: { list: vi.fn() },

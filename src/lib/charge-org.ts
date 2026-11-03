@@ -484,7 +484,17 @@ export async function chargeViaStripeInvoice(params: {
   //    `pending_invoice_items_behavior: "exclude"` so ONLY the item we
   //    explicitly attach below lands on this invoice — never a stray pending
   //    item the customer may have from another flow.
-  const draft = await stripe.invoices.create(
+  //
+  //    The INVOICE belongs to the logical charge (the caller's key); the
+  //    payment METHOD belongs to one attempt at paying it. So the method is
+  //    never a parameter of this create: a retry after the customer replaced
+  //    their card must replay this create from its idempotency record, not
+  //    collide with it (prod 2026-11-03, STALE-CARD-AFTER-REMOVAL-1103: a
+  //    declined settle on the old card wedged every retry on the new one with
+  //    `Keys for idempotent requests can only be used with the same
+  //    parameters`). The method is named on the PAY call, step 4.
+  const draft = await createOrRecoverChargeInvoice(
+    stripe,
     {
       customer,
       collection_method: "charge_automatically",
@@ -493,9 +503,8 @@ export async function chargeViaStripeInvoice(params: {
       description,
       pending_invoice_items_behavior: "exclude",
       metadata: invoiceMetadata,
-      ...(payment_method ? { default_payment_method: payment_method } : {}),
     },
-    { idempotencyKey: `${idempotencyKey}:invoice` }
+    idempotencyKey
   );
 
   const invoiceId = draft.id;
@@ -528,8 +537,17 @@ export async function chargeViaStripeInvoice(params: {
   //    own infrastructure (prod, 2026-09-17, `generic_decline` on a Link
   //    method). The invoice id rides along so the caller still has an object to
   //    quote back about the attempt.
+  //    An earlier attempt under the same key may already have PAID this
+  //    invoice (and the customer may have changed card since): read its state
+  //    first, so a retry returns that payment instead of paying twice.
+  //    Otherwise the pay key carries the method, so a retry with a NEW card is
+  //    a new attempt at the same invoice, and a retry with the same card
+  //    replays the old attempt from Stripe's record.
+  const current = await stripe.invoices.retrieve(invoiceId, { expand: ["payments"] });
   let paid: Stripe.Invoice;
-  try {
+  if (current.status === "paid") {
+    paid = current;
+  } else try {
     paid = await stripe.invoices.pay(
       invoiceId,
       {
@@ -537,7 +555,11 @@ export async function chargeViaStripeInvoice(params: {
         expand: ["payments"],
         ...(payment_method ? { payment_method } : {}),
       },
-      { idempotencyKey: `${idempotencyKey}:pay` }
+      {
+        idempotencyKey: payment_method
+          ? `${idempotencyKey}:pay:${payment_method}`
+          : `${idempotencyKey}:pay`,
+      }
     );
   } catch (err) {
     const declined = cardDeclineFrom(err, invoiceId);
@@ -588,6 +610,72 @@ export async function chargeViaStripeInvoice(params: {
   await recordApiSnapshot(pi, "payment_intent", orgId);
 
   return paid;
+}
+
+type ChargeInvoiceCreateParams = Stripe.InvoiceCreateParams & {
+  metadata: Record<string, string>;
+  description: string;
+  currency: string;
+  customer: string;
+};
+
+/** Stripe refused to replay a key because this request's parameters differ. */
+function isIdempotencyMismatch(err: unknown): boolean {
+  const e = err as { type?: unknown; rawType?: unknown } | null;
+  return e?.type === "StripeIdempotencyError" || e?.rawType === "idempotency_error";
+}
+
+function sameMetadata(a: Record<string, string> | null | undefined, b: Record<string, string>): boolean {
+  const ka = Object.keys(a ?? {}).sort();
+  const kb = Object.keys(b).sort();
+  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && (a ?? {})[k] === b[k]);
+}
+
+/**
+ * Create the charge's invoice, or find the one an earlier attempt under the
+ * SAME caller key already created.
+ *
+ * Recovery exists for one case only: an attempt made before the method was
+ * moved off the create (it rode on `default_payment_method`) left an
+ * idempotency record whose parameters a retry can no longer reproduce once the
+ * customer changed card. Stripe then refuses the replay, and the invoice it
+ * created is found by what the attempt stamped on it: the same caller
+ * metadata + org, description and currency, on this customer, in the last 24h
+ * (Stripe's own idempotency window), not voided. Exactly one match or the
+ * original refusal propagates: a guess between two invoices could charge the
+ * wrong one.
+ */
+async function createOrRecoverChargeInvoice(
+  stripe: Stripe,
+  params: ChargeInvoiceCreateParams,
+  idempotencyKey: string
+): Promise<Stripe.Invoice> {
+  try {
+    return await stripe.invoices.create(params, { idempotencyKey: `${idempotencyKey}:invoice` });
+  } catch (err) {
+    if (!isIdempotencyMismatch(err)) throw err;
+    const since = Math.floor(Date.now() / 1000) - 24 * 60 * 60;
+    const matches: Stripe.Invoice[] = [];
+    for await (const inv of stripe.invoices.list({
+      customer: params.customer,
+      created: { gte: since },
+      limit: 100,
+    })) {
+      if (
+        inv.status !== "void" &&
+        inv.description === params.description &&
+        inv.currency === params.currency.toLowerCase() &&
+        sameMetadata(inv.metadata, params.metadata)
+      ) {
+        matches.push(inv);
+      }
+    }
+    if (matches.length !== 1) throw err;
+    console.warn(
+      `[stripe-service] Charge ${idempotencyKey}: resumed invoice ${matches[0].id} created by an earlier attempt whose parameters differ (card changed)`
+    );
+    return matches[0];
+  }
 }
 
 /**

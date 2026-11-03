@@ -345,6 +345,7 @@ describe("classifying an acquirer's refusal", () => {
       create: vi.fn().mockResolvedValue({ id: "in_1", status: "draft" }),
       finalizeInvoice: vi.fn().mockResolvedValue({ id: "in_1", status: "open" }),
       pay: vi.fn().mockRejectedValue(err),
+      retrieve: vi.fn().mockResolvedValue({ id: "in_1", status: "open" }),
     },
     invoiceItems: { create: vi.fn().mockResolvedValue({ id: "ii_1" }) },
     paymentIntents: { update: vi.fn() },
@@ -445,5 +446,136 @@ describe("classifying an acquirer's refusal", () => {
         message: "Your card has insufficient funds.",
       },
     });
+  });
+});
+
+describe("chargeViaStripeInvoice — retrying one charge after the customer changed card", () => {
+  // Prod 2026-11-03 (org 8c043fa7, STALE-CARD-AFTER-REMOVAL-1103): a settle of
+  // 5868 cents was refused on the old card; the customer saved a new one and
+  // every retry under the same key 502'd on Stripe's idempotency check.
+  const ARGS = {
+    orgId: "org-1",
+    customerId: "cus_1",
+    amount: 5868,
+    currency: "usd",
+    description: "Distribute credit top-up",
+    metadata: { reason: "card_change_settlement" },
+    idempotencyKey: "62431690d62f6ee81dbe43d06fd5489e",
+  };
+
+  function makeStripe() {
+    return {
+      invoices: {
+        create: vi.fn().mockResolvedValue({ id: "in_1", status: "draft" }),
+        finalizeInvoice: vi.fn().mockResolvedValue({ id: "in_1", status: "open" }),
+        retrieve: vi.fn().mockResolvedValue({ id: "in_1", status: "open" }),
+        pay: vi.fn(),
+        list: vi.fn(),
+      },
+      invoiceItems: { create: vi.fn().mockResolvedValue({ id: "ii_1" }) },
+      paymentIntents: { update: vi.fn().mockResolvedValue({ id: "pi_1", object: "payment_intent" }) },
+    };
+  }
+  const PAID = {
+    id: "in_1",
+    status: "paid",
+    payments: { data: [{ payment: { type: "payment_intent", payment_intent: "pi_1" } }] },
+  };
+  const declined = {
+    type: "StripeCardError",
+    rawType: "card_error",
+    decline_code: "generic_decline",
+    message: "The payment failed.",
+  };
+
+  it("replays the same invoice and pays it with the NEW card", async () => {
+    const stripe = makeStripe();
+    stripe.invoices.pay.mockRejectedValueOnce(declined).mockResolvedValueOnce(PAID);
+
+    await expect(
+      chargeViaStripeInvoice({ ...ARGS, payment_method: "pm_old", stripe: stripe as never })
+    ).rejects.toBeInstanceOf(CardDeclined);
+    const paid = await chargeViaStripeInvoice({ ...ARGS, payment_method: "pm_new", stripe: stripe as never });
+
+    expect(paid.status).toBe("paid");
+    // The draft's parameters do not depend on the card, so Stripe replays it.
+    const [first, second] = stripe.invoices.create.mock.calls;
+    expect(second).toEqual(first);
+    expect(first[0]).not.toHaveProperty("default_payment_method");
+    // Each card is its own attempt at paying the same invoice.
+    expect(stripe.invoices.pay.mock.calls[0][2]).toEqual({ idempotencyKey: `${ARGS.idempotencyKey}:pay:pm_old` });
+    expect(stripe.invoices.pay.mock.calls[1]).toEqual([
+      "in_1",
+      { off_session: true, expand: ["payments"], payment_method: "pm_new" },
+      { idempotencyKey: `${ARGS.idempotencyKey}:pay:pm_new` },
+    ]);
+  });
+
+  it("never pays twice: an invoice an earlier attempt already paid is returned as is", async () => {
+    const stripe = makeStripe();
+    stripe.invoices.retrieve.mockResolvedValue(PAID);
+
+    const paid = await chargeViaStripeInvoice({ ...ARGS, payment_method: "pm_new", stripe: stripe as never });
+
+    expect(paid).toBe(PAID);
+    expect(stripe.invoices.pay).not.toHaveBeenCalled();
+  });
+
+  it("resumes the invoice of an attempt whose draft carried the OLD card (the live wedge)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const stripe = makeStripe();
+    stripe.invoices.create.mockRejectedValue({
+      type: "StripeIdempotencyError",
+      rawType: "idempotency_error",
+      message: "Keys for idempotent requests can only be used with the same parameters they were first used with.",
+    });
+    const sameCharge = {
+      id: "in_1UXjoxEnlXMXdaZaTmDsjmBV",
+      status: "open",
+      currency: "usd",
+      description: "Distribute credit top-up",
+      metadata: { org_id: "org-1", reason: "card_change_settlement" },
+    };
+    const otherCharge = { ...sameCharge, id: "in_other", metadata: { org_id: "org-1" } };
+    stripe.invoices.list.mockReturnValue(
+      (async function* () {
+        yield otherCharge;
+        yield sameCharge;
+      })()
+    );
+    stripe.invoices.retrieve.mockResolvedValue({ id: sameCharge.id, status: "open" });
+    stripe.invoices.pay.mockResolvedValue({ ...PAID, id: sameCharge.id });
+
+    const paid = await chargeViaStripeInvoice({ ...ARGS, payment_method: "pm_new", stripe: stripe as never });
+
+    expect(paid.id).toBe(sameCharge.id);
+    expect(stripe.invoices.pay).toHaveBeenCalledWith(
+      sameCharge.id,
+      { off_session: true, expand: ["payments"], payment_method: "pm_new" },
+      { idempotencyKey: `${ARGS.idempotencyKey}:pay:pm_new` }
+    );
+  });
+
+  it("refuses to guess between two invoices that could be this charge", async () => {
+    const refusal = { type: "StripeIdempotencyError", rawType: "idempotency_error", message: "mismatch" };
+    const stripe = makeStripe();
+    stripe.invoices.create.mockRejectedValue(refusal);
+    const twin = {
+      status: "open",
+      currency: "usd",
+      description: "Distribute credit top-up",
+      metadata: { org_id: "org-1", reason: "card_change_settlement" },
+    };
+    stripe.invoices.list.mockReturnValue(
+      (async function* () {
+        yield { ...twin, id: "in_a" };
+        yield { ...twin, id: "in_b" };
+      })()
+    );
+
+    await expect(
+      chargeViaStripeInvoice({ ...ARGS, payment_method: "pm_new", stripe: stripe as never })
+    ).rejects.toBe(refusal);
+    expect(stripe.invoices.pay).not.toHaveBeenCalled();
   });
 });
