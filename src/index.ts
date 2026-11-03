@@ -28,7 +28,8 @@ import { startApiCallLogRetention } from "./lib/api-call-log-retention";
 import { startEventPoller } from "./lib/event-poller";
 import { backfillHistorical } from "./lib/historical-backfill";
 import { markPastRunsPaymentFeesSupport } from "./lib/runs-client";
-import { repairAllSilverFromBronze } from "./lib/event-processor";
+import { getPlatformStripe, repairAllSilverFromBronze } from "./lib/event-processor";
+import { voidSupersededChargeInvoicesFleet } from "./lib/superseded-invoices";
 import { deployEmailTemplates } from "./lib/transactional-email-client";
 import {
   startRevolutPoller,
@@ -151,6 +152,14 @@ if (process.env.NODE_ENV !== "test") {
           .then((out) => console.log("[stripe-service] Payment-fees support marks:", out))
           .catch((err) => {
             console.error("[stripe-service] Payment-fees support marks failed:", err);
+          });
+        // A refused charge attempt superseded by a later payment must not stay
+        // payable (STALE-CARD-AFTER-REMOVAL-1103). Idempotent, open invoices only.
+        getPlatformStripe()
+          .then((stripe) => voidSupersededChargeInvoicesFleet(stripe))
+          .then((voided) => console.log(`[stripe-service] Superseded charge invoices voided at boot: ${voided.length}`))
+          .catch((err) => {
+            console.error("[stripe-service] Voiding superseded charge invoices failed:", err);
           });
         startRevolutPoller();
         startCardHoldSweeper();
