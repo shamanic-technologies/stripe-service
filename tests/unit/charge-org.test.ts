@@ -27,6 +27,7 @@ vi.mock("../../src/lib/revolut-processor", () => ({
 import {
   chargeViaRevolut,
   chargeViaStripeInvoice,
+  ChargeSuperseded,
   chargeResultFromInvoice,
   chargeResultFromDecline,
   cardDeclineFrom,
@@ -346,6 +347,8 @@ describe("classifying an acquirer's refusal", () => {
       finalizeInvoice: vi.fn().mockResolvedValue({ id: "in_1", status: "open" }),
       pay: vi.fn().mockRejectedValue(err),
       retrieve: vi.fn().mockResolvedValue({ id: "in_1", status: "open" }),
+      list: vi.fn(() => (async function* () {})()),
+      voidInvoice: vi.fn(),
     },
     invoiceItems: { create: vi.fn().mockResolvedValue({ id: "ii_1" }) },
     paymentIntents: { update: vi.fn() },
@@ -470,7 +473,8 @@ describe("chargeViaStripeInvoice — retrying one charge after the customer chan
         finalizeInvoice: vi.fn().mockResolvedValue({ id: "in_1", status: "open" }),
         retrieve: vi.fn().mockResolvedValue({ id: "in_1", status: "open" }),
         pay: vi.fn(),
-        list: vi.fn(),
+        list: vi.fn(() => (async function* () {})()),
+        voidInvoice: vi.fn(),
       },
       invoiceItems: { create: vi.fn().mockResolvedValue({ id: "ii_1" }) },
       paymentIntents: { update: vi.fn().mockResolvedValue({ id: "pi_1", object: "payment_intent" }) },
@@ -537,12 +541,14 @@ describe("chargeViaStripeInvoice — retrying one charge after the customer chan
       metadata: { org_id: "org-1", reason: "card_change_settlement" },
     };
     const otherCharge = { ...sameCharge, id: "in_other", metadata: { org_id: "org-1" } };
-    stripe.invoices.list.mockReturnValue(
-      (async function* () {
-        yield otherCharge;
-        yield sameCharge;
-      })()
-    );
+    stripe.invoices.list
+      .mockReturnValueOnce(
+        (async function* () {
+          yield otherCharge;
+          yield sameCharge;
+        })()
+      )
+      .mockImplementation(() => (async function* () {})());
     stripe.invoices.retrieve.mockResolvedValue({ id: sameCharge.id, status: "open" });
     stripe.invoices.pay.mockResolvedValue({ ...PAID, id: sameCharge.id });
 
@@ -576,6 +582,80 @@ describe("chargeViaStripeInvoice — retrying one charge after the customer chan
     await expect(
       chargeViaStripeInvoice({ ...ARGS, payment_method: "pm_new", stripe: stripe as never })
     ).rejects.toBe(refusal);
+    expect(stripe.invoices.pay).not.toHaveBeenCalled();
+  });
+});
+
+describe("chargeViaStripeInvoice — a refused attempt never stays payable once superseded", () => {
+  // Prod 2026-11-03: four open invoices ($50.02 → $58.68) on one customer, each
+  // a payable link for the same debt.
+  const ARGS = {
+    orgId: "org-1",
+    customerId: "cus_1",
+    amount: 5868,
+    currency: "usd",
+    description: "Distribute credit top-up",
+    idempotencyKey: "k_new",
+    payment_method: "pm_new",
+  };
+  const PAID = {
+    id: "in_new",
+    status: "paid",
+    payments: { data: [{ payment: { type: "payment_intent", payment_intent: "pi_1" } }] },
+  };
+  const refused = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    status: "open",
+    attempted: true,
+    collection_method: "charge_automatically",
+    metadata: { org_id: "org-1" },
+    ...extra,
+  });
+  function makeStripe(openInvoices: unknown[]) {
+    return {
+      invoices: {
+        create: vi.fn().mockResolvedValue({ id: "in_new", status: "draft" }),
+        finalizeInvoice: vi.fn().mockResolvedValue({ id: "in_new", status: "open" }),
+        retrieve: vi.fn().mockResolvedValue({ id: "in_new", status: "open" }),
+        pay: vi.fn().mockResolvedValue(PAID),
+        list: vi.fn(() =>
+          (async function* () {
+            for (const i of openInvoices) yield i;
+          })()
+        ),
+        voidInvoice: vi.fn(),
+      },
+      invoiceItems: { create: vi.fn().mockResolvedValue({ id: "ii_1" }) },
+      paymentIntents: { update: vi.fn().mockResolvedValue({ id: "pi_1", object: "payment_intent" }) },
+    };
+  }
+
+  it("voids the earlier refused attempts BEFORE paying the new one", async () => {
+    const stripe = makeStripe([
+      refused("in_old_1"),
+      refused("in_old_2"),
+      { ...refused("in_new") }, // itself: never voided
+      refused("in_inflight", { attempted: false }), // nobody tried it yet: may be in flight
+      refused("in_sub", { parent: { subscription_details: { subscription: "sub_1" } } }),
+      refused("in_other_tool", { metadata: {} }), // not one of our charges
+    ]);
+
+    await chargeViaStripeInvoice({ ...ARGS, stripe: stripe as never });
+
+    const voided = stripe.invoices.voidInvoice.mock.calls.map((c) => c[0]);
+    expect(new Set(voided)).toEqual(new Set(["in_old_1", "in_old_2"]));
+    expect(stripe.invoices.voidInvoice.mock.invocationCallOrder[0]).toBeLessThan(
+      stripe.invoices.pay.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("answers a voided (superseded) invoice as ChargeSuperseded and charges nothing", async () => {
+    const stripe = makeStripe([]);
+    stripe.invoices.retrieve.mockResolvedValue({ id: "in_new", status: "void" });
+
+    await expect(chargeViaStripeInvoice({ ...ARGS, stripe: stripe as never })).rejects.toBeInstanceOf(
+      ChargeSuperseded
+    );
     expect(stripe.invoices.pay).not.toHaveBeenCalled();
   });
 });

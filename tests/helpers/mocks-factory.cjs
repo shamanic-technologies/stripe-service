@@ -131,7 +131,10 @@ function makeStripeMock(vi) {
       // The charge reads the invoice's current state before paying it; an
       // unpaid one by default, so the pay step runs.
       retrieve: vi.fn(async (id) => ({ id, status: "open" })),
-      list: vi.fn(),
+      // The charge sweeps the customer's open invoices for superseded refused
+      // attempts; none by default.
+      list: vi.fn(() => (async function* () {})()),
+      voidInvoice: vi.fn(async (id) => ({ id, status: "void" })),
     },
     invoiceItems: { create: vi.fn() },
     paymentMethods: { list: vi.fn() },

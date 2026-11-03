@@ -1,4 +1,5 @@
 import type Stripe from "stripe";
+import { voidRefusedChargeAttempts } from "./superseded-invoices";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { revolutOrders } from "../db/schema";
@@ -544,6 +545,13 @@ export async function chargeViaStripeInvoice(params: {
   //    a new attempt at the same invoice, and a retry with the same card
   //    replays the old attempt from Stripe's record.
   const current = await stripe.invoices.retrieve(invoiceId, { expand: ["payments"] });
+  // Voided because a newer attempt superseded it: paying it is impossible, and
+  // the debt now lives on the newer attempt. Said as such, never as an outage.
+  if (current.status === "void") throw new ChargeSuperseded(invoiceId);
+  //    Before paying, void every earlier REFUSED attempt of this customer: this
+  //    attempt now stands for the debt, so an old payable link must not let the
+  //    customer pay it twice (`superseded-invoices.ts`).
+  if (current.status !== "paid") await voidRefusedChargeAttempts(stripe, customer, invoiceId);
   let paid: Stripe.Invoice;
   if (current.status === "paid") {
     paid = current;
@@ -567,6 +575,8 @@ export async function chargeViaStripeInvoice(params: {
     throw err;
   }
   params.onPaid?.(paid);
+  // A refused attempt opened while this one was being paid is superseded too.
+  await voidRefusedChargeAttempts(stripe, customer, invoiceId);
 
   // 5. Carry the caller's provenance onto the PaymentIntent, then mirror it.
   //
@@ -675,6 +685,18 @@ async function createOrRecoverChargeInvoice(
       `[stripe-service] Charge ${idempotencyKey}: resumed invoice ${matches[0].id} created by an earlier attempt whose parameters differ (card changed)`
     );
     return matches[0];
+  }
+}
+
+/**
+ * The invoice this key opened was VOIDED because a newer charge attempt for the
+ * same customer superseded it. Nothing was charged; the caller retries with a
+ * fresh key (409 `charge_superseded`).
+ */
+export class ChargeSuperseded extends Error {
+  constructor(readonly invoiceId: string) {
+    super(`Invoice ${invoiceId} was voided: a newer charge attempt superseded it. Retry with a new Idempotency-Key.`);
+    this.name = "ChargeSuperseded";
   }
 }
 
