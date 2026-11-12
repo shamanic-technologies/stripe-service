@@ -21,6 +21,7 @@ import {
   pinAcquirer,
   unpinAcquirer,
   DEFAULT_ACQUIRER,
+  type AcquirerPin,
 } from "../lib/acquirer";
 import { hasChargeablePaymentMethod } from "../lib/chargeable-method";
 import {
@@ -81,23 +82,45 @@ import {
 
 const router = Router();
 
-/** The org's mirrored customer row (latest), or null when it has none / no raw object. */
-async function readOrgCustomer(orgId: string): Promise<{ id: string; rawJson: unknown } | null> {
+/** The org's latest mirrored customer row (the 1:1 mapping every org-keyed read uses), or null. */
+type OrgCustomerRow = { id: string; rawJson: unknown; livemode: string | null } | null;
+async function selectOrgCustomerRow(orgId: string): Promise<OrgCustomerRow> {
   const row = await db
-    .select()
+    .select({ id: customers.id, rawJson: customers.rawJson, livemode: customers.livemode })
     .from(customers)
     .where(eq(customers.orgId, orgId))
     .orderBy(desc(customers.syncedAt))
     .limit(1);
-  if (row.length === 0 || !row[0].rawJson) return null;
-  return { id: row[0].id, rawJson: row[0].rawJson };
+  return row[0] ?? null;
+}
+
+/** The org's mirrored customer row (latest), or null when it has none / no raw object. */
+async function readOrgCustomer(
+  orgId: string,
+  rowP: Promise<OrgCustomerRow> = selectOrgCustomerRow(orgId)
+): Promise<{ id: string; rawJson: unknown } | null> {
+  const row = await rowP;
+  if (!row || !row.rawJson) return null;
+  return { id: row.id, rawJson: row.rawJson };
 }
 
 /**
  * The body of `GET /internal/payment_summary/by-org/:orgId`, shared with the
  * org payment facts read below so the two can never answer differently.
  */
-async function readPaymentSummary(orgId: string, asOf: number | undefined) {
+async function readPaymentSummary(
+  orgId: string,
+  asOf: number | undefined,
+  // The org's customer row when the caller already read it (payment facts): the
+  // same latest-by-synced_at row the query below selects.
+  customerRowP?: Promise<OrgCustomerRow>
+) {
+  const asOfDate = asOf === undefined ? undefined : new Date(asOf * 1000);
+  // Neither depends on the payment list: started at once (MON-PAGE-SPEED-2-1112).
+  const revolutP = revolutTotalsByCurrency(orgId, asOfDate);
+  const directP = directTotalsByCurrency(orgId, asOfDate);
+  revolutP.catch(() => undefined);
+  directP.catch(() => undefined);
   const [piRows, customerRow] = await Promise.all([
     db
       .select({
@@ -116,12 +139,14 @@ async function readPaymentSummary(orgId: string, asOf: number | undefined) {
               lt(paymentIntents.createdStripe, asOf)
             )
       ),
-    db
-      .select({ id: customers.id })
-      .from(customers)
-      .where(eq(customers.orgId, orgId))
-      .orderBy(desc(customers.syncedAt))
-      .limit(1),
+    customerRowP
+      ? customerRowP.then((row) => (row ? [{ id: row.id }] : []))
+      : db
+          .select({ id: customers.id })
+          .from(customers)
+          .where(eq(customers.orgId, orgId))
+          .orderBy(desc(customers.syncedAt))
+          .limit(1),
   ]);
 
   const payments: SummaryPayment[] = piRows;
@@ -134,17 +159,11 @@ async function readPaymentSummary(orgId: string, asOf: number | undefined) {
   // this, moving an org to a second acquirer would make its payments
   // invisible to every balance that reads this endpoint — it would pay and
   // its balance would not move.
-  const revolut = await revolutTotalsByCurrency(
-    orgId,
-    asOf === undefined ? undefined : new Date(asOf * 1000)
-  );
+  const revolut = await revolutP;
 
   // Money staff recorded as paid outside any acquirer is the org's money
   // too, bounded by the same instant (recorded strictly before `as_of`).
-  const direct = await directTotalsByCurrency(
-    orgId,
-    asOf === undefined ? undefined : new Date(asOf * 1000)
-  );
+  const direct = await directP;
 
   return {
     object: "payment_summary",
@@ -166,14 +185,16 @@ async function readPaymentSummary(orgId: string, asOf: number | undefined) {
  */
 async function readOrgPaymentMethods(
   orgId: string,
-  type: string | undefined
+  type: string | undefined,
+  // Read once by the payment facts for both types; asked here otherwise.
+  shared?: { pin: Promise<AcquirerPin>; customerRow: Promise<OrgCustomerRow> }
 ): Promise<{ customer: string | null; list: unknown | null }> {
   // Whichever acquirer holds this org's card is the one that can answer
   // "does it have a chargeable one". A caller asks about the ORG, so it must
   // get the org's real answer rather than Stripe's answer about an org that
   // has moved — which would read as "no card" and stop the charge before it
   // was ever attempted.
-  const pin = await resolveAcquirer(orgId);
+  const pin = await (shared ? shared.pin : resolveAcquirer(orgId));
   if (pin.acquirer === "revolut") {
     if (!pin.customerId) {
       return { customer: null, list: null };
@@ -197,16 +218,11 @@ async function readOrgPaymentMethods(
     };
   }
 
-  const row = await db
-    .select({ id: customers.id, livemode: customers.livemode })
-    .from(customers)
-    .where(eq(customers.orgId, orgId))
-    .orderBy(desc(customers.syncedAt))
-    .limit(1);
-
-  if (row.length === 0) {
+  const found = await (shared ? shared.customerRow : selectOrgCustomerRow(orgId));
+  if (!found) {
     return { customer: null, list: null };
   }
+  const row = [found];
 
   const customer = row[0].id;
 
@@ -1327,11 +1343,18 @@ router.get(
     try {
       const orgId = req.params.orgId;
       res.locals.orgId = orgId;
+      // The customer row and the acquirer pin are read ONCE and shared by every
+      // part: the same rows each dedicated route reads on its own.
+      const customerRow = selectOrgCustomerRow(orgId);
+      const pin = resolveAcquirer(orgId);
+      customerRow.catch(() => undefined);
+      pin.catch(() => undefined);
+      const shared = { pin, customerRow };
       const [customer, summary, card, link] = await Promise.all([
-        readOrgCustomer(orgId),
-        readPaymentSummary(orgId, undefined),
-        readOrgPaymentMethods(orgId, "card"),
-        readOrgPaymentMethods(orgId, "link"),
+        readOrgCustomer(orgId, customerRow),
+        readPaymentSummary(orgId, undefined, customerRow),
+        readOrgPaymentMethods(orgId, "card", shared),
+        readOrgPaymentMethods(orgId, "link", shared),
       ]);
       if (customer) res.locals.stripeObjectId = customer.id;
       return res.json({
