@@ -16,6 +16,7 @@ import { promoteDefaultPaymentMethod } from "./promote-default-pm";
 import {
   customerTouchedByEvent,
   invalidatePaymentMethodReads,
+  refreshPaymentMethodReads,
 } from "./payment-method-read";
 import { declareFeesForEvent, isFeeEvent } from "./declare-fees";
 import {
@@ -112,10 +113,21 @@ export async function processEvent(
     );
   }
 
-  // A card was added or removed: drop any remembered payment-method answer for
-  // that customer so the authorize path's next read goes to Stripe.
+  // A card was added or removed: drop the remembered AND stored payment-method
+  // answer for that customer, then store the post-event answer right away so the
+  // next balance read finds it (MON-PAGE-SPEED-2-1112, lib/payment-method-read).
   const touched = customerTouchedByEvent(event);
-  if (touched) invalidatePaymentMethodReads(touched);
+  if (touched) {
+    await invalidatePaymentMethodReads(touched);
+    getPlatformStripe()
+      .then((stripe) => refreshPaymentMethodReads(stripe, touched))
+      .catch((err) => {
+        console.error(
+          `[stripe-service] storing payment methods after ${event.type} failed for ${touched} (next read asks Stripe):`,
+          err
+        );
+      });
+  }
 
   if (objectId) {
     const orgId = await resolveOrgIdForEvent(event, objectId);

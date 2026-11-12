@@ -1,4 +1,7 @@
 import type Stripe from "stripe";
+import { and, eq } from "drizzle-orm";
+import { db } from "../db";
+import { paymentMethodReads } from "../db/schema";
 
 /**
  * The org-scoped payment-method read that sits on billing-service's spend
@@ -56,9 +59,28 @@ import type Stripe from "stripe";
  * In-process state: one stripe-service container on the box, so one cache.
  */
 
-/** How long a successful Stripe answer is reused. The ceiling on staleness for
- *  a change no event has told us about yet. */
+/** How long a successful Stripe answer is reused from MEMORY before the stored
+ *  row (below) is asked again. */
 export const PAYMENT_METHOD_READ_TTL_MS = 15_000;
+
+/**
+ * ## Stored, not only remembered (MON-PAGE-SPEED-2-1112)
+ *
+ * The answer is also STORED (`payment_method_reads`, one row per customer and
+ * type), so a container restart or a quiet org does not send the next read to
+ * Stripe: the dashboard's balance read asked Stripe live on every page for any
+ * org not read in the last 15 s, and a burst of them took 1-3 s. The row is
+ * written when Stripe is read, DELETED the moment a card-changing event arrives
+ * (same events as the memory invalidation above), and rewritten right after that
+ * event by `refreshPaymentMethodReads` — so the store is fed at webhook time and
+ * a read finds the post-event answer already there.
+ *
+ * `STORED_MAX_AGE_MS` is the ceiling for a change no event told us about: the
+ * 5-minute event poller replays any webhook we missed through the same
+ * invalidation, so a stored row older than the ceiling is re-read from Stripe
+ * (the caller waits, exactly as before), never served.
+ */
+export const STORED_MAX_AGE_MS = 60 * 60_000;
 
 /** Backoff for a rate-limited shared read: one flight retries on behalf of all
  *  its waiters, so these do not multiply with the burst. */
@@ -123,11 +145,8 @@ export async function listPaymentMethodsForRead(
   const pending = inFlight.get(key);
   if (pending) return pending;
 
-  const params: Stripe.PaymentMethodListParams = { customer };
-  if (type) params.type = type as Stripe.PaymentMethodListParams.Type;
-
   const startedAt = generation.get(customer) ?? 0;
-  const flight = listWithBackoff(stripe, params)
+  const flight = readStoredOrStripe(stripe, customer, type, startedAt)
     .then((value) => {
       if ((generation.get(customer) ?? 0) === startedAt) {
         remembered.set(key, { at: Date.now(), value });
@@ -141,13 +160,77 @@ export async function listPaymentMethodsForRead(
   return flight;
 }
 
-/** Forget every remembered answer for a customer — its methods may have changed. */
-export function invalidatePaymentMethodReads(customer: string): void {
+/** The stored row when it is younger than the ceiling, else Stripe (then stored). */
+async function readStoredOrStripe(
+  stripe: Stripe,
+  customer: string,
+  type: string | undefined,
+  startedAt: number
+): Promise<PaymentMethodList> {
+  const [row] = await db
+    .select({ body: paymentMethodReads.body, readAt: paymentMethodReads.readAt })
+    .from(paymentMethodReads)
+    .where(and(eq(paymentMethodReads.customerId, customer), eq(paymentMethodReads.type, type ?? "")))
+    .limit(1);
+  if (row && Date.now() - new Date(row.readAt).getTime() < STORED_MAX_AGE_MS) {
+    return row.body as PaymentMethodList;
+  }
+  return readStripeAndStore(stripe, customer, type, startedAt);
+}
+
+async function readStripeAndStore(
+  stripe: Stripe,
+  customer: string,
+  type: string | undefined,
+  startedAt: number
+): Promise<PaymentMethodList> {
+  const params: Stripe.PaymentMethodListParams = { customer };
+  if (type) params.type = type as Stripe.PaymentMethodListParams.Type;
+  const value = await listWithBackoff(stripe, params);
+  // Never store an answer a card-changing event has superseded while it was in
+  // flight. Re-checked after the write: an event landing during the write gets
+  // its delete re-applied, so the store never keeps a pre-event answer.
+  if ((generation.get(customer) ?? 0) !== startedAt) return value;
+  const where = and(eq(paymentMethodReads.customerId, customer), eq(paymentMethodReads.type, type ?? ""));
+  const readAt = new Date();
+  await db
+    .insert(paymentMethodReads)
+    .values({ customerId: customer, type: type ?? "", body: value, readAt })
+    .onConflictDoUpdate({
+      target: [paymentMethodReads.customerId, paymentMethodReads.type],
+      set: { body: value, readAt },
+    });
+  if ((generation.get(customer) ?? 0) !== startedAt) {
+    await db.delete(paymentMethodReads).where(where);
+  }
+  return value;
+}
+
+/**
+ * Forget every remembered AND stored answer for a customer — its methods may
+ * have changed. Resolves once the stored rows are gone; throws when they could
+ * not be deleted (the caller must not report the event handled).
+ */
+export async function invalidatePaymentMethodReads(customer: string): Promise<void> {
   generation.set(customer, (generation.get(customer) ?? 0) + 1);
   const prefix = `${customer}\u0000`;
   for (const key of remembered.keys()) {
     if (key.startsWith(prefix)) remembered.delete(key);
   }
+  await db.delete(paymentMethodReads).where(eq(paymentMethodReads.customerId, customer));
+}
+
+/** The types a balance read asks for: billing's chargeable-method check is card, then link. */
+export const STORED_TYPES = ["card", "link"] as const;
+
+/**
+ * Store the post-event answer right after a card-changing event, so the next
+ * read finds it instead of asking Stripe. Best-effort by design: a failure here
+ * leaves no row, and the next read asks Stripe and stores it (never a guess).
+ */
+export async function refreshPaymentMethodReads(stripe: Stripe, customer: string): Promise<void> {
+  const startedAt = generation.get(customer) ?? 0;
+  await Promise.all(STORED_TYPES.map((type) => readStripeAndStore(stripe, customer, type, startedAt)));
 }
 
 /**

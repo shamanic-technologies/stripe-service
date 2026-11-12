@@ -1,7 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type Stripe from "stripe";
+
+const { dbMock } = vi.hoisted(() => {
+  const { makeDbMock } = require("../helpers/mocks-factory.cjs");
+  return { dbMock: makeDbMock(vi) };
+});
+vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
+
 import {
   PAYMENT_METHOD_READ_TTL_MS,
+  STORED_MAX_AGE_MS,
+  refreshPaymentMethodReads,
   customerTouchedByEvent,
   invalidatePaymentMethodReads,
   isStripeRateLimit,
@@ -23,7 +32,12 @@ function stripeWith(list: ReturnType<typeof vi.fn>) {
   return { paymentMethods: { list } } as unknown as Stripe;
 }
 
-beforeEach(() => resetPaymentMethodReads());
+beforeEach(() => {
+  resetPaymentMethodReads();
+  dbMock.clearQueues();
+  dbMock.clearCaptured();
+  vi.clearAllMocks();
+});
 afterEach(() => vi.useRealTimers());
 
 describe("listPaymentMethodsForRead — a burst is one Stripe call", () => {
@@ -33,6 +47,7 @@ describe("listPaymentMethodsForRead — a burst is one Stripe call", () => {
     const stripe = stripeWith(list);
 
     const reads = Array.from({ length: 100 }, () => listPaymentMethodsForRead(stripe, "cus_a", "card"));
+    await new Promise((r) => setImmediate(r)); // the stored-row read misses, Stripe is in flight
     release(LIST);
     const answers = await Promise.all(reads);
 
@@ -89,7 +104,8 @@ describe("listPaymentMethodsForRead — a burst is one Stripe call", () => {
     const stripe = stripeWith(list);
 
     const early = listPaymentMethodsForRead(stripe, "cus_a", "card");
-    invalidatePaymentMethodReads("cus_a"); // a card changed mid-flight
+    await new Promise((r) => setImmediate(r)); // the stored-row read misses, Stripe is in flight
+    await invalidatePaymentMethodReads("cus_a"); // a card changed mid-flight
     release(LIST);
     await early;
 
@@ -159,5 +175,65 @@ describe("customerTouchedByEvent", () => {
   });
   it("ignores events that do not change which methods a customer holds", () => {
     expect(customerTouchedByEvent(ev("charge.succeeded", { customer: "cus_a" }))).toBeNull();
+  });
+});
+
+describe("listPaymentMethodsForRead — the STORED answer (MON-PAGE-SPEED-2-1112)", () => {
+  it("a stored answer younger than the ceiling is served with no Stripe call", async () => {
+    dbMock.queueSelect("payment_method_reads", [{ body: LIST, readAt: new Date(Date.now() - 60_000) }]);
+    const list = vi.fn().mockResolvedValue({ ...LIST, data: [] });
+    const answer = await listPaymentMethodsForRead(stripeWith(list), "cus_a", "card");
+    expect(list).not.toHaveBeenCalled();
+    expect(answer.data[0].id).toBe("pm_1");
+  });
+
+  it("a stored answer older than the ceiling is never served: Stripe is asked and its answer stored", async () => {
+    dbMock.queueSelect("payment_method_reads", [
+      { body: { ...LIST, data: [] }, readAt: new Date(Date.now() - STORED_MAX_AGE_MS - 1) },
+    ]);
+    const list = vi.fn().mockResolvedValue(LIST);
+    const answer = await listPaymentMethodsForRead(stripeWith(list), "cus_a", "card");
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(answer.data[0].id).toBe("pm_1");
+    expect(dbMock.lastInsertValues("payment_method_reads")).toMatchObject({
+      customerId: "cus_a",
+      type: "card",
+      body: LIST,
+    });
+  });
+
+  it("an untyped list is stored under type ''", async () => {
+    const list = vi.fn().mockResolvedValue(LIST);
+    await listPaymentMethodsForRead(stripeWith(list), "cus_a");
+    expect(dbMock.lastInsertValues("payment_method_reads")).toMatchObject({ customerId: "cus_a", type: "" });
+  });
+
+  it("an answer superseded by a card-changing event mid-flight is never stored", async () => {
+    let release!: (v: unknown) => void;
+    const list = vi.fn().mockImplementationOnce(() => new Promise((r) => (release = r)));
+    const early = listPaymentMethodsForRead(stripeWith(list), "cus_a", "card");
+    await new Promise((r) => setImmediate(r)); // the stored-row read ran, Stripe is in flight
+    await invalidatePaymentMethodReads("cus_a");
+    release(LIST);
+    await early;
+    expect(dbMock.lastInsertValues("payment_method_reads")).toBeUndefined();
+  });
+
+  it("invalidation deletes the stored rows, and a delete failure is loud", async () => {
+    await invalidatePaymentMethodReads("cus_a");
+    expect(dbMock.db.delete).toHaveBeenCalledTimes(1);
+
+    dbMock.db.delete.mockImplementationOnce(() => {
+      throw new Error("db down");
+    });
+    await expect(invalidatePaymentMethodReads("cus_a")).rejects.toThrow("db down");
+  });
+
+  it("refresh after an event stores the card AND link answers", async () => {
+    const list = vi.fn().mockResolvedValue(LIST);
+    await refreshPaymentMethodReads(stripeWith(list), "cus_a");
+    expect(list).toHaveBeenCalledWith({ customer: "cus_a", type: "card" });
+    expect(list).toHaveBeenCalledWith({ customer: "cus_a", type: "link" });
+    expect(dbMock.db.insert).toHaveBeenCalledTimes(2);
   });
 });

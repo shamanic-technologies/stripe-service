@@ -81,6 +81,168 @@ import {
 
 const router = Router();
 
+/** The org's mirrored customer row (latest), or null when it has none / no raw object. */
+async function readOrgCustomer(orgId: string): Promise<{ id: string; rawJson: unknown } | null> {
+  const row = await db
+    .select()
+    .from(customers)
+    .where(eq(customers.orgId, orgId))
+    .orderBy(desc(customers.syncedAt))
+    .limit(1);
+  if (row.length === 0 || !row[0].rawJson) return null;
+  return { id: row[0].id, rawJson: row[0].rawJson };
+}
+
+/**
+ * The body of `GET /internal/payment_summary/by-org/:orgId`, shared with the
+ * org payment facts read below so the two can never answer differently.
+ */
+async function readPaymentSummary(orgId: string, asOf: number | undefined) {
+  const [piRows, customerRow] = await Promise.all([
+    db
+      .select({
+        id: paymentIntents.id,
+        currency: paymentIntents.currency,
+        status: paymentIntents.status,
+        amountReceived: paymentIntents.amountReceived,
+        latestCharge: paymentIntents.latestCharge,
+      })
+      .from(paymentIntents)
+      .where(
+        asOf === undefined
+          ? eq(paymentIntents.orgId, orgId)
+          : and(
+              eq(paymentIntents.orgId, orgId),
+              lt(paymentIntents.createdStripe, asOf)
+            )
+      ),
+    db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(eq(customers.orgId, orgId))
+      .orderBy(desc(customers.syncedAt))
+      .limit(1),
+  ]);
+
+  const payments: SummaryPayment[] = piRows;
+  const returned = await returnedByPaymentIntent(payments, asOf);
+  const customer = customerRow.length > 0 ? customerRow[0].id : null;
+
+  // The org's money is the org's money whichever acquirer took it. Summing
+  // across them here is the whole point of a neutral surface: a consumer
+  // asks what an org has paid, not what it paid THROUGH SOMETHING. Without
+  // this, moving an org to a second acquirer would make its payments
+  // invisible to every balance that reads this endpoint — it would pay and
+  // its balance would not move.
+  const revolut = await revolutTotalsByCurrency(
+    orgId,
+    asOf === undefined ? undefined : new Date(asOf * 1000)
+  );
+
+  // Money staff recorded as paid outside any acquirer is the org's money
+  // too, bounded by the same instant (recorded strictly before `as_of`).
+  const direct = await directTotalsByCurrency(
+    orgId,
+    asOf === undefined ? undefined : new Date(asOf * 1000)
+  );
+
+  return {
+    object: "payment_summary",
+    org_id: orgId,
+    customer,
+    as_of: asOf ?? null,
+    totals: mergeCurrencyTotals(
+      summarizeByCurrency(payments, returned),
+      revolut,
+      direct
+    ),
+  };
+}
+
+/**
+ * The answer of `GET /internal/payment_methods/by-org/:orgId?type=`: the list,
+ * or `list: null` where that route answers 404 (no customer on the org's
+ * acquirer). Shared with the org payment facts read below.
+ */
+async function readOrgPaymentMethods(
+  orgId: string,
+  type: string | undefined
+): Promise<{ customer: string | null; list: unknown | null }> {
+  // Whichever acquirer holds this org's card is the one that can answer
+  // "does it have a chargeable one". A caller asks about the ORG, so it must
+  // get the org's real answer rather than Stripe's answer about an org that
+  // has moved — which would read as "no card" and stop the charge before it
+  // was ever attempted.
+  const pin = await resolveAcquirer(orgId);
+  if (pin.acquirer === "revolut") {
+    if (!pin.customerId) {
+      return { customer: null, list: null };
+    }
+    const methods = await listCustomerPaymentMethods(pin.customerId);
+    // Returned in the same list envelope as the Stripe answer. Each method
+    // is Revolut's own object, verbatim, PLUS a Stripe-shaped `card`
+    // (brand, last4, exp_month, exp_year, country, funding) built from the
+    // fields Revolut states, so a consumer reading `data[0].card` gets the
+    // same display facts on either acquirer. A field Revolut omits is null.
+    return {
+      customer: pin.customerId,
+      list: {
+        object: "list",
+        data: (type ? methods.filter((m) => m.type === type) : methods).map(
+          withStripeShapedCard
+        ),
+        has_more: false,
+        url: `/internal/payment_methods/by-org/${orgId}`,
+      },
+    };
+  }
+
+  const row = await db
+    .select({ id: customers.id, livemode: customers.livemode })
+    .from(customers)
+    .where(eq(customers.orgId, orgId))
+    .orderBy(desc(customers.syncedAt))
+    .limit(1);
+
+  if (row.length === 0) {
+    return { customer: null, list: null };
+  }
+
+  const customer = row[0].id;
+
+  // Coalesced + briefly remembered: this read sits on billing's spend
+  // AUTHORIZE path, so a burst of authorizes must not become a burst of
+  // Stripe calls (a 429 there refused paid work). See payment-method-read.ts.
+  const stripe = await getPlatformStripe();
+  try {
+    const list = await listPaymentMethodsForRead(stripe, customer, type);
+    return { customer, list };
+  } catch (err) {
+    if (!stripeSaysCustomerIsGone(err)) throw err;
+    // Stripe states, definitively, that the mirrored customer no longer
+    // exists — deleted with no event we ever received. Tombstone it so every
+    // later read (this one's siblings included) sees an org with NO
+    // customer, and answer the truth for now: Stripe holds no method for it.
+    // An empty list rather than the no-customer 404, because the caller
+    // already read the customer on this same request and treats a 404 here
+    // as a failure to ask.
+    const tombstone = {
+      id: customer,
+      deleted: true,
+      livemode: row[0].livemode === "true",
+    };
+    await recordApiSnapshot(tombstone, "customer", orgId);
+    console.warn(
+      `[stripe-service] org ${orgId}: customer ${customer} no longer exists at Stripe, tombstoned`
+    );
+    return {
+      customer,
+      list: { object: "list", data: [], has_more: false, url: "/v1/payment_methods" },
+    };
+  }
+}
+
+
 /**
  * `/internal/*` — server-to-server platform operations. X-API-Key only (via
  * serviceAuth); exempt from `requireIdentityHeaders` because the org is keyed
@@ -183,19 +345,13 @@ router.get(
       const orgId = req.params.orgId;
       res.locals.orgId = orgId;
 
-      const row = await db
-        .select()
-        .from(customers)
-        .where(eq(customers.orgId, orgId))
-        .orderBy(desc(customers.syncedAt))
-        .limit(1);
-
-      if (row.length === 0 || !row[0].rawJson) {
+      const found = await readOrgCustomer(orgId);
+      if (!found) {
         return res.status(404).json({ error: "Customer not found" });
       }
 
-      res.locals.stripeObjectId = row[0].id;
-      return res.json(row[0].rawJson);
+      res.locals.stripeObjectId = found.id;
+      return res.json(found.rawJson);
     } catch (err) {
       return next(err);
     }
@@ -1093,66 +1249,9 @@ router.get(
         asOf = parsed;
       }
 
-      const [piRows, customerRow] = await Promise.all([
-        db
-          .select({
-            id: paymentIntents.id,
-            currency: paymentIntents.currency,
-            status: paymentIntents.status,
-            amountReceived: paymentIntents.amountReceived,
-            latestCharge: paymentIntents.latestCharge,
-          })
-          .from(paymentIntents)
-          .where(
-            asOf === undefined
-              ? eq(paymentIntents.orgId, orgId)
-              : and(
-                  eq(paymentIntents.orgId, orgId),
-                  lt(paymentIntents.createdStripe, asOf)
-                )
-          ),
-        db
-          .select({ id: customers.id })
-          .from(customers)
-          .where(eq(customers.orgId, orgId))
-          .orderBy(desc(customers.syncedAt))
-          .limit(1),
-      ]);
-
-      const payments: SummaryPayment[] = piRows;
-      const returned = await returnedByPaymentIntent(payments, asOf);
-      const customer = customerRow.length > 0 ? customerRow[0].id : null;
-      if (customer) res.locals.stripeObjectId = customer;
-
-      // The org's money is the org's money whichever acquirer took it. Summing
-      // across them here is the whole point of a neutral surface: a consumer
-      // asks what an org has paid, not what it paid THROUGH SOMETHING. Without
-      // this, moving an org to a second acquirer would make its payments
-      // invisible to every balance that reads this endpoint — it would pay and
-      // its balance would not move.
-      const revolut = await revolutTotalsByCurrency(
-        orgId,
-        asOf === undefined ? undefined : new Date(asOf * 1000)
-      );
-
-      // Money staff recorded as paid outside any acquirer is the org's money
-      // too, bounded by the same instant (recorded strictly before `as_of`).
-      const direct = await directTotalsByCurrency(
-        orgId,
-        asOf === undefined ? undefined : new Date(asOf * 1000)
-      );
-
-      return res.json({
-        object: "payment_summary",
-        org_id: orgId,
-        customer,
-        as_of: asOf ?? null,
-        totals: mergeCurrencyTotals(
-          summarizeByCurrency(payments, returned),
-          revolut,
-          direct
-        ),
-      });
+      const summary = await readPaymentSummary(orgId, asOf);
+      if (summary.customer) res.locals.stripeObjectId = summary.customer;
+      return res.json(summary);
     } catch (err) {
       return next(err);
     }
@@ -1192,79 +1291,56 @@ router.get(
       const type =
         typeof req.query.type === "string" ? req.query.type : undefined;
 
-      // Whichever acquirer holds this org's card is the one that can answer
-      // "does it have a chargeable one". A caller asks about the ORG, so it must
-      // get the org's real answer rather than Stripe's answer about an org that
-      // has moved — which would read as "no card" and stop the charge before it
-      // was ever attempted.
-      const pin = await resolveAcquirer(orgId);
-      if (pin.acquirer === "revolut") {
-        if (!pin.customerId) {
-          return res.status(404).json({ error: "Customer not found" });
-        }
-        const methods = await listCustomerPaymentMethods(pin.customerId);
-        res.locals.stripeObjectId = pin.customerId;
-        // Returned in the same list envelope as the Stripe answer. Each method
-        // is Revolut's own object, verbatim, PLUS a Stripe-shaped `card`
-        // (brand, last4, exp_month, exp_year, country, funding) built from the
-        // fields Revolut states, so a consumer reading `data[0].card` gets the
-        // same display facts on either acquirer. A field Revolut omits is null.
-        return res.json({
-          object: "list",
-          data: (type ? methods.filter((m) => m.type === type) : methods).map(
-            withStripeShapedCard
-          ),
-          has_more: false,
-          url: `/internal/payment_methods/by-org/${orgId}`,
-        });
-      }
-
-      const row = await db
-        .select({ id: customers.id, livemode: customers.livemode })
-        .from(customers)
-        .where(eq(customers.orgId, orgId))
-        .orderBy(desc(customers.syncedAt))
-        .limit(1);
-
-      if (row.length === 0) {
+      const answer = await readOrgPaymentMethods(orgId, type);
+      if (answer.customer) res.locals.stripeObjectId = answer.customer;
+      if (answer.list === null) {
         return res.status(404).json({ error: "Customer not found" });
       }
+      return res.json(answer.list);
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
 
-      const customer = row[0].id;
-      res.locals.stripeObjectId = customer;
-
-      // Coalesced + briefly remembered: this read sits on billing's spend
-      // AUTHORIZE path, so a burst of authorizes must not become a burst of
-      // Stripe calls (a 429 there refused paid work). See payment-method-read.ts.
-      const stripe = await getPlatformStripe();
-      try {
-        const list = await listPaymentMethodsForRead(stripe, customer, type);
-        return res.json(list);
-      } catch (err) {
-        if (!stripeSaysCustomerIsGone(err)) throw err;
-        // Stripe states, definitively, that the mirrored customer no longer
-        // exists — deleted with no event we ever received. Tombstone it so every
-        // later read (this one's siblings included) sees an org with NO
-        // customer, and answer the truth for now: Stripe holds no method for it.
-        // An empty list rather than the no-customer 404, because the caller
-        // already read the customer on this same request and treats a 404 here
-        // as a failure to ask.
-        const tombstone = {
-          id: customer,
-          deleted: true,
-          livemode: row[0].livemode === "true",
-        };
-        await recordApiSnapshot(tombstone, "customer", orgId);
-        console.warn(
-          `[stripe-service] org ${orgId}: customer ${customer} no longer exists at Stripe, tombstoned`
-        );
-        return res.json({
-          object: "list",
-          data: [],
-          has_more: false,
-          url: "/v1/payment_methods",
-        });
-      }
+/**
+ * GET /internal/payment_facts/by-org/:orgId
+ *
+ * Everything billing-service's balance needs from us for one org, in ONE
+ * request (MON-PAGE-SPEED-2-1112): the dashboard's balance reads asked four
+ * routes per page (customer, payment summary, card list, link list), and a
+ * burst of 40 pages became 160+ requests here, each a DB round trip plus its
+ * call-log row through a pool of 5: 1-3 s per page.
+ *
+ * Each part is EXACTLY the body the dedicated route serves (same functions):
+ *  - `customer`         = GET /internal/customers/by-org (null where it 404s);
+ *  - `payment_summary`  = GET /internal/payment_summary/by-org (all time);
+ *  - `payment_methods.card` / `.link` = GET /internal/payment_methods/by-org?type=
+ *    (null where it 404s: no customer on the org's acquirer). Served from the
+ *    stored answer (lib/payment-method-read), fed at webhook time.
+ * Fails loud: any part that cannot be read is a 5xx for the whole answer, never
+ * a partial one.
+ */
+router.get(
+  "/internal/payment_facts/by-org/:orgId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const orgId = req.params.orgId;
+      res.locals.orgId = orgId;
+      const [customer, summary, card, link] = await Promise.all([
+        readOrgCustomer(orgId),
+        readPaymentSummary(orgId, undefined),
+        readOrgPaymentMethods(orgId, "card"),
+        readOrgPaymentMethods(orgId, "link"),
+      ]);
+      if (customer) res.locals.stripeObjectId = customer.id;
+      return res.json({
+        object: "org_payment_facts",
+        org_id: orgId,
+        customer: customer ? customer.rawJson : null,
+        payment_summary: summary,
+        payment_methods: { card: card.list, link: link.list },
+      });
     } catch (err) {
       return next(err);
     }
@@ -1377,7 +1453,7 @@ router.delete(
       try {
         removal = await detachAllPaymentMethods(stripe, customer);
       } finally {
-        invalidatePaymentMethodReads(customer);
+        await invalidatePaymentMethodReads(customer);
       }
 
       return res.json({
