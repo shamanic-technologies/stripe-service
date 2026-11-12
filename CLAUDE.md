@@ -178,6 +178,7 @@ direct_payments                 — id uuid PK, org_id, amount, currency (lowerc
 stripe_fee_transactions         — id (txn_…) PK, type, source (ch_/py_/re_/…), fee, currency, created_stripe, raw_json  (NO org_id — joins via the payment it came from; fees of our customers' payments)
 card_holds                      — id uuid PK, org_id, acquirer, reference (pi_… / order id), payment_method, amount, currency, status (pending|requires_action|held|refused|captured|released|expired), session, amount_captured, decline_code/message, idempotency_key (unique per org), expires_at (acquirer's capture deadline), captured_at, ended_at
 card_update_openers             — customer_id PK, org_id, user_id, opened_at  (who last opened a portal card update; consumed when its SetupIntent succeeds)
+payment_method_reads            — (customer_id, type) PK, body, read_at  (STORED org-keyed payment-method answer, lib/payment-method-read: written on a Stripe read and right after every card-changing event, deleted on that event, re-read past 1 h; backs GET /internal/payment_facts/by-org, billing's one-request balance read)
 ```
 
 `raw_json` holds the unmodified Stripe object — `GET /v1/{obj}/:id` returns this directly so the response shape matches Stripe verbatim. Exception: `customers.raw_json.balance` is stripped on every write (see "Polluted `customer.balance`" key pattern).

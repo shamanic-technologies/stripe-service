@@ -113,6 +113,13 @@
       "when": 1792600000000,
       "tag": "0015_card_holds",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1794500000000,
+      "tag": "0016_payment_method_reads",
+      "breakpoints": true
     }
   ]
 }
