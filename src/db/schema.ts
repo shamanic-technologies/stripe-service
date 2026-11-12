@@ -8,6 +8,7 @@ import {
   bigint,
   uuid,
   uniqueIndex,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 
 // ===== Stripe-shape mirror tables =====
@@ -481,4 +482,20 @@ export const cardHolds = pgTable(
     index("idx_card_holds_status").on(table.status),
     index("idx_card_holds_reference").on(table.reference),
   ]
+);
+
+// The org's saved payment methods as Stripe last answered them, per (customer,
+// type) — the STORED answer behind the org-keyed payment-method read
+// (lib/payment-method-read.ts, MON-PAGE-SPEED-2-1112). Written when Stripe is
+// read and again right after every card-changing event (webhook or poller),
+// deleted the moment such an event arrives. `type` is '' for an untyped list.
+export const paymentMethodReads = pgTable(
+  "payment_method_reads",
+  {
+    customerId: text("customer_id").notNull(),
+    type: text("type").notNull(),
+    body: jsonb("body").notNull(),
+    readAt: timestamp("read_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.customerId, table.type] })]
 );

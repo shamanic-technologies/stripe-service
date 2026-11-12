@@ -763,6 +763,40 @@ registry.registerPath({
   },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/internal/payment_facts/by-org/{orgId}",
+  summary: "Everything a balance needs about one org, in one read (user-less)",
+  description:
+    "Server-to-server. One request instead of four: `customer` is exactly the body of GET /internal/customers/by-org/{orgId} (null where that route 404s), `payment_summary` exactly the all-time body of GET /internal/payment_summary/by-org/{orgId}, and `payment_methods.card` / `payment_methods.link` exactly the bodies of GET /internal/payment_methods/by-org/{orgId}?type=card|link (null where that route 404s: no customer on the org's acquirer). Payment methods are served from the stored answer, written when Stripe is read and rewritten after every card-changing event (webhook or poller). Fails loud: a part that cannot be read makes the whole answer a 5xx, never a partial one. X-API-Key only — no identity headers (orgId is in the path).",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: {
+    params: z.object({ orgId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Org payment facts",
+      content: {
+        "application/json": {
+          schema: z
+            .object({
+              object: z.literal("org_payment_facts"),
+              org_id: z.string(),
+              customer: z.any().openapi({ description: "Verbatim customer object, or null when the org has none." }),
+              payment_summary: OrgPaymentSummarySchema,
+              payment_methods: z.object({
+                card: StripeListSchema.nullable(),
+                link: StripeListSchema.nullable(),
+              }),
+            })
+            .openapi("OrgPaymentFacts"),
+        },
+      },
+    },
+  },
+});
+
 const FeeUsdFiguresShape = {
   stripe_fee_usd_cents: z.number().int().openapi({
     description: "Stripe fees in USD cents, converted fee by fee with the balance transaction's own `exchange_rate` (USD = fee / rate). Equals `stripe_fee_cents` for a USD bucket.",

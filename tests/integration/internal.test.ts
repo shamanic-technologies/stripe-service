@@ -1520,3 +1520,55 @@ describe("POST /internal/charges/by-org/:orgId (vendor-neutral charge)", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("GET /internal/payment_facts/by-org/:orgId (MON-PAGE-SPEED-2-1112)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock.clearQueues();
+    stripeMock.paymentMethods.list.mockReset();
+    resetPaymentMethodReads();
+  });
+
+  it("an org with no customer: customer null, card and link null (the 404s), all-time summary, no Stripe call", async () => {
+    const res = await request(app).get(`/internal/payment_facts/by-org/${TEST_ORG_ID}`).set(apiKeyOnly());
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      object: "org_payment_facts",
+      org_id: TEST_ORG_ID,
+      customer: null,
+      payment_summary: { object: "payment_summary", org_id: TEST_ORG_ID, customer: null, as_of: null, totals: [] },
+      payment_methods: { card: null, link: null },
+    });
+    expect(stripeMock.paymentMethods.list).not.toHaveBeenCalled();
+  });
+
+  it("an org with a customer: the verbatim customer and each type's list, in one request", async () => {
+    const row = { id: "cus_x", rawJson: { id: "cus_x", email: "a@b.co" }, livemode: "false" };
+    for (let i = 0; i < 4; i++) dbMock.queueSelect("customers", [row]);
+    stripeMock.paymentMethods.list.mockImplementation(async ({ type }: { type: string }) => ({
+      object: "list",
+      data: type === "card" ? [{ id: "pm_card", type: "card", card: { country: "FR" } }] : [],
+      has_more: false,
+      url: "/v1/payment_methods",
+    }));
+
+    const res = await request(app).get(`/internal/payment_facts/by-org/${TEST_ORG_ID}`).set(apiKeyOnly());
+
+    expect(res.status).toBe(200);
+    expect(res.body.customer).toEqual({ id: "cus_x", email: "a@b.co" });
+    expect(res.body.payment_methods.card.data[0].id).toBe("pm_card");
+    expect(res.body.payment_methods.link.data).toEqual([]);
+    expect(stripeMock.paymentMethods.list).toHaveBeenCalledWith({ customer: "cus_x", type: "card" });
+    expect(stripeMock.paymentMethods.list).toHaveBeenCalledWith({ customer: "cus_x", type: "link" });
+  });
+
+  it("a part that cannot be read fails the whole answer, never a partial one", async () => {
+    dbMock.queueSelect("customers", [{ id: "cus_x", rawJson: { id: "cus_x" }, livemode: "false" }]);
+    for (let i = 0; i < 3; i++) dbMock.queueSelect("customers", [{ id: "cus_x", livemode: "false" }]);
+    stripeMock.paymentMethods.list.mockRejectedValue(
+      Object.assign(new Error("boom"), { type: "StripeAPIError", statusCode: 500 })
+    );
+    const res = await request(app).get(`/internal/payment_facts/by-org/${TEST_ORG_ID}`).set(apiKeyOnly());
+    expect(res.status).toBeGreaterThanOrEqual(500);
+  });
+});
