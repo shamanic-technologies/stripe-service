@@ -1,8 +1,8 @@
 import type Stripe from "stripe";
-import { eq } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db";
-import { cardUpdateOpeners } from "../db/schema";
-import { getUserById } from "./client-service-client";
+import { cardUpdateOpeners, checkoutSessions } from "../db/schema";
+import { getUserById, joinName } from "./client-service-client";
 import {
   recordApiSnapshot,
   resolveOrgId,
@@ -11,36 +11,39 @@ import {
 } from "./event-processor";
 
 /**
- * The Stripe customer's contact email follows the LAST PERSON who actually
- * paid or saved a card for the org.
+ * The Stripe customer's identity (email AND name) is the PERSON IN FRONT OF IT.
  *
  * Why: staff (or an agency) create an org for a client, so the org's Stripe
- * customer is born with the CREATOR's email (`POST /v1/customers` stamps the
- * requesting user). The client then joins and pays — and without this, every
- * receipt and payment email Stripe sends keeps going to the creator. The
- * owner's rule: "c'est la dernière personne qui le fait qui reprend".
+ * customer is born with the CREATOR's identity (`POST /v1/customers` stamps the
+ * requesting user). Stripe Checkout prefills an existing customer's email and
+ * Link then offers to log in AS that email: prod 2026-11-17, a new client
+ * (Ethan) opened his $10 top-up and was asked for a code sent to the owner's
+ * phone, because the owner had opened a checkout on that org first
+ * (ETHAN-STAFF-CHECKOUT-1118). Owner's rules: a client's checkout only ever
+ * shows the client's own identity, whoever opened one before (staff included);
+ * and receipts follow "la dernière personne qui le fait" (the last payer).
  *
- * How we know who: the person is known when a payment or card session is
- * OPENED (the identity is on that request) and the success is known only
- * later, from Stripe. So the opener is recorded at open time and adopted only
- * when Stripe reports success:
+ * Three moments:
  *
- *   - Checkout (top-up, or the in-page card setup): the opener rides on the
- *     session's own metadata (`payer_user_id`, also on the SetupIntent a setup
- *     session creates). Exact: that session, that person.
- *   - Billing portal card update: a portal session carries no metadata and the
- *     SetupIntent it creates carries nothing of ours, so the opener is kept in
- *     `card_update_openers` (one row per customer, the latest opener wins) and
- *     CONSUMED when the portal's SetupIntent succeeds.
+ *   1. OPEN (`showOpenerOnCustomer`): before any Checkout Session or billing
+ *      portal session is created on a customer for a known person, the
+ *      customer takes that person's email + name. Whoever opens sees
+ *      themselves, never the previous opener.
+ *   2. SUCCESS (`adoptPayerForEvent`): Stripe reports the payment or the card
+ *      saved; the payer's identity is (re)applied. The opener rides on the
+ *      session's metadata (`payer_user_id`, also on the SetupIntent a setup
+ *      session creates); a portal card update carries no metadata, so its
+ *      opener is kept in `card_update_openers` and consumed on success.
+ *   3. EXPIRY (`restoreLastPayerAfterExpiry`): a checkout opened and abandoned
+ *      (a staff test) must not leave its opener as the contact of an org whose
+ *      client already pays: when the session expires and the customer still
+ *      carries the opener's email, the identity returns to the last person who
+ *      completed a checkout on that customer.
  *
- * What never changes the email: a read, opening a session, a failed or
- * still-unpaid payment, an off-session automatic top-up (nobody opened
- * anything), and any org nobody pays for. Only the email changes — never the
- * name, never anything else on the customer.
- *
- * Fail loud like the other webhook side-effects: a client-service or Stripe
- * failure propagates. A user with no email on record is not a failure — there
- * is simply nothing to adopt, and the email stays what it was.
+ * Never changes the identity: a read, a failed or still-unpaid payment, an
+ * off-session automatic top-up (nobody opened anything), an org nobody pays
+ * for. A person with no email on record changes nothing. Fail loud: a
+ * client-service or Stripe failure propagates (open → 5xx, webhook → retry).
  */
 
 export const PAYER_USER_METADATA_KEY = "payer_user_id";
@@ -96,18 +99,24 @@ async function consumeCardUpdateOpener(customerId: string): Promise<string | nul
   return row.userId;
 }
 
-export function isPayerEmailEvent(type: string): boolean {
+export function isPayerIdentityEvent(type: string): boolean {
   return (
     type === "checkout.session.completed" ||
     type === "checkout.session.async_payment_succeeded" ||
+    type === "checkout.session.expired" ||
     type === "setup_intent.succeeded"
   );
 }
 
-export async function adoptPayerEmailForEvent(
+export async function adoptPayerForEvent(
   event: Stripe.Event,
   stripe: Stripe
 ): Promise<void> {
+  if (event.type === "checkout.session.expired") {
+    await restoreLastPayerAfterExpiry(event.data.object as Stripe.Checkout.Session, stripe);
+    return;
+  }
+
   if (
     event.type === "checkout.session.completed" ||
     event.type === "checkout.session.async_payment_succeeded"
@@ -121,7 +130,7 @@ export async function adoptPayerEmailForEvent(
     const customerId = extractString(session.customer);
     const userId = session.metadata?.[PAYER_USER_METADATA_KEY];
     if (!customerId || !userId) return;
-    await adoptPayerEmail(stripe, customerId, userId);
+    await makeCustomerThePerson(stripe, customerId, userId, "paid");
     return;
   }
 
@@ -131,7 +140,7 @@ export async function adoptPayerEmailForEvent(
     if (!customerId) return;
     const tagged = si.metadata?.[PAYER_USER_METADATA_KEY];
     if (tagged) {
-      await adoptPayerEmail(stripe, customerId, tagged);
+      await makeCustomerThePerson(stripe, customerId, tagged, "saved a card");
       return;
     }
     // A SetupIntent our own card-setup checkout created, opened by a caller
@@ -140,37 +149,107 @@ export async function adoptPayerEmailForEvent(
     if (si.metadata?.purpose === "card-setup") return;
     const opener = await consumeCardUpdateOpener(customerId);
     if (!opener) return;
-    await adoptPayerEmail(stripe, customerId, opener);
+    await makeCustomerThePerson(stripe, customerId, opener, "saved a card");
   }
 }
 
 /**
- * Make `userId`'s email the customer's contact email, and re-mirror it.
- * Idempotent: an email that is already the customer's is left alone.
+ * Moment 1: the person about to see a Checkout or portal page on this customer
+ * becomes its identity first, so Stripe prefills (and Link offers) THEIR email,
+ * never a previous opener's. No person named = nothing changes.
  */
-export async function adoptPayerEmail(
+export async function showOpenerOnCustomer(
   stripe: Stripe,
-  customerId: string,
-  userId: string
+  customerId: string | null | undefined,
+  userId: string | null | undefined
 ): Promise<void> {
-  const identity = await getUserById(userId);
-  const email = identity?.email ?? null;
-  if (!email) {
-    console.log(
-      `[stripe-service] payer ${userId} has no email on record; ${customerId} keeps its email`
-    );
-    return;
-  }
+  if (!customerId || !userId) return;
+  await makeCustomerThePerson(stripe, customerId, userId, "opened a checkout");
+}
 
+/**
+ * Moment 3: an abandoned checkout hands the customer back to the last person
+ * who completed one on it — only while the customer still carries the
+ * abandoning opener's email (anyone who opened since keeps it).
+ */
+export async function restoreLastPayerAfterExpiry(
+  session: Stripe.Checkout.Session,
+  stripe: Stripe
+): Promise<void> {
+  const customerId = extractString(session.customer);
+  const opener = session.metadata?.[PAYER_USER_METADATA_KEY];
+  if (!customerId || !opener) return;
+
+  const rows = await db
+    .select({ payer: sql<string>`${checkoutSessions.metadata}->>${PAYER_USER_METADATA_KEY}` })
+    .from(checkoutSessions)
+    .where(
+      and(
+        eq(checkoutSessions.customer, customerId),
+        eq(checkoutSessions.status, "complete"),
+        isNotNull(sql`${checkoutSessions.metadata}->>${PAYER_USER_METADATA_KEY}`)
+      )
+    )
+    .orderBy(desc(checkoutSessions.createdStripe))
+    .limit(1);
+  const lastPayer = rows[0]?.payer ?? null;
+  if (!lastPayer || lastPayer === opener) return;
+
+  const openerIdentity = await getUserById(opener);
+  const openerEmail = openerIdentity?.email ?? null;
+  if (!openerEmail) return;
   const customer = await stripe.customers.retrieve(customerId);
   if ((customer as Stripe.DeletedCustomer).deleted === true) return;
   const current = (customer as Stripe.Customer).email ?? null;
-  if (current !== null && current.toLowerCase() === email.toLowerCase()) return;
+  if (current === null || current.toLowerCase() !== openerEmail.toLowerCase()) return;
 
-  const updated = await stripe.customers.update(customerId, { email });
+  await makeCustomerThePerson(stripe, customerId, lastPayer, "was the last payer (abandoned checkout)");
+}
+
+/**
+ * Make `userId`'s email and name the customer's, and re-mirror it.
+ * Idempotent: nothing is written when both already match. A person with no
+ * name on record leaves the name alone when the email does not change, and
+ * clears it when it does (a different person's name is worse than none).
+ * Returns whether the customer was changed.
+ */
+export async function makeCustomerThePerson(
+  stripe: Stripe,
+  customerId: string,
+  userId: string,
+  why: string
+): Promise<boolean> {
+  const identity = await getUserById(userId);
+  const email = identity?.email ?? null;
+  if (!identity || !email) {
+    console.log(
+      `[stripe-service] person ${userId} has no email on record; ${customerId} keeps its identity`
+    );
+    return false;
+  }
+  const name = joinName(identity);
+
+  const customer = await stripe.customers.retrieve(customerId);
+  if ((customer as Stripe.DeletedCustomer).deleted === true) return false;
+  const live = customer as Stripe.Customer;
+  const currentEmail = live.email ?? null;
+  const currentName = live.name ?? null;
+  const emailChanges = currentEmail === null || currentEmail.toLowerCase() !== email.toLowerCase();
+
+  const patch: Stripe.CustomerUpdateParams = {};
+  if (emailChanges) patch.email = email;
+  if (name !== null) {
+    if (name !== currentName) patch.name = name;
+  } else if (emailChanges && currentName) {
+    patch.name = "";
+  }
+  if (Object.keys(patch).length === 0) return false;
+
+  const updated = await stripe.customers.update(customerId, patch);
   const orgId = await resolveOrgId(extractOrgId(updated.metadata), customerId);
   await recordApiSnapshot(updated, "customer", orgId);
   console.log(
-    `[stripe-service] ${customerId} (org=${orgId}) contact email now follows payer ${userId}`
+    `[stripe-service] ${customerId} (org=${orgId}) identity now follows ${userId}, who ${why}`
   );
+  return true;
 }

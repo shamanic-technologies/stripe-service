@@ -8,6 +8,11 @@ const { dbMock, stripeMock } = vi.hoisted(() => {
 });
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
+const clientServiceMock = vi.hoisted(() => ({ getUserById: vi.fn(async () => null) }));
+vi.mock("../../src/lib/client-service-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/lib/client-service-client")>()),
+  getUserById: clientServiceMock.getUserById,
+}));
 vi.mock("../../src/lib/stripe-client", () => ({
   makeStripeClient: () => stripeMock,
   getWebhookClient: vi.fn(),
@@ -275,6 +280,39 @@ describe("POST /v1/checkout/sessions — names the person who opened it", () => 
     const params = stripeMock.checkout.sessions.create.mock.calls[0][0];
     expect(params.metadata).toEqual({ type: "topup", payer_user_id: TEST_USER_ID, org_id: TEST_ORG_ID });
     expect(params.setup_intent_data).toBeUndefined();
+  });
+
+  it("the opener becomes the customer's identity BEFORE Stripe opens the page (ETHAN-STAFF-CHECKOUT-1118)", async () => {
+    clientServiceMock.getUserById.mockResolvedValueOnce({
+      email: "client@acme.com", firstName: "Ethan", lastName: "Halfhide",
+    });
+    stripeMock.customers.retrieve.mockResolvedValueOnce({
+      id: "cus_x", object: "customer", email: "staff@distribute.you", name: "Kevin Lourd",
+    });
+    stripeMock.customers.update.mockResolvedValueOnce({
+      id: "cus_x", object: "customer", email: "client@acme.com", name: "Ethan Halfhide",
+      metadata: { org_id: TEST_ORG_ID },
+    });
+    stripeMock.checkout.sessions.create.mockResolvedValueOnce({
+      id: "cs_pay", object: "checkout.session", mode: "payment", metadata: {},
+    });
+    const res = await request(app)
+      .post("/v1/checkout/sessions")
+      .set(authHeaders())
+      .send({
+        mode: "payment",
+        success_url: "https://example.com/s",
+        customer: "cus_x",
+        line_items: [{ price: "price_1", quantity: 1 }],
+      });
+    expect(res.status).toBe(200);
+    expect(clientServiceMock.getUserById).toHaveBeenCalledWith(TEST_USER_ID);
+    expect(stripeMock.customers.update).toHaveBeenCalledWith("cus_x", {
+      email: "client@acme.com", name: "Ethan Halfhide",
+    });
+    expect(stripeMock.customers.update.mock.invocationCallOrder[0]).toBeLessThan(
+      stripeMock.checkout.sessions.create.mock.invocationCallOrder[0]
+    );
   });
 
   it("stamps it on the SetupIntent of a setup session too", async () => {
