@@ -18,26 +18,30 @@ vi.mock("../../src/lib/event-processor", async (importOriginal) => {
 });
 
 const clientMock = vi.hoisted(() => ({ getUserById: vi.fn() }));
-vi.mock("../../src/lib/client-service-client", () => clientMock);
+vi.mock("../../src/lib/client-service-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/lib/client-service-client")>()),
+  getUserById: clientMock.getUserById,
+}));
 
 import {
-  adoptPayerEmailForEvent,
+  adoptPayerForEvent,
   CARD_UPDATE_OPENER_MAX_AGE_MS,
-  isPayerEmailEvent,
+  isPayerIdentityEvent,
+  showOpenerOnCustomer,
 } from "../../src/lib/payer-email";
 import { recordApiSnapshot } from "../../src/lib/event-processor";
 
 const CREATOR = "creator@agency.com";
 const CLIENT = "client@acme.com";
 
-function makeStripe(currentEmail: string | null = CREATOR) {
+function makeStripe(currentEmail: string | null = CREATOR, currentName: string | null = null) {
   return {
     customers: {
-      retrieve: vi.fn(async () => ({ id: "cus_1", object: "customer", email: currentEmail })),
-      update: vi.fn(async (_id: string, p: { email: string }) => ({
+      retrieve: vi.fn(async () => ({ id: "cus_1", object: "customer", email: currentEmail, name: currentName })),
+      update: vi.fn(async (_id: string, p: { email?: string }) => ({
         id: "cus_1",
         object: "customer",
-        email: p.email,
+        email: p.email ?? currentEmail,
         metadata: { org_id: "org_a" },
       })),
     },
@@ -69,7 +73,7 @@ beforeEach(() => {
 describe("the Stripe customer's email follows the last person who pays", () => {
   it("a top-up paid by user B makes B's email the customer's, in Stripe and in the mirror", async () => {
     const stripe = makeStripe();
-    await adoptPayerEmailForEvent(event("checkout.session.completed", paidCheckout()), stripe as never);
+    await adoptPayerForEvent(event("checkout.session.completed", paidCheckout()), stripe as never);
 
     expect(clientMock.getUserById).toHaveBeenCalledWith("user_b");
     expect(stripe.customers.update).toHaveBeenCalledWith("cus_1", { email: CLIENT });
@@ -80,15 +84,22 @@ describe("the Stripe customer's email follows the last person who pays", () => {
     );
   });
 
-  it("changes ONLY the email", async () => {
-    const stripe = makeStripe();
-    await adoptPayerEmailForEvent(event("checkout.session.completed", paidCheckout()), stripe as never);
-    expect(Object.keys(stripe.customers.update.mock.calls[0][1])).toEqual(["email"]);
+  it("a payer with no name on record clears the previous person's name (never keeps someone else's)", async () => {
+    const stripe = makeStripe(CREATOR, "Kevin Lourd");
+    await adoptPayerForEvent(event("checkout.session.completed", paidCheckout()), stripe as never);
+    expect(stripe.customers.update).toHaveBeenCalledWith("cus_1", { email: CLIENT, name: "" });
+  });
+
+  it("the payer's name replaces the creator's name too", async () => {
+    clientMock.getUserById.mockResolvedValueOnce({ email: CLIENT, firstName: "Ethan", lastName: "Halfhide" });
+    const stripe = makeStripe(CLIENT, "Kevin Lourd");
+    await adoptPayerForEvent(event("checkout.session.completed", paidCheckout()), stripe as never);
+    expect(stripe.customers.update).toHaveBeenCalledWith("cus_1", { name: "Ethan Halfhide" });
   });
 
   it("never on an unpaid (still in flight) checkout", async () => {
     const stripe = makeStripe();
-    await adoptPayerEmailForEvent(
+    await adoptPayerForEvent(
       event("checkout.session.completed", paidCheckout({ payment_status: "unpaid" })),
       stripe as never
     );
@@ -98,7 +109,7 @@ describe("the Stripe customer's email follows the last person who pays", () => {
 
   it("an async payment that succeeds later is adopted then", async () => {
     const stripe = makeStripe();
-    await adoptPayerEmailForEvent(
+    await adoptPayerForEvent(
       event("checkout.session.async_payment_succeeded", paidCheckout()),
       stripe as never
     );
@@ -107,7 +118,7 @@ describe("the Stripe customer's email follows the last person who pays", () => {
 
   it("a checkout nobody named (no payer on it) changes nothing", async () => {
     const stripe = makeStripe();
-    await adoptPayerEmailForEvent(
+    await adoptPayerForEvent(
       event("checkout.session.completed", paidCheckout({ metadata: { org_id: "org_a" } })),
       stripe as never
     );
@@ -116,14 +127,14 @@ describe("the Stripe customer's email follows the last person who pays", () => {
 
   it("is a no-op when the payer's email is already the customer's", async () => {
     const stripe = makeStripe("CLIENT@acme.com");
-    await adoptPayerEmailForEvent(event("checkout.session.completed", paidCheckout()), stripe as never);
+    await adoptPayerForEvent(event("checkout.session.completed", paidCheckout()), stripe as never);
     expect(stripe.customers.update).not.toHaveBeenCalled();
   });
 
   it("keeps the email when the payer has none on record", async () => {
     clientMock.getUserById.mockResolvedValueOnce(null);
     const stripe = makeStripe();
-    await adoptPayerEmailForEvent(event("checkout.session.completed", paidCheckout()), stripe as never);
+    await adoptPayerForEvent(event("checkout.session.completed", paidCheckout()), stripe as never);
     expect(stripe.customers.retrieve).not.toHaveBeenCalled();
     expect(stripe.customers.update).not.toHaveBeenCalled();
   });
@@ -132,25 +143,26 @@ describe("the Stripe customer's email follows the last person who pays", () => {
     clientMock.getUserById.mockRejectedValueOnce(new Error("client-service 503"));
     const stripe = makeStripe();
     await expect(
-      adoptPayerEmailForEvent(event("checkout.session.completed", paidCheckout()), stripe as never)
+      adoptPayerForEvent(event("checkout.session.completed", paidCheckout()), stripe as never)
     ).rejects.toThrow("client-service 503");
   });
 
   it("only success events are candidates", () => {
-    expect(isPayerEmailEvent("checkout.session.completed")).toBe(true);
-    expect(isPayerEmailEvent("checkout.session.async_payment_succeeded")).toBe(true);
-    expect(isPayerEmailEvent("setup_intent.succeeded")).toBe(true);
-    expect(isPayerEmailEvent("checkout.session.async_payment_failed")).toBe(false);
-    expect(isPayerEmailEvent("payment_intent.payment_failed")).toBe(false);
-    expect(isPayerEmailEvent("payment_intent.succeeded")).toBe(false);
-    expect(isPayerEmailEvent("setup_intent.setup_failed")).toBe(false);
+    expect(isPayerIdentityEvent("checkout.session.completed")).toBe(true);
+    expect(isPayerIdentityEvent("checkout.session.async_payment_succeeded")).toBe(true);
+    expect(isPayerIdentityEvent("setup_intent.succeeded")).toBe(true);
+    expect(isPayerIdentityEvent("checkout.session.expired")).toBe(true);
+    expect(isPayerIdentityEvent("checkout.session.async_payment_failed")).toBe(false);
+    expect(isPayerIdentityEvent("payment_intent.payment_failed")).toBe(false);
+    expect(isPayerIdentityEvent("payment_intent.succeeded")).toBe(false);
+    expect(isPayerIdentityEvent("setup_intent.setup_failed")).toBe(false);
   });
 });
 
 describe("the Stripe customer's email follows the last person who saves a card", () => {
   it("a card saved through our in-page setup adopts the payer named on the SetupIntent", async () => {
     const stripe = makeStripe();
-    await adoptPayerEmailForEvent(
+    await adoptPayerForEvent(
       event("setup_intent.succeeded", {
         id: "seti_1",
         customer: "cus_1",
@@ -165,7 +177,7 @@ describe("the Stripe customer's email follows the last person who saves a card",
 
   it("our setup SetupIntent opened by nobody changes nothing", async () => {
     const stripe = makeStripe();
-    await adoptPayerEmailForEvent(
+    await adoptPayerForEvent(
       event("setup_intent.succeeded", { id: "seti_1", customer: "cus_1", metadata: { purpose: "card-setup" } }),
       stripe as never
     );
@@ -176,7 +188,7 @@ describe("the Stripe customer's email follows the last person who saves a card",
   it("a card saved in the portal adopts (and consumes) the person who opened it", async () => {
     dbMock.queueDelete("card_update_openers", [{ userId: "user_b", openedAt: new Date() }]);
     const stripe = makeStripe();
-    await adoptPayerEmailForEvent(
+    await adoptPayerForEvent(
       event("setup_intent.succeeded", { id: "seti_p", customer: "cus_1", metadata: {} }),
       stripe as never
     );
@@ -188,7 +200,7 @@ describe("the Stripe customer's email follows the last person who saves a card",
   it("a SetupIntent nobody opened a portal for changes nothing", async () => {
     dbMock.queueDelete("card_update_openers", []);
     const stripe = makeStripe();
-    await adoptPayerEmailForEvent(
+    await adoptPayerForEvent(
       event("setup_intent.succeeded", { id: "seti_p", customer: "cus_1", metadata: {} }),
       stripe as never
     );
@@ -201,10 +213,82 @@ describe("the Stripe customer's email follows the last person who saves a card",
       { userId: "user_b", openedAt: new Date(Date.now() - CARD_UPDATE_OPENER_MAX_AGE_MS - 60_000) },
     ]);
     const stripe = makeStripe();
-    await adoptPayerEmailForEvent(
+    await adoptPayerForEvent(
       event("setup_intent.succeeded", { id: "seti_p", customer: "cus_1", metadata: {} }),
       stripe as never
     );
+    expect(stripe.customers.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("whoever opens a checkout sees their OWN identity (ETHAN-STAFF-CHECKOUT-1118)", () => {
+  it("a client opening checkout on a customer staff created takes it over before the page loads: email AND name", async () => {
+    clientMock.getUserById.mockResolvedValueOnce({ email: CLIENT, firstName: "Ethan", lastName: "Halfhide" });
+    const stripe = makeStripe("staff@distribute.you", "Kevin Lourd");
+    await showOpenerOnCustomer(stripe as never, "cus_1", "user_b");
+    expect(stripe.customers.update).toHaveBeenCalledWith("cus_1", { email: CLIENT, name: "Ethan Halfhide" });
+    expect(recordApiSnapshot).toHaveBeenCalled();
+  });
+
+  it("nothing to change when the opener already is the customer", async () => {
+    clientMock.getUserById.mockResolvedValueOnce({ email: CLIENT, firstName: "Ethan", lastName: "Halfhide" });
+    const stripe = makeStripe(CLIENT, "Ethan Halfhide");
+    await showOpenerOnCustomer(stripe as never, "cus_1", "user_b");
+    expect(stripe.customers.update).not.toHaveBeenCalled();
+  });
+
+  it("no opener named, or no customer on the session = nothing changes", async () => {
+    const stripe = makeStripe();
+    await showOpenerOnCustomer(stripe as never, "cus_1", null);
+    await showOpenerOnCustomer(stripe as never, null, "user_b");
+    expect(clientMock.getUserById).not.toHaveBeenCalled();
+    expect(stripe.customers.update).not.toHaveBeenCalled();
+  });
+
+  it("fails loud when client-service cannot be asked (the open is retried)", async () => {
+    clientMock.getUserById.mockRejectedValueOnce(new Error("client-service 503"));
+    await expect(showOpenerOnCustomer(makeStripe() as never, "cus_1", "user_b")).rejects.toThrow("client-service 503");
+  });
+});
+
+describe("an abandoned checkout hands the customer back to the last payer", () => {
+  const STAFF = "staff@distribute.you";
+  function expired(opener = "staff_user") {
+    return event("checkout.session.expired", {
+      id: "cs_2",
+      object: "checkout.session",
+      status: "expired",
+      customer: "cus_1",
+      metadata: { org_id: "org_a", payer_user_id: opener },
+    });
+  }
+
+  it("staff opened and abandoned on a paying client's org: the client's identity comes back", async () => {
+    dbMock.queueSelect("checkout_sessions", [{ payer: "client_user" }]);
+    clientMock.getUserById.mockImplementation(async (id: string) =>
+      id === "staff_user"
+        ? { email: STAFF, firstName: "Kevin", lastName: "Lourd" }
+        : { email: CLIENT, firstName: "Ethan", lastName: "Halfhide" }
+    );
+    const stripe = makeStripe(STAFF, "Kevin Lourd");
+    await adoptPayerForEvent(expired(), stripe as never);
+    expect(stripe.customers.update).toHaveBeenCalledWith("cus_1", { email: CLIENT, name: "Ethan Halfhide" });
+  });
+
+  it("someone opened since (the customer no longer carries the opener's email): left alone", async () => {
+    dbMock.queueSelect("checkout_sessions", [{ payer: "client_user" }]);
+    clientMock.getUserById.mockResolvedValue({ email: STAFF, firstName: "Kevin", lastName: "Lourd" });
+    const stripe = makeStripe("someone@else.com", "Someone");
+    await adoptPayerForEvent(expired(), stripe as never);
+    expect(stripe.customers.update).not.toHaveBeenCalled();
+  });
+
+  it("nobody ever paid, or the opener IS the last payer: left alone", async () => {
+    const stripe = makeStripe(STAFF);
+    dbMock.queueSelect("checkout_sessions", []);
+    await adoptPayerForEvent(expired(), stripe as never);
+    dbMock.queueSelect("checkout_sessions", [{ payer: "staff_user" }]);
+    await adoptPayerForEvent(expired(), stripe as never);
     expect(stripe.customers.update).not.toHaveBeenCalled();
   });
 });

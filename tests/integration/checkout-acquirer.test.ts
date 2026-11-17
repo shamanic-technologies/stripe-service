@@ -8,6 +8,11 @@ const { dbMock, stripeMock } = vi.hoisted(() => {
 });
 
 vi.mock("../../src/db", () => ({ db: dbMock.db, pool: {} }));
+const clientServiceMock = vi.hoisted(() => ({ getUserById: vi.fn(async () => null) }));
+vi.mock("../../src/lib/client-service-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/lib/client-service-client")>()),
+  getUserById: clientServiceMock.getUserById,
+}));
 vi.mock("../../src/lib/stripe-client", () => ({
   makeStripeClient: () => stripeMock,
   getWebhookClient: vi.fn(),

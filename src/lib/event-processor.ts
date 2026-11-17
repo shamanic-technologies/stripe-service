@@ -27,7 +27,7 @@ import {
   isPaymentMethodDetachedEvent,
   notifyPaymentMethodRemoved,
 } from "./notify-payment-method-removed";
-import { adoptPayerEmailForEvent, isPayerEmailEvent } from "./payer-email";
+import { adoptPayerForEvent, isPayerIdentityEvent } from "./payer-email";
 
 type ProcessSource = "webhook" | "poll";
 type EventSource = ProcessSource | "api";
@@ -151,11 +151,12 @@ async function runSideEffects(event: Stripe.Event): Promise<void> {
   }
 
   // After the default-PM promotion so a failure here can never cost an org its
-  // chargeable default. Only SUCCESS events reach this: the customer's contact
-  // email follows the person who just paid or saved a card.
-  if (isPayerEmailEvent(event.type)) {
+  // chargeable default. The customer's identity follows the person who just
+  // paid or saved a card, and an abandoned checkout hands it back to the last
+  // payer (src/lib/payer-email.ts).
+  if (isPayerIdentityEvent(event.type)) {
     const stripe = await getPlatformStripe();
-    await adoptPayerEmailForEvent(event, stripe);
+    await adoptPayerForEvent(event, stripe);
   }
 
   if (isChargeRefundEvent(event.type)) {

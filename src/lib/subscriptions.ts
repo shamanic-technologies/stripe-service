@@ -8,7 +8,7 @@ import {
   getPlatformStripe,
   recordApiSnapshot,
 } from "./event-processor";
-import { payerMetadata } from "./payer-email";
+import { payerMetadata, showOpenerOnCustomer } from "./payer-email";
 
 /**
  * Stripe subscriptions, org-scoped.
@@ -469,6 +469,7 @@ export async function createSubscriptionCheckout(
   }
 
   const stripe = await getPlatformStripe();
+  await showOpenerOnCustomer(stripe, customerId, params.payerUserId);
   const session = await stripe.checkout.sessions.create(
     sessionParams,
     params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : undefined
