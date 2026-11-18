@@ -9,6 +9,7 @@ import {
   extractOrgId,
   extractString,
 } from "./event-processor";
+import { alignPaymentMethodEmails } from "./pm-billing-email";
 
 /**
  * The Stripe customer's identity (email AND name) is the PERSON IN FRONT OF IT.
@@ -30,7 +31,9 @@ import {
  *      customer takes that person's email + name. Whoever opens sees
  *      themselves, never the previous opener.
  *   2. SUCCESS (`adoptPayerForEvent`): Stripe reports the payment or the card
- *      saved; the payer's identity is (re)applied. The opener rides on the
+ *      saved; the payer's identity is (re)applied, then every saved method
+ *      still carrying a STAFF email in its billing details takes the payer's
+ *      (`pm-billing-email.ts`, BILLING-LINK-PAYMENT-METHOD-1118). The opener rides on the
  *      session's metadata (`payer_user_id`, also on the SetupIntent a setup
  *      session creates); a portal card update carries no metadata, so its
  *      opener is kept in `card_update_openers` and consumed on success.
@@ -131,6 +134,7 @@ export async function adoptPayerForEvent(
     const userId = session.metadata?.[PAYER_USER_METADATA_KEY];
     if (!customerId || !userId) return;
     await makeCustomerThePerson(stripe, customerId, userId, "paid");
+    await alignPaymentMethodEmails(stripe, customerId);
     return;
   }
 
@@ -141,6 +145,7 @@ export async function adoptPayerForEvent(
     const tagged = si.metadata?.[PAYER_USER_METADATA_KEY];
     if (tagged) {
       await makeCustomerThePerson(stripe, customerId, tagged, "saved a card");
+      await alignPaymentMethodEmails(stripe, customerId);
       return;
     }
     // A SetupIntent our own card-setup checkout created, opened by a caller
@@ -150,6 +155,7 @@ export async function adoptPayerForEvent(
     const opener = await consumeCardUpdateOpener(customerId);
     if (!opener) return;
     await makeCustomerThePerson(stripe, customerId, opener, "saved a card");
+    await alignPaymentMethodEmails(stripe, customerId);
   }
 }
 

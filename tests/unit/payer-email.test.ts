@@ -36,6 +36,10 @@ const CLIENT = "client@acme.com";
 
 function makeStripe(currentEmail: string | null = CREATOR, currentName: string | null = null) {
   return {
+    paymentMethods: {
+      list: vi.fn(async () => ({ data: [], has_more: false })),
+      update: vi.fn(async () => ({})),
+    },
     customers: {
       retrieve: vi.fn(async () => ({ id: "cus_1", object: "customer", email: currentEmail, name: currentName })),
       update: vi.fn(async (_id: string, p: { email?: string }) => ({
@@ -135,7 +139,9 @@ describe("the Stripe customer's email follows the last person who pays", () => {
     clientMock.getUserById.mockResolvedValueOnce(null);
     const stripe = makeStripe();
     await adoptPayerForEvent(event("checkout.session.completed", paidCheckout()), stripe as never);
-    expect(stripe.customers.retrieve).not.toHaveBeenCalled();
+    // only the saved-method alignment reads the customer (its rule keys on the
+    // customer's own email, not on the payer's record)
+    expect(stripe.customers.retrieve).toHaveBeenCalledTimes(1);
     expect(stripe.customers.update).not.toHaveBeenCalled();
   });
 
@@ -290,5 +296,34 @@ describe("an abandoned checkout hands the customer back to the last payer", () =
     dbMock.queueSelect("checkout_sessions", [{ payer: "staff_user" }]);
     await adoptPayerForEvent(expired(), stripe as never);
     expect(stripe.customers.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("a saved method keeps no staff email once the client pays (BILLING-LINK-PAYMENT-METHOD-1118)", () => {
+  it("a top-up paid by the client moves a Link method saved under staff's email to the client's", async () => {
+    // The OPEN moment already gave the customer the client's email; the method
+    // still carries the staff email Checkout prefilled when staff opened first.
+    const stripe = makeStripe(CLIENT, null);
+    stripe.paymentMethods.list.mockImplementation(async (p: { type: string }) => ({
+      data:
+        p.type === "link"
+          ? [{ id: "pm_link", type: "link", billing_details: { email: "kevin.lourd@gmail.com", name: "Ethan Halfhide" } }]
+          : [],
+      has_more: false,
+    }));
+    await adoptPayerForEvent(event("checkout.session.completed", paidCheckout()), stripe as never);
+    expect(stripe.paymentMethods.update).toHaveBeenCalledTimes(1);
+    expect(stripe.paymentMethods.update).toHaveBeenCalledWith("pm_link", { billing_details: { email: CLIENT } });
+    // the stored payment-method reads (they carry billing details) are dropped
+    expect(dbMock.db.delete).toHaveBeenCalled();
+  });
+
+  it("an unpaid checkout touches no method", async () => {
+    const stripe = makeStripe(CLIENT, null);
+    await adoptPayerForEvent(
+      event("checkout.session.completed", paidCheckout({ payment_status: "unpaid" })),
+      stripe as never
+    );
+    expect(stripe.paymentMethods.list).not.toHaveBeenCalled();
   });
 });

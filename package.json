@@ -20,6 +20,7 @@
     "cleanup:dup-customers": "tsx scripts/cleanup-duplicate-customers.ts",
     "backfill:invoice-provenance": "tsx scripts/backfill-invoice-provenance.ts",
     "backfill:payer-identity": "tsx scripts/backfill-payer-identity.ts",
+    "backfill:pm-billing-email": "tsx scripts/backfill-pm-billing-email.ts",
     "portal:configurations": "tsx scripts/create-portal-configurations.ts"
   },
   "keywords": [],
