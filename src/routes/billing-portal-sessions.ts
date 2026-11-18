@@ -5,7 +5,7 @@ import {
   cardUpdatePortalParams,
   invoiceHistoryPortalParams,
 } from "../lib/portal-session";
-import { recordCardUpdateOpener } from "../lib/payer-email";
+import { recordCardUpdateOpener, showOpenerOnCustomer } from "../lib/payer-email";
 
 const router = Router();
 
@@ -61,6 +61,8 @@ router.post(
           : invoiceHistoryPortalParams({ customer: body.customer, return_url: body.return_url });
 
       const ctx = await buildContext(req, res);
+      // The portal shows the customer's email: the person opening it sees theirs.
+      await showOpenerOnCustomer(ctx.stripe, body.customer, ctx.userId);
       const session = await ctx.stripe.billingPortal.sessions.create(params, stripeRequestOptions(ctx));
 
       // A card added through this session makes its opener the customer's

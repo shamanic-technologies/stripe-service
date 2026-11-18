@@ -13,7 +13,7 @@ import { recordApiSnapshot } from "../lib/event-processor";
 import { isResourceMissing } from "../lib/stripe-client";
 import { selectAcquirerForCheckout } from "../lib/acquirer-rollout";
 import { checkoutViaRevolut, UnsupportedCheckout } from "../lib/checkout-org";
-import { payerMetadata } from "../lib/payer-email";
+import { payerMetadata, showOpenerOnCustomer } from "../lib/payer-email";
 import {
   assertSubscriptionAcquirer,
   pinOrgToStripeForSubscription,
@@ -110,6 +110,14 @@ router.post("/v1/checkout/sessions", async (req: Request, res: Response, next: N
         metadata: { ...(body.setup_intent_data?.metadata ?? {}), ...payer },
       };
     }
+
+    // Stripe prefills (and Link logs in as) the customer's email: make it the
+    // person opening this checkout, never whoever opened one before.
+    await showOpenerOnCustomer(
+      ctx.stripe,
+      typeof body.customer === "string" ? body.customer : null,
+      ctx.userId
+    );
 
     const session = await ctx.stripe.checkout.sessions.create(
       params,

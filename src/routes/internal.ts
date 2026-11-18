@@ -38,7 +38,7 @@ import {
   listPaymentMethodsForRead,
 } from "../lib/payment-method-read";
 import { cardUpdatePortalParams } from "../lib/portal-session";
-import { payerMetadata, recordCardUpdateOpener } from "../lib/payer-email";
+import { payerMetadata, recordCardUpdateOpener, showOpenerOnCustomer } from "../lib/payer-email";
 import { listOrgPayments } from "../lib/payments-list";
 import { acquiringFeesByMonth } from "../lib/acquiring-fees";
 import {
@@ -776,6 +776,7 @@ router.post(
         uiMode: parsed.data.ui_mode,
         embeddedSession: async (customerId) => {
           const stripe = await getPlatformStripe();
+          await showOpenerOnCustomer(stripe, customerId, payerUserId);
           // A SETUP-mode Checkout Session: it charges nothing, and the
           // SetupIntent it creates is off_session by default, so the card is
           // chargeable later with nobody present. Card-only because that is
@@ -801,6 +802,7 @@ router.post(
         },
         hostedSession: async (customerId) => {
           const stripe = await getPlatformStripe();
+          await showOpenerOnCustomer(stripe, customerId, payerUserId);
           // Scoped to the add/replace-a-card flow: the customer never reaches
           // the portal screen that can DETACH the card we collect on. See
           // src/lib/portal-session.ts.
