@@ -41,6 +41,7 @@ import { cardUpdatePortalParams } from "../lib/portal-session";
 import { payerMetadata, recordCardUpdateOpener, showOpenerOnCustomer } from "../lib/payer-email";
 import { listOrgPayments } from "../lib/payments-list";
 import { acquiringFeesByMonth } from "../lib/acquiring-fees";
+import { cashByOrgDay } from "../lib/cash-by-org-day";
 import {
   chargeViaRevolut,
   chargeViaStripeInvoice,
@@ -924,6 +925,23 @@ router.get(
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
       return res.json(await acquiringFeesByMonth());
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+/**
+ * GET /internal/cash/by_org_day — every org's money per UTC day since
+ * inception, every acquirer: gross received, returned on its own day, net.
+ * Sums to the platform figures of GET /public/stats/billing by construction
+ * (see src/lib/cash-by-org-day.ts). Staff revenue reads. DB read only.
+ */
+router.get(
+  "/internal/cash/by_org_day",
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      return res.json(await cashByOrgDay());
     } catch (err) {
       return next(err);
     }

@@ -862,6 +862,47 @@ registry.registerPath({
   },
 });
 
+const CentsText = z.string().openapi({ description: "Integer cents as exact decimal text (no float)." });
+
+export const CashByOrgDaySchema = z
+  .object({
+    object: z.literal("cash_by_org_day"),
+    as_of: z.string().openapi({ description: "ISO instant the read was taken." }),
+    totals: z.object({
+      gross_cents: CentsText.openapi({ description: "Sum of every row's gross. Equals GET /public/stats/billing `total_paid_cents`." }),
+      returned_cents: CentsText.openapi({ description: "Sum of every row's returned. Equals GET /public/stats/billing `total_returned_cents`." }),
+      net_cents: CentsText.openapi({ description: "gross − returned. Equals GET /public/stats/billing `total_net_cents`." }),
+    }),
+    rows: z
+      .array(
+        z.object({
+          org_id: z.string().nullable().openapi({ description: "The org (same identity as every org-scoped read here). null = money with no resolvable org (the `unknown` sentinel, an org-less Revolut order), one row per day." }),
+          day: z.string().nullable().openapi({ description: "UTC day YYYY-MM-DD. null only for a mirrored payment carrying no date." }),
+          gross_cents: CentsText.openapi({ description: "Payments received that day, every acquirer, before any return: succeeded Stripe PaymentIntents, completed Revolut payment orders, standing direct payments." }),
+          returned_cents: CentsText.openapi({ description: "Settled refunds + lost disputes dated on THEIR OWN day, attributed to the org of the payment they reverse." }),
+          net_cents: CentsText.openapi({ description: "gross − returned. Negative on a day with only a return." }),
+        })
+      )
+      .openapi({ description: "One row per (org, UTC day) with any money, oldest day first, org-less row first within a day." }),
+  })
+  .openapi("CashByOrgDay");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/cash/by_org_day",
+  summary: "Every org's cash per UTC day since inception: gross, returned, net (user-less)",
+  description:
+    "Server-to-server, staff revenue. One row per (org, UTC day): gross = payments received that day on every acquirer (Stripe succeeded PaymentIntents, Revolut completed payment orders, standing direct payments), before any return; returned = succeeded Stripe refunds, lost Stripe disputes and completed Revolut refunds, each on ITS OWN day and attributed to the org of the payment it reverses; net = gross − returned. Same predicates as GET /public/stats/billing, so Σ rows gross = `total_paid_cents` and Σ rows net = `total_net_cents`. Currencies summed into one scalar like the platform figure. One SQL statement, DB read only. X-API-Key only.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  responses: {
+    200: {
+      description: "Cash by org and UTC day",
+      content: { "application/json": { schema: CashByOrgDaySchema } },
+    },
+  },
+});
+
 export const PaymentMethodsRemovedSchema = z
   .object({
     object: z.literal("payment_methods_removed"),
