@@ -4,6 +4,7 @@ import {
   directPayments,
   disputes,
   paymentIntents,
+  paymentAgencyClassifications,
   paymentOrgAttributions,
   refunds,
   revolutOrders,
@@ -53,6 +54,16 @@ import {
  * Totals are unchanged by an attribution (it moves money between rows). This
  * read is the ONLY reader of that table.
  *
+ * A STAFF AGENCY CLASSIFICATION (`payment_agency_classifications`, see
+ * `payment-agency-classifications.ts`, SAAS-CASH-1121-AGENCY-KIND) moves a
+ * SaaS payment (Stripe PI, Revolut `payment` order, direct payment) and its
+ * refunds / lost disputes from the SaaS fields to the agency fields of the
+ * SAME (org, day) row. SaaS totals drop and agency totals rise by the same
+ * amount, served as `saas_reclassified_to_agency_*_cents` so that
+ * `gross_cents + saas_reclassified_to_agency_gross_cents` still equals the
+ * public `total_paid_cents` (same for net and returned). This read is the
+ * ONLY reader of that table.
+ *
  * ONE statement, so every row and both totals come from one snapshot.
  */
 
@@ -75,6 +86,10 @@ export type CashTotals = {
   agency_gross_cents: string;
   agency_returned_cents: string;
   agency_net_cents: string;
+  /** SaaS money a staff classification served as agency instead (gross). */
+  saas_reclassified_to_agency_gross_cents: string;
+  saas_reclassified_to_agency_returned_cents: string;
+  saas_reclassified_to_agency_net_cents: string;
 };
 
 export type CashByOrgDay = {
@@ -91,6 +106,8 @@ type RawRow = {
   returned: string | null;
   agency_gross?: string | null;
   agency_returned?: string | null;
+  moved_gross?: string | null;
+  moved_returned?: string | null;
 };
 
 /** Fold the grouped rows into the served shape. Pure, so the sums are pinned. */
@@ -99,6 +116,8 @@ export function foldCashRows(raw: RawRow[], asOf: Date): CashByOrgDay {
   let returned = 0n;
   let agencyGross = 0n;
   let agencyReturned = 0n;
+  let movedGross = 0n;
+  let movedReturned = 0n;
   const rows: CashByOrgDayRow[] = raw.map((r) => {
     const g = BigInt(r.gross ?? "0");
     const ret = BigInt(r.returned ?? "0");
@@ -108,6 +127,8 @@ export function foldCashRows(raw: RawRow[], asOf: Date): CashByOrgDay {
     returned += ret;
     agencyGross += ag;
     agencyReturned += ar;
+    movedGross += BigInt(r.moved_gross ?? "0");
+    movedReturned += BigInt(r.moved_returned ?? "0");
     return {
       org_id: r.org_id,
       day: r.day,
@@ -129,6 +150,9 @@ export function foldCashRows(raw: RawRow[], asOf: Date): CashByOrgDay {
       agency_gross_cents: agencyGross.toString(),
       agency_returned_cents: agencyReturned.toString(),
       agency_net_cents: (agencyGross - agencyReturned).toString(),
+      saas_reclassified_to_agency_gross_cents: movedGross.toString(),
+      saas_reclassified_to_agency_returned_cents: movedReturned.toString(),
+      saas_reclassified_to_agency_net_cents: (movedGross - movedReturned).toString(),
     },
     rows,
   };
@@ -146,10 +170,13 @@ export async function cashByOrgDay(): Promise<CashByOrgDay> {
              COALESCE(pi.amount_received, 0)::bigint AS gross,
              0::bigint AS returned,
              0::bigint AS agency_gross,
-             0::bigint AS agency_returned
+             0::bigint AS agency_returned,
+             (cls.payment_id IS NOT NULL) AS reclass
         FROM ${paymentIntents} pi
         LEFT JOIN ${paymentOrgAttributions} att
           ON att.acquirer = 'stripe' AND att.payment_id = pi.id
+        LEFT JOIN ${paymentAgencyClassifications} cls
+          ON cls.acquirer = 'stripe' AND cls.payment_id = pi.id
        WHERE pi.status = 'succeeded'
       UNION ALL
       SELECT COALESCE(ro.org_id, att.org_id),
@@ -157,29 +184,38 @@ export async function cashByOrgDay(): Promise<CashByOrgDay> {
              CASE WHEN ro.type = 'payment' THEN COALESCE(ro.amount, 0) ELSE 0 END::bigint,
              0::bigint,
              CASE WHEN ro.type = ${REVOLUT_AGENCY_TYPE} THEN COALESCE(ro.amount, 0) ELSE 0 END::bigint,
-             0::bigint
+             0::bigint,
+             (cls.payment_id IS NOT NULL)
         FROM ${revolutOrders} ro
         LEFT JOIN ${paymentOrgAttributions} att
           ON att.acquirer = 'revolut' AND att.payment_id = ro.id
+        LEFT JOIN ${paymentAgencyClassifications} cls
+          ON cls.acquirer = 'revolut' AND cls.payment_id = ro.id
        WHERE ro.type IN ('payment', ${REVOLUT_AGENCY_TYPE}) AND ro.state = ${REVOLUT_SETTLED_STATE}
       UNION ALL
       SELECT dp.org_id,
              ${utcDay(sql`dp.recorded_at`)},
              dp.amount::bigint,
-             0::bigint, 0::bigint, 0::bigint
+             0::bigint, 0::bigint, 0::bigint,
+             (cls.payment_id IS NOT NULL)
         FROM ${directPayments} dp
+        LEFT JOIN ${paymentAgencyClassifications} cls
+          ON cls.acquirer = 'direct' AND cls.payment_id = dp.id::text
        WHERE dp.voided_at IS NULL
       UNION ALL
       SELECT COALESCE(NULLIF(COALESCE(pi_by_id.org_id, pi_by_charge.org_id), ${UNATTRIBUTED_ORG}), att.org_id),
              ${utcDay(sql`to_timestamp(r.created_stripe)`)},
              0::bigint,
              r.amount::bigint,
-             0::bigint, 0::bigint
+             0::bigint, 0::bigint,
+             (cls.payment_id IS NOT NULL)
         FROM ${refunds} r
         LEFT JOIN ${paymentIntents} pi_by_id ON pi_by_id.id = r.payment_intent
         LEFT JOIN ${paymentIntents} pi_by_charge ON pi_by_charge.latest_charge = r.charge
         LEFT JOIN ${paymentOrgAttributions} att
           ON att.acquirer = 'stripe' AND att.payment_id = COALESCE(pi_by_id.id, pi_by_charge.id)
+        LEFT JOIN ${paymentAgencyClassifications} cls
+          ON cls.acquirer = 'stripe' AND cls.payment_id = COALESCE(pi_by_id.id, pi_by_charge.id)
        WHERE r.status = ${REFUND_SETTLED_STATUS}
          AND (pi_by_id.id IS NOT NULL OR pi_by_charge.id IS NOT NULL)
       UNION ALL
@@ -187,12 +223,15 @@ export async function cashByOrgDay(): Promise<CashByOrgDay> {
              ${utcDay(sql`to_timestamp(d.created_stripe)`)},
              0::bigint,
              d.amount::bigint,
-             0::bigint, 0::bigint
+             0::bigint, 0::bigint,
+             (cls.payment_id IS NOT NULL)
         FROM ${disputes} d
         LEFT JOIN ${paymentIntents} pi_by_id ON pi_by_id.id = d.payment_intent
         LEFT JOIN ${paymentIntents} pi_by_charge ON pi_by_charge.latest_charge = d.charge
         LEFT JOIN ${paymentOrgAttributions} att
           ON att.acquirer = 'stripe' AND att.payment_id = COALESCE(pi_by_id.id, pi_by_charge.id)
+        LEFT JOIN ${paymentAgencyClassifications} cls
+          ON cls.acquirer = 'stripe' AND cls.payment_id = COALESCE(pi_by_id.id, pi_by_charge.id)
        WHERE d.status = ${DISPUTE_SETTLED_STATUS}
          AND (pi_by_id.id IS NOT NULL OR pi_by_charge.id IS NOT NULL)
       UNION ALL
@@ -201,19 +240,24 @@ export async function cashByOrgDay(): Promise<CashByOrgDay> {
              0::bigint,
              CASE WHEN parent.type = 'payment' THEN COALESCE(rf.amount, 0) ELSE 0 END::bigint,
              0::bigint,
-             CASE WHEN parent.type = ${REVOLUT_AGENCY_TYPE} THEN COALESCE(rf.amount, 0) ELSE 0 END::bigint
+             CASE WHEN parent.type = ${REVOLUT_AGENCY_TYPE} THEN COALESCE(rf.amount, 0) ELSE 0 END::bigint,
+             (cls.payment_id IS NOT NULL)
         FROM ${revolutOrders} rf
         JOIN ${revolutOrders} parent ON parent.id = rf.related_order_id
         LEFT JOIN ${paymentOrgAttributions} att
           ON att.acquirer = 'revolut' AND att.payment_id = parent.id
+        LEFT JOIN ${paymentAgencyClassifications} cls
+          ON cls.acquirer = 'revolut' AND cls.payment_id = parent.id
        WHERE rf.type = 'refund' AND rf.state = ${REVOLUT_SETTLED_STATE}
          AND parent.type IN ('payment', ${REVOLUT_AGENCY_TYPE})
     )
     SELECT org_id, day,
-           SUM(gross)::text AS gross,
-           SUM(returned)::text AS returned,
-           SUM(agency_gross)::text AS agency_gross,
-           SUM(agency_returned)::text AS agency_returned
+           SUM(CASE WHEN reclass THEN 0 ELSE gross END)::text AS gross,
+           SUM(CASE WHEN reclass THEN 0 ELSE returned END)::text AS returned,
+           SUM(agency_gross + CASE WHEN reclass THEN gross ELSE 0 END)::text AS agency_gross,
+           SUM(agency_returned + CASE WHEN reclass THEN returned ELSE 0 END)::text AS agency_returned,
+           SUM(CASE WHEN reclass THEN gross ELSE 0 END)::text AS moved_gross,
+           SUM(CASE WHEN reclass THEN returned ELSE 0 END)::text AS moved_returned
       FROM movements
      GROUP BY org_id, day
     HAVING SUM(gross) <> 0 OR SUM(returned) <> 0

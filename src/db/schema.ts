@@ -522,3 +522,24 @@ export const paymentOrgAttributions = pgTable(
   },
   (table) => [primaryKey({ columns: [table.acquirer, table.paymentId] })]
 );
+
+// A STAFF statement: "this recorded payment is AGENCY money, not SaaS"
+// (SAAS-CASH-1121-AGENCY-KIND). One row per payment (Stripe PaymentIntent,
+// Revolut `payment` order, or direct payment), append-only, never updated or
+// deleted by any route.
+//
+// Read ONLY by GET /internal/cash/by_org_day, which serves the payment (and its
+// refunds / lost disputes) in the agency fields of its (org, day) row instead
+// of the SaaS ones. It must NEVER feed payment_summary, credited, any balance,
+// paying-account counts, first-payment instants or public stats.
+export const paymentAgencyClassifications = pgTable(
+  "payment_agency_classifications",
+  {
+    acquirer: text("acquirer").notNull(), // 'stripe' | 'revolut' | 'direct'
+    paymentId: text("payment_id").notNull(), // pi_..., Revolut order id, direct payment uuid
+    recordedBy: text("recorded_by").notNull(), // staff email
+    note: text("note").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.acquirer, table.paymentId] })]
+);

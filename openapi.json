@@ -1007,6 +1007,18 @@
               "agency_net_cents": {
                 "type": "string",
                 "description": "agency gross − agency returned. Revenue WITH agency = net_cents + agency_net_cents."
+              },
+              "saas_reclassified_to_agency_gross_cents": {
+                "type": "string",
+                "description": "SaaS payments a staff member classified as agency money (POST /internal/payment_agency_classifications), served in agency_gross_cents instead of gross_cents. Identity: gross_cents + this = GET /public/stats/billing `total_paid_cents`."
+              },
+              "saas_reclassified_to_agency_returned_cents": {
+                "type": "string",
+                "description": "Refunds + lost disputes of those classified payments, served in agency_returned_cents. returned_cents + this = `total_returned_cents`."
+              },
+              "saas_reclassified_to_agency_net_cents": {
+                "type": "string",
+                "description": "Reclassified gross − reclassified returned. net_cents + this = `total_net_cents`."
               }
             },
             "required": [
@@ -1015,7 +1027,10 @@
               "net_cents",
               "agency_gross_cents",
               "agency_returned_cents",
-              "agency_net_cents"
+              "agency_net_cents",
+              "saas_reclassified_to_agency_gross_cents",
+              "saas_reclassified_to_agency_returned_cents",
+              "saas_reclassified_to_agency_net_cents"
             ]
           },
           "rows": {
@@ -1047,11 +1062,11 @@
                 },
                 "agency_gross_cents": {
                   "type": "string",
-                  "description": "AGENCY money received that day: completed Revolut `payment_request` orders (payment links staff created and sent by hand = agency fees, not SaaS top-ups). Never in gross_cents."
+                  "description": "AGENCY money received that day: completed Revolut `payment_request` orders (payment links staff created and sent by hand = agency fees, not SaaS top-ups), plus any payment a staff member classified as agency (POST /internal/payment_agency_classifications). Never in gross_cents."
                 },
                 "agency_returned_cents": {
                   "type": "string",
-                  "description": "Completed Revolut refunds of a `payment_request` order, on the refund's own day. Never in returned_cents."
+                  "description": "Completed Revolut refunds of a `payment_request` order, plus refunds / lost disputes of a payment classified as agency, on the return's own day. Never in returned_cents."
                 },
                 "agency_net_cents": {
                   "type": "string",
@@ -1158,6 +1173,81 @@
           "acquirer",
           "payment_id",
           "org_id",
+          "recorded_by",
+          "note"
+        ]
+      },
+      "PaymentAgencyClassification": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "payment_agency_classification"
+            ]
+          },
+          "acquirer": {
+            "type": "string",
+            "enum": [
+              "stripe",
+              "revolut",
+              "direct"
+            ]
+          },
+          "payment_id": {
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "type": "integer",
+            "description": "Unix seconds."
+          }
+        },
+        "required": [
+          "object",
+          "acquirer",
+          "payment_id",
+          "recorded_by",
+          "note",
+          "recorded_at"
+        ]
+      },
+      "RecordAgencyClassificationRequest": {
+        "type": "object",
+        "properties": {
+          "acquirer": {
+            "type": "string",
+            "enum": [
+              "stripe",
+              "revolut",
+              "direct"
+            ],
+            "description": "Where the payment is recorded."
+          },
+          "payment_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stripe PaymentIntent id (`pi_…`), Revolut `payment` order id, or direct payment id (uuid)."
+          },
+          "recorded_by": {
+            "type": "string",
+            "format": "email",
+            "description": "Email of the staff member stating it."
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why: what the agency work was. Internal."
+          }
+        },
+        "required": [
+          "acquirer",
+          "payment_id",
           "recorded_by",
           "note"
         ]
@@ -3226,7 +3316,7 @@
     "/internal/cash/by_org_day": {
       "get": {
         "summary": "Every org's cash per UTC day since inception: gross, returned, net (user-less)",
-        "description": "Server-to-server, staff revenue. One row per (org, UTC day): gross = payments received that day on every acquirer (Stripe succeeded PaymentIntents, Revolut completed payment orders, standing direct payments), before any return; returned = succeeded Stripe refunds, lost Stripe disputes and completed Revolut refunds, each on ITS OWN day and attributed to the org of the payment it reverses; net = gross − returned. Same predicates as GET /public/stats/billing, so Σ rows gross = `total_paid_cents` and Σ rows net = `total_net_cents`. Currencies summed into one scalar like the platform figure. Agency money (completed Revolut `payment_request` orders and their refunds) is served ONLY in the `agency_*` fields, never in the SaaS ones. An org-less payment a staff member attributed (POST /internal/payment_attributions) is served on that org's row, its returns too; totals are unchanged by an attribution. One SQL statement, DB read only. X-API-Key only.",
+        "description": "Server-to-server, staff revenue. One row per (org, UTC day): gross = payments received that day on every acquirer (Stripe succeeded PaymentIntents, Revolut completed payment orders, standing direct payments), before any return; returned = succeeded Stripe refunds, lost Stripe disputes and completed Revolut refunds, each on ITS OWN day and attributed to the org of the payment it reverses; net = gross − returned. Same predicates as GET /public/stats/billing, so Σ rows gross = `total_paid_cents` and Σ rows net = `total_net_cents`. Currencies summed into one scalar like the platform figure. Agency money (completed Revolut `payment_request` orders and their refunds) is served ONLY in the `agency_*` fields, never in the SaaS ones. An org-less payment a staff member attributed (POST /internal/payment_attributions) is served on that org's row, its returns too; totals are unchanged by an attribution. A payment a staff member classified as agency (POST /internal/payment_agency_classifications) and its returns move from the SaaS fields to the agency fields of the same row; totals state the moved amount in `saas_reclassified_to_agency_*_cents`, so gross_cents + saas_reclassified_to_agency_gross_cents = `total_paid_cents` (same for returned and net). One SQL statement, DB read only. X-API-Key only.",
         "tags": [
           "Internal"
         ],
@@ -3352,6 +3442,127 @@
                       "type": "array",
                       "items": {
                         "$ref": "#/components/schemas/PaymentAttribution"
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "data",
+                    "has_more"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/payment_agency_classifications": {
+      "post": {
+        "summary": "State that a recorded payment is agency money (staff)",
+        "description": "Staff-only (X-API-Key). Records, append-only, that one recorded payment (Stripe PaymentIntent, Revolut `payment` order, or direct payment) is AGENCY money, not SaaS. Read ONLY by GET /internal/cash/by_org_day, which then serves that payment and its refunds / lost disputes in the agency fields of its (org, day) row and states the moved amount in the totals' `saas_reclassified_to_agency_*_cents`. It never changes payment_summary, credited, any balance, paying-account counts, first-payment instants or GET /public/stats/billing. 201 = recorded; 200 = already stated (the first statement stands); 404 `payment_not_found`; 409 `already_agency` (a Revolut `payment_request` order is agency money by construction).",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordAgencyClassificationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Already stated; nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentAgencyClassification"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentAgencyClassification"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`payment_not_found`: no such recorded payment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`already_agency`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Every staff agency classification of a payment",
+        "description": "Staff-only (X-API-Key). Oldest first.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "list"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PaymentAgencyClassification"
                       }
                     },
                     "has_more": {

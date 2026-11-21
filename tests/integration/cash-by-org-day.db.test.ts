@@ -110,6 +110,11 @@ describe.skipIf(!DB_URL)("GET /internal/cash/by_org_day (real Postgres)", () => 
     expect(res.body.object).toBe("cash_by_org_day");
     expect(typeof res.body.as_of).toBe("string");
     const Z = { agency_gross_cents: "0", agency_returned_cents: "0", agency_net_cents: "0" };
+    const NOTHING_MOVED = {
+      saas_reclassified_to_agency_gross_cents: "0",
+      saas_reclassified_to_agency_returned_cents: "0",
+      saas_reclassified_to_agency_net_cents: "0",
+    };
     expect(res.body.rows).toEqual([
       { org_id: "org_A", day: "2026-10-01", gross_cents: "10000", returned_cents: "0", net_cents: "10000", ...Z },
       { org_id: "org_B", day: "2026-10-01", gross_cents: "5000", returned_cents: "0", net_cents: "5000", ...Z },
@@ -122,7 +127,7 @@ describe.skipIf(!DB_URL)("GET /internal/cash/by_org_day (real Postgres)", () => 
       { org_id: "org_B", day: "2026-10-07", gross_cents: "0", returned_cents: "2000", net_cents: "-2000", ...Z },
       { org_id: "org_C", day: "2026-10-09", gross_cents: "0", returned_cents: "1500", net_cents: "-1500", ...Z },
     ]);
-    expect(res.body.totals).toEqual({ gross_cents: "24800", returned_cents: "7500", net_cents: "17300", ...Z });
+    expect(res.body.totals).toEqual({ gross_cents: "24800", returned_cents: "7500", net_cents: "17300", ...Z, ...NOTHING_MOVED });
   });
 
   it("Σ rows == totals == GET /public/stats/billing on the same rows", async () => {
