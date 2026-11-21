@@ -872,15 +872,21 @@ export const CashByOrgDaySchema = z
       gross_cents: CentsText.openapi({ description: "Sum of every row's gross. Equals GET /public/stats/billing `total_paid_cents`." }),
       returned_cents: CentsText.openapi({ description: "Sum of every row's returned. Equals GET /public/stats/billing `total_returned_cents`." }),
       net_cents: CentsText.openapi({ description: "gross − returned. Equals GET /public/stats/billing `total_net_cents`." }),
+      agency_gross_cents: CentsText.openapi({ description: "Sum of every row's agency gross. Agency money is in NO SaaS figure and in nothing GET /public/stats/billing serves." }),
+      agency_returned_cents: CentsText.openapi({ description: "Sum of every row's agency returned." }),
+      agency_net_cents: CentsText.openapi({ description: "agency gross − agency returned. Revenue WITH agency = net_cents + agency_net_cents." }),
     }),
     rows: z
       .array(
         z.object({
-          org_id: z.string().nullable().openapi({ description: "The org (same identity as every org-scoped read here). null = money with no resolvable org (the `unknown` sentinel, an org-less Revolut order), one row per day." }),
+          org_id: z.string().nullable().openapi({ description: "The org (same identity as every org-scoped read here): the payment's own org, else a staff attribution (POST /internal/payment_attributions). null = money with no resolvable org (the `unknown` sentinel, an org-less Revolut order, no attribution), one row per day." }),
           day: z.string().nullable().openapi({ description: "UTC day YYYY-MM-DD. null only for a mirrored payment carrying no date." }),
           gross_cents: CentsText.openapi({ description: "Payments received that day, every acquirer, before any return: succeeded Stripe PaymentIntents, completed Revolut payment orders, standing direct payments." }),
           returned_cents: CentsText.openapi({ description: "Settled refunds + lost disputes dated on THEIR OWN day, attributed to the org of the payment they reverse." }),
           net_cents: CentsText.openapi({ description: "gross − returned. Negative on a day with only a return." }),
+          agency_gross_cents: CentsText.openapi({ description: "AGENCY money received that day: completed Revolut `payment_request` orders (payment links staff created and sent by hand = agency fees, not SaaS top-ups). Never in gross_cents." }),
+          agency_returned_cents: CentsText.openapi({ description: "Completed Revolut refunds of a `payment_request` order, on the refund's own day. Never in returned_cents." }),
+          agency_net_cents: CentsText.openapi({ description: "agency gross − agency returned." }),
         })
       )
       .openapi({ description: "One row per (org, UTC day) with any money, oldest day first, org-less row first within a day." }),
@@ -892,13 +898,74 @@ registry.registerPath({
   path: "/internal/cash/by_org_day",
   summary: "Every org's cash per UTC day since inception: gross, returned, net (user-less)",
   description:
-    "Server-to-server, staff revenue. One row per (org, UTC day): gross = payments received that day on every acquirer (Stripe succeeded PaymentIntents, Revolut completed payment orders, standing direct payments), before any return; returned = succeeded Stripe refunds, lost Stripe disputes and completed Revolut refunds, each on ITS OWN day and attributed to the org of the payment it reverses; net = gross − returned. Same predicates as GET /public/stats/billing, so Σ rows gross = `total_paid_cents` and Σ rows net = `total_net_cents`. Currencies summed into one scalar like the platform figure. One SQL statement, DB read only. X-API-Key only.",
+    "Server-to-server, staff revenue. One row per (org, UTC day): gross = payments received that day on every acquirer (Stripe succeeded PaymentIntents, Revolut completed payment orders, standing direct payments), before any return; returned = succeeded Stripe refunds, lost Stripe disputes and completed Revolut refunds, each on ITS OWN day and attributed to the org of the payment it reverses; net = gross − returned. Same predicates as GET /public/stats/billing, so Σ rows gross = `total_paid_cents` and Σ rows net = `total_net_cents`. Currencies summed into one scalar like the platform figure. Agency money (completed Revolut `payment_request` orders and their refunds) is served ONLY in the `agency_*` fields, never in the SaaS ones. An org-less payment a staff member attributed (POST /internal/payment_attributions) is served on that org's row, its returns too; totals are unchanged by an attribution. One SQL statement, DB read only. X-API-Key only.",
   tags: ["Internal"],
   security: apiKeySec,
   responses: {
     200: {
       description: "Cash by org and UTC day",
       content: { "application/json": { schema: CashByOrgDaySchema } },
+    },
+  },
+});
+
+export const RecordPaymentAttributionRequestSchema = z
+  .object({
+    acquirer: z.enum(["stripe", "revolut"]).openapi({ description: "Which mirror holds the payment." }),
+    payment_id: z.string().trim().min(1).openapi({
+      description: "Stripe PaymentIntent id (`pi_…`) or Revolut order id (a `payment` or `payment_request` order).",
+    }),
+    org_id: z.string().trim().min(1).openapi({ description: "The org this payment belongs to." }),
+    recorded_by: z.string().email().openapi({ description: "Email of the staff member stating it." }),
+    note: z.string().trim().min(1).openapi({ description: "Why: who paid, for what. Internal." }),
+  })
+  .openapi("RecordPaymentAttributionRequest");
+
+export const PaymentAttributionSchema = z
+  .object({
+    object: z.literal("payment_attribution"),
+    acquirer: z.enum(["stripe", "revolut"]),
+    payment_id: z.string(),
+    org_id: z.string(),
+    recorded_by: z.string(),
+    note: z.string(),
+    recorded_at: z.number().int().openapi({ description: "Unix seconds." }),
+  })
+  .openapi("PaymentAttribution");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/payment_attributions",
+  summary: "State that an org-less payment belongs to an org (staff)",
+  description:
+    "Staff-only (X-API-Key). Records, append-only, that a mirrored payment whose row carries NO org (a Stripe PaymentIntent on the `unknown` sentinel, a Revolut order with a null `org_id`) belongs to `org_id`. Read ONLY by GET /internal/cash/by_org_day, which then serves that payment and its returns on the org's row. It never feeds the per-org payment summary, credited, paying-account counts, first-payment instants, public stats or anything that grants credit. 201 = recorded; 200 = the same org was already stated (nothing changed); 404 `payment_not_found`; 409 `payment_has_org` (the row already carries an org) or `attributed_to_other_org` (already stated for a different org; never overwritten).",
+  tags: ["Internal"],
+  security: apiKeySec,
+  request: { body: { content: { "application/json": { schema: RecordPaymentAttributionRequestSchema } } } },
+  responses: {
+    201: { description: "Recorded", content: { "application/json": { schema: PaymentAttributionSchema } } },
+    200: { description: "Already stated for this org; nothing changed", content: { "application/json": { schema: PaymentAttributionSchema } } },
+    400: { description: "Invalid body", content: { "application/json": { schema: ErrorResponseSchema } } },
+    404: { description: "`payment_not_found`: no such mirrored payment", content: { "application/json": { schema: ErrorResponseSchema } } },
+    409: { description: "`payment_has_org` or `attributed_to_other_org`", content: { "application/json": { schema: ErrorResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/payment_attributions",
+  summary: "Every staff attribution of an org-less payment",
+  description: "Staff-only (X-API-Key). Oldest first.",
+  tags: ["Internal"],
+  security: apiKeySec,
+  responses: {
+    200: {
+      description: "List",
+      content: {
+        "application/json": {
+          schema: z.object({ object: z.literal("list"), data: z.array(PaymentAttributionSchema), has_more: z.boolean() }),
+        },
+      },
     },
   },
 });

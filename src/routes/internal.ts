@@ -43,6 +43,14 @@ import { listOrgPayments } from "../lib/payments-list";
 import { acquiringFeesByMonth } from "../lib/acquiring-fees";
 import { cashByOrgDay } from "../lib/cash-by-org-day";
 import {
+  AttributedToOtherOrg,
+  PaymentHasOrg,
+  PaymentNotFound,
+  listPaymentAttributions,
+  recordPaymentAttribution,
+  type PaymentAttribution,
+} from "../lib/payment-attributions";
+import {
   chargeViaRevolut,
   chargeViaStripeInvoice,
   ChargeSuperseded,
@@ -78,6 +86,7 @@ import {
   ChargeByOrgRequestSchema,
   CardSetupRequestSchema,
   RecordDirectPaymentRequestSchema,
+  RecordPaymentAttributionRequestSchema,
   VoidDirectPaymentRequestSchema,
 } from "../schemas";
 
@@ -942,6 +951,86 @@ router.get(
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
       return res.json(await cashByOrgDay());
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+// ===== Staff attribution of an org-less payment (SAAS-CASH-1121-AGENCY) =====
+//
+// See `src/lib/payment-attributions.ts`. Read ONLY by the cash-by-org-day read.
+
+function paymentAttributionView(a: PaymentAttribution) {
+  return {
+    object: "payment_attribution" as const,
+    acquirer: a.acquirer,
+    payment_id: a.paymentId,
+    org_id: a.orgId,
+    recorded_by: a.recordedBy,
+    note: a.note,
+    recorded_at: Math.floor(a.recordedAt.getTime() / 1000),
+  };
+}
+
+/**
+ * POST /internal/payment_attributions — state that an org-less payment belongs
+ * to an org. 201 recorded, 200 same org already stated, 404 not mirrored,
+ * 409 `payment_has_org` / `attributed_to_other_org`.
+ */
+router.post(
+  "/internal/payment_attributions",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = RecordPaymentAttributionRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid request", details: parsed.error.flatten() });
+      }
+      res.locals.orgId = parsed.data.org_id;
+      const { attribution, created } = await recordPaymentAttribution({
+        acquirer: parsed.data.acquirer,
+        paymentId: parsed.data.payment_id,
+        orgId: parsed.data.org_id,
+        recordedBy: parsed.data.recorded_by,
+        note: parsed.data.note,
+      });
+      return res.status(created ? 201 : 200).json(paymentAttributionView(attribution));
+    } catch (err) {
+      if (err instanceof PaymentNotFound) {
+        return res.status(404).json({ error: messageOf(err), code: "payment_not_found" });
+      }
+      if (err instanceof PaymentHasOrg) {
+        return res.status(409).json({
+          error: messageOf(err),
+          code: "payment_has_org",
+          org_id: err.orgId,
+        });
+      }
+      if (err instanceof AttributedToOtherOrg) {
+        return res.status(409).json({
+          error: messageOf(err),
+          code: "attributed_to_other_org",
+          existing: paymentAttributionView(err.existing),
+        });
+      }
+      return next(err);
+    }
+  }
+);
+
+/** GET /internal/payment_attributions — every staff attribution, oldest first. */
+router.get(
+  "/internal/payment_attributions",
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rows = await listPaymentAttributions();
+      return res.json({
+        object: "list",
+        data: rows.map(paymentAttributionView),
+        has_more: false,
+      });
     } catch (err) {
       return next(err);
     }

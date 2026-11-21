@@ -61,6 +61,8 @@ export async function revolutTotalsByCurrency(
         eq(revolutOrders.type, "refund"),
         eq(revolutOrders.state, "completed"),
         eq(parent.orgId, orgId),
+        // Only a refund of a top-up: an agency payment link is never an org's money here.
+        eq(parent.type, "payment"),
         ...(refundBound ? [refundBound] : [])
       )
     )
