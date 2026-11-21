@@ -51,6 +51,13 @@ import {
   type PaymentAttribution,
 } from "../lib/payment-attributions";
 import {
+  ClassifiedPaymentNotFound,
+  PaymentAlreadyAgency,
+  listAgencyClassifications,
+  recordAgencyClassification,
+  type PaymentAgencyClassification,
+} from "../lib/payment-agency-classifications";
+import {
   chargeViaRevolut,
   chargeViaStripeInvoice,
   ChargeSuperseded,
@@ -87,6 +94,7 @@ import {
   CardSetupRequestSchema,
   RecordDirectPaymentRequestSchema,
   RecordPaymentAttributionRequestSchema,
+  RecordAgencyClassificationRequestSchema,
   VoidDirectPaymentRequestSchema,
 } from "../schemas";
 
@@ -1015,6 +1023,73 @@ router.post(
           existing: paymentAttributionView(err.existing),
         });
       }
+      return next(err);
+    }
+  }
+);
+
+// ===== Staff agency classification of a payment (SAAS-CASH-1121-AGENCY-KIND) =====
+//
+// See `src/lib/payment-agency-classifications.ts`. Read ONLY by the
+// cash-by-org-day read.
+
+function agencyClassificationView(c: PaymentAgencyClassification) {
+  return {
+    object: "payment_agency_classification" as const,
+    acquirer: c.acquirer,
+    payment_id: c.paymentId,
+    recorded_by: c.recordedBy,
+    note: c.note,
+    recorded_at: Math.floor(c.recordedAt.getTime() / 1000),
+  };
+}
+
+/**
+ * POST /internal/payment_agency_classifications — state that a recorded
+ * payment is agency money. 201 recorded, 200 already stated, 404 not recorded,
+ * 409 `already_agency`.
+ */
+router.post(
+  "/internal/payment_agency_classifications",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = RecordAgencyClassificationRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid request", details: parsed.error.flatten() });
+      }
+      const { classification, created } = await recordAgencyClassification({
+        acquirer: parsed.data.acquirer,
+        paymentId: parsed.data.payment_id,
+        recordedBy: parsed.data.recorded_by,
+        note: parsed.data.note,
+      });
+      return res.status(created ? 201 : 200).json(agencyClassificationView(classification));
+    } catch (err) {
+      if (err instanceof ClassifiedPaymentNotFound) {
+        return res.status(404).json({ error: messageOf(err), code: "payment_not_found" });
+      }
+      if (err instanceof PaymentAlreadyAgency) {
+        return res.status(409).json({ error: messageOf(err), code: "already_agency" });
+      }
+      return next(err);
+    }
+  }
+);
+
+/** GET /internal/payment_agency_classifications — every classification, oldest first. */
+router.get(
+  "/internal/payment_agency_classifications",
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rows = await listAgencyClassifications();
+      return res.json({
+        object: "list",
+        data: rows.map(agencyClassificationView),
+        has_more: false,
+      });
+    } catch (err) {
       return next(err);
     }
   }
