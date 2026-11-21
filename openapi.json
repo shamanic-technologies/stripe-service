@@ -968,6 +968,87 @@
           "fleet"
         ]
       },
+      "CashByOrgDay": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "cash_by_org_day"
+            ]
+          },
+          "as_of": {
+            "type": "string",
+            "description": "ISO instant the read was taken."
+          },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "gross_cents": {
+                "type": "string",
+                "description": "Sum of every row's gross. Equals GET /public/stats/billing `total_paid_cents`."
+              },
+              "returned_cents": {
+                "type": "string",
+                "description": "Sum of every row's returned. Equals GET /public/stats/billing `total_returned_cents`."
+              },
+              "net_cents": {
+                "type": "string",
+                "description": "gross − returned. Equals GET /public/stats/billing `total_net_cents`."
+              }
+            },
+            "required": [
+              "gross_cents",
+              "returned_cents",
+              "net_cents"
+            ]
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "org_id": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "The org (same identity as every org-scoped read here). null = money with no resolvable org (the `unknown` sentinel, an org-less Revolut order), one row per day."
+                },
+                "day": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "UTC day YYYY-MM-DD. null only for a mirrored payment carrying no date."
+                },
+                "gross_cents": {
+                  "type": "string",
+                  "description": "Payments received that day, every acquirer, before any return: succeeded Stripe PaymentIntents, completed Revolut payment orders, standing direct payments."
+                },
+                "returned_cents": {
+                  "type": "string",
+                  "description": "Settled refunds + lost disputes dated on THEIR OWN day, attributed to the org of the payment they reverse."
+                },
+                "net_cents": {
+                  "type": "string",
+                  "description": "gross − returned. Negative on a day with only a return."
+                }
+              },
+              "required": [
+                "org_id",
+                "day",
+                "gross_cents",
+                "returned_cents",
+                "net_cents"
+              ]
+            },
+            "description": "One row per (org, UTC day) with any money, oldest day first, org-less row first within a day."
+          }
+        },
+        "required": [
+          "object",
+          "as_of",
+          "totals",
+          "rows"
+        ]
+      },
       "PaymentMethodsRemoved": {
         "type": "object",
         "properties": {
@@ -3022,6 +3103,32 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AcquiringFeesByMonth"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/cash/by_org_day": {
+      "get": {
+        "summary": "Every org's cash per UTC day since inception: gross, returned, net (user-less)",
+        "description": "Server-to-server, staff revenue. One row per (org, UTC day): gross = payments received that day on every acquirer (Stripe succeeded PaymentIntents, Revolut completed payment orders, standing direct payments), before any return; returned = succeeded Stripe refunds, lost Stripe disputes and completed Revolut refunds, each on ITS OWN day and attributed to the org of the payment it reverses; net = gross − returned. Same predicates as GET /public/stats/billing, so Σ rows gross = `total_paid_cents` and Σ rows net = `total_net_cents`. Currencies summed into one scalar like the platform figure. One SQL statement, DB read only. X-API-Key only.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cash by org and UTC day",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CashByOrgDay"
                 }
               }
             }

@@ -9,6 +9,19 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Real Postgres for the suites whose rule lives in SQL (*.db.test.ts).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: stripe_cash_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      STRIPE_SERVICE_DB_TEST_URL: postgresql://test:test@localhost:5432/stripe_cash_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
