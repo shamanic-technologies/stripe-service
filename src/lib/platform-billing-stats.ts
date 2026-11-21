@@ -72,10 +72,10 @@ export type ReturnedBucketRow = {
 };
 
 /** The ONLY Refund status under which money has actually left our balance. */
-const REFUND_SETTLED_STATUS = "succeeded";
+export const REFUND_SETTLED_STATUS = "succeeded";
 
 /** The ONLY Dispute status under which the funds are gone for good. */
-const DISPUTE_SETTLED_STATUS = "lost";
+export const DISPUTE_SETTLED_STATUS = "lost";
 
 export function formatPeriod(p: Date | string): string {
   if (p instanceof Date) return p.toISOString().slice(0, 10);
@@ -160,7 +160,7 @@ async function settledReturnBuckets(
 }
 
 /** The ONLY Revolut order state under which the money has actually moved. */
-const REVOLUT_SETTLED_STATE = "completed";
+export const REVOLUT_SETTLED_STATE = "completed";
 
 /**
  * Revolut payments taken, grouped by (month, week).
@@ -422,7 +422,7 @@ export function mergeGrowth(
 // exist in production today.
 
 /** The sentinel `org_id` the mirror stamps when no tenant is resolvable. */
-const UNATTRIBUTED_ORG = "unknown";
+export const UNATTRIBUTED_ORG = "unknown";
 
 /** Distinct accounts in one period, and how many of them were new. */
 export type AccountBucket = {
