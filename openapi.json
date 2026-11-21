@@ -995,12 +995,27 @@
               "net_cents": {
                 "type": "string",
                 "description": "gross − returned. Equals GET /public/stats/billing `total_net_cents`."
+              },
+              "agency_gross_cents": {
+                "type": "string",
+                "description": "Sum of every row's agency gross. Agency money is in NO SaaS figure and in nothing GET /public/stats/billing serves."
+              },
+              "agency_returned_cents": {
+                "type": "string",
+                "description": "Sum of every row's agency returned."
+              },
+              "agency_net_cents": {
+                "type": "string",
+                "description": "agency gross − agency returned. Revenue WITH agency = net_cents + agency_net_cents."
               }
             },
             "required": [
               "gross_cents",
               "returned_cents",
-              "net_cents"
+              "net_cents",
+              "agency_gross_cents",
+              "agency_returned_cents",
+              "agency_net_cents"
             ]
           },
           "rows": {
@@ -1011,7 +1026,7 @@
                 "org_id": {
                   "type": "string",
                   "nullable": true,
-                  "description": "The org (same identity as every org-scoped read here). null = money with no resolvable org (the `unknown` sentinel, an org-less Revolut order), one row per day."
+                  "description": "The org (same identity as every org-scoped read here): the payment's own org, else a staff attribution (POST /internal/payment_attributions). null = money with no resolvable org (the `unknown` sentinel, an org-less Revolut order, no attribution), one row per day."
                 },
                 "day": {
                   "type": "string",
@@ -1029,6 +1044,18 @@
                 "net_cents": {
                   "type": "string",
                   "description": "gross − returned. Negative on a day with only a return."
+                },
+                "agency_gross_cents": {
+                  "type": "string",
+                  "description": "AGENCY money received that day: completed Revolut `payment_request` orders (payment links staff created and sent by hand = agency fees, not SaaS top-ups). Never in gross_cents."
+                },
+                "agency_returned_cents": {
+                  "type": "string",
+                  "description": "Completed Revolut refunds of a `payment_request` order, on the refund's own day. Never in returned_cents."
+                },
+                "agency_net_cents": {
+                  "type": "string",
+                  "description": "agency gross − agency returned."
                 }
               },
               "required": [
@@ -1036,7 +1063,10 @@
                 "day",
                 "gross_cents",
                 "returned_cents",
-                "net_cents"
+                "net_cents",
+                "agency_gross_cents",
+                "agency_returned_cents",
+                "agency_net_cents"
               ]
             },
             "description": "One row per (org, UTC day) with any money, oldest day first, org-less row first within a day."
@@ -1047,6 +1077,89 @@
           "as_of",
           "totals",
           "rows"
+        ]
+      },
+      "PaymentAttribution": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "enum": [
+              "payment_attribution"
+            ]
+          },
+          "acquirer": {
+            "type": "string",
+            "enum": [
+              "stripe",
+              "revolut"
+            ]
+          },
+          "payment_id": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "type": "integer",
+            "description": "Unix seconds."
+          }
+        },
+        "required": [
+          "object",
+          "acquirer",
+          "payment_id",
+          "org_id",
+          "recorded_by",
+          "note",
+          "recorded_at"
+        ]
+      },
+      "RecordPaymentAttributionRequest": {
+        "type": "object",
+        "properties": {
+          "acquirer": {
+            "type": "string",
+            "enum": [
+              "stripe",
+              "revolut"
+            ],
+            "description": "Which mirror holds the payment."
+          },
+          "payment_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stripe PaymentIntent id (`pi_…`) or Revolut order id (a `payment` or `payment_request` order)."
+          },
+          "org_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The org this payment belongs to."
+          },
+          "recorded_by": {
+            "type": "string",
+            "format": "email",
+            "description": "Email of the staff member stating it."
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why: who paid, for what. Internal."
+          }
+        },
+        "required": [
+          "acquirer",
+          "payment_id",
+          "org_id",
+          "recorded_by",
+          "note"
         ]
       },
       "PaymentMethodsRemoved": {
@@ -3113,7 +3226,7 @@
     "/internal/cash/by_org_day": {
       "get": {
         "summary": "Every org's cash per UTC day since inception: gross, returned, net (user-less)",
-        "description": "Server-to-server, staff revenue. One row per (org, UTC day): gross = payments received that day on every acquirer (Stripe succeeded PaymentIntents, Revolut completed payment orders, standing direct payments), before any return; returned = succeeded Stripe refunds, lost Stripe disputes and completed Revolut refunds, each on ITS OWN day and attributed to the org of the payment it reverses; net = gross − returned. Same predicates as GET /public/stats/billing, so Σ rows gross = `total_paid_cents` and Σ rows net = `total_net_cents`. Currencies summed into one scalar like the platform figure. One SQL statement, DB read only. X-API-Key only.",
+        "description": "Server-to-server, staff revenue. One row per (org, UTC day): gross = payments received that day on every acquirer (Stripe succeeded PaymentIntents, Revolut completed payment orders, standing direct payments), before any return; returned = succeeded Stripe refunds, lost Stripe disputes and completed Revolut refunds, each on ITS OWN day and attributed to the org of the payment it reverses; net = gross − returned. Same predicates as GET /public/stats/billing, so Σ rows gross = `total_paid_cents` and Σ rows net = `total_net_cents`. Currencies summed into one scalar like the platform figure. Agency money (completed Revolut `payment_request` orders and their refunds) is served ONLY in the `agency_*` fields, never in the SaaS ones. An org-less payment a staff member attributed (POST /internal/payment_attributions) is served on that org's row, its returns too; totals are unchanged by an attribution. One SQL statement, DB read only. X-API-Key only.",
         "tags": [
           "Internal"
         ],
@@ -3129,6 +3242,127 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CashByOrgDay"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/payment_attributions": {
+      "post": {
+        "summary": "State that an org-less payment belongs to an org (staff)",
+        "description": "Staff-only (X-API-Key). Records, append-only, that a mirrored payment whose row carries NO org (a Stripe PaymentIntent on the `unknown` sentinel, a Revolut order with a null `org_id`) belongs to `org_id`. Read ONLY by GET /internal/cash/by_org_day, which then serves that payment and its returns on the org's row. It never feeds the per-org payment summary, credited, paying-account counts, first-payment instants, public stats or anything that grants credit. 201 = recorded; 200 = the same org was already stated (nothing changed); 404 `payment_not_found`; 409 `payment_has_org` (the row already carries an org) or `attributed_to_other_org` (already stated for a different org; never overwritten).",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordPaymentAttributionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Already stated for this org; nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentAttribution"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentAttribution"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`payment_not_found`: no such mirrored payment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`payment_has_org` or `attributed_to_other_org`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Every staff attribution of an org-less payment",
+        "description": "Staff-only (X-API-Key). Oldest first.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "list"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PaymentAttribution"
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "data",
+                    "has_more"
+                  ]
                 }
               }
             }

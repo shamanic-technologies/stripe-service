@@ -499,3 +499,26 @@ export const paymentMethodReads = pgTable(
   },
   (table) => [primaryKey({ columns: [table.customerId, table.type] })]
 );
+
+// A STAFF statement that a payment whose row carries no org (a Stripe
+// PaymentIntent on the `unknown` sentinel, a Revolut order with a null
+// `org_id`) belongs to a given org (SAAS-CASH-1121-AGENCY). Append-only: one
+// row per payment, never updated or deleted by any route.
+//
+// Read ONLY by GET /internal/cash/by_org_day, which moves the payment (and its
+// returns) from the org-less row to that org's row. It must NEVER feed the
+// per-org payment summary, credited, paying-account counts, first-payment
+// instants, public stats or anything that grants credit: it is a reporting
+// attribution, not money arriving on an org.
+export const paymentOrgAttributions = pgTable(
+  "payment_org_attributions",
+  {
+    acquirer: text("acquirer").notNull(), // 'stripe' | 'revolut'
+    paymentId: text("payment_id").notNull(), // pi_... or the Revolut order id
+    orgId: text("org_id").notNull(),
+    recordedBy: text("recorded_by").notNull(), // staff email
+    note: text("note").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.acquirer, table.paymentId] })]
+);

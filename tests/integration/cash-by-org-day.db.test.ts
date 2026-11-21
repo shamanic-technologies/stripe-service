@@ -109,19 +109,20 @@ describe.skipIf(!DB_URL)("GET /internal/cash/by_org_day (real Postgres)", () => 
     expect(res.status).toBe(200);
     expect(res.body.object).toBe("cash_by_org_day");
     expect(typeof res.body.as_of).toBe("string");
+    const Z = { agency_gross_cents: "0", agency_returned_cents: "0", agency_net_cents: "0" };
     expect(res.body.rows).toEqual([
-      { org_id: "org_A", day: "2026-10-01", gross_cents: "10000", returned_cents: "0", net_cents: "10000" },
-      { org_id: "org_B", day: "2026-10-01", gross_cents: "5000", returned_cents: "0", net_cents: "5000" },
-      { org_id: null, day: "2026-10-02", gross_cents: "700", returned_cents: "0", net_cents: "700" },
-      { org_id: "org_A", day: "2026-10-02", gross_cents: "2000", returned_cents: "0", net_cents: "2000" },
-      { org_id: null, day: "2026-10-03", gross_cents: "600", returned_cents: "0", net_cents: "600" },
-      { org_id: "org_C", day: "2026-10-03", gross_cents: "4000", returned_cents: "0", net_cents: "4000" },
-      { org_id: "org_D", day: "2026-10-04", gross_cents: "2500", returned_cents: "0", net_cents: "2500" },
-      { org_id: "org_A", day: "2026-10-05", gross_cents: "0", returned_cents: "4000", net_cents: "-4000" },
-      { org_id: "org_B", day: "2026-10-07", gross_cents: "0", returned_cents: "2000", net_cents: "-2000" },
-      { org_id: "org_C", day: "2026-10-09", gross_cents: "0", returned_cents: "1500", net_cents: "-1500" },
+      { org_id: "org_A", day: "2026-10-01", gross_cents: "10000", returned_cents: "0", net_cents: "10000", ...Z },
+      { org_id: "org_B", day: "2026-10-01", gross_cents: "5000", returned_cents: "0", net_cents: "5000", ...Z },
+      { org_id: null, day: "2026-10-02", gross_cents: "700", returned_cents: "0", net_cents: "700", ...Z },
+      { org_id: "org_A", day: "2026-10-02", gross_cents: "2000", returned_cents: "0", net_cents: "2000", ...Z },
+      { org_id: null, day: "2026-10-03", gross_cents: "600", returned_cents: "0", net_cents: "600", ...Z },
+      { org_id: "org_C", day: "2026-10-03", gross_cents: "4000", returned_cents: "0", net_cents: "4000", ...Z },
+      { org_id: "org_D", day: "2026-10-04", gross_cents: "2500", returned_cents: "0", net_cents: "2500", ...Z },
+      { org_id: "org_A", day: "2026-10-05", gross_cents: "0", returned_cents: "4000", net_cents: "-4000", ...Z },
+      { org_id: "org_B", day: "2026-10-07", gross_cents: "0", returned_cents: "2000", net_cents: "-2000", ...Z },
+      { org_id: "org_C", day: "2026-10-09", gross_cents: "0", returned_cents: "1500", net_cents: "-1500", ...Z },
     ]);
-    expect(res.body.totals).toEqual({ gross_cents: "24800", returned_cents: "7500", net_cents: "17300" });
+    expect(res.body.totals).toEqual({ gross_cents: "24800", returned_cents: "7500", net_cents: "17300", ...Z });
   });
 
   it("Σ rows == totals == GET /public/stats/billing on the same rows", async () => {
