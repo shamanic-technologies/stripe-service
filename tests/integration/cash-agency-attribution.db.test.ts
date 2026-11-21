@@ -127,6 +127,9 @@ describe.skipIf(!DB_URL)("cash by org day: agency + staff attribution (real Post
       agency_gross_cents: "325000",
       agency_returned_cents: "5000",
       agency_net_cents: "320000",
+      saas_reclassified_to_agency_gross_cents: "0",
+      saas_reclassified_to_agency_returned_cents: "0",
+      saas_reclassified_to_agency_net_cents: "0",
     });
     expect(row(body, null, "2026-09-09")).toEqual({
       org_id: null,
