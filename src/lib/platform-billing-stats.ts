@@ -163,6 +163,14 @@ async function settledReturnBuckets(
 export const REVOLUT_SETTLED_STATE = "completed";
 
 /**
+ * A Revolut `payment_request` order is a payment link staff created and sent
+ * by hand: an AGENCY fee, never a SaaS top-up (SAAS-CASH-1121-AGENCY). It is in
+ * no figure of this file, and neither is a refund of one: only the cash read
+ * (`cash-by-org-day.ts`) counts it, in its own `agency_*` fields.
+ */
+export const REVOLUT_AGENCY_TYPE = "payment_request";
+
+/**
  * Revolut payments taken, grouped by (month, week).
  *
  * The vendor keeps payments and refunds in ONE collection discriminated by
@@ -223,7 +231,9 @@ async function revolutReturnBuckets(): Promise<ReturnedBucketRow[]> {
     .where(
       and(
         eq(revolutOrders.type, "refund"),
-        eq(revolutOrders.state, REVOLUT_SETTLED_STATE)
+        eq(revolutOrders.state, REVOLUT_SETTLED_STATE),
+        // A refund of an agency payment link is agency money, never SaaS.
+        eq(parent.type, "payment")
       )
     )
     .groupBy(month, week)) as ReturnedBucketRow[];
